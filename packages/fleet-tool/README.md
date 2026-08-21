@@ -19,7 +19,7 @@ Existing tools stay. `device_id` is still on every mutating/read schema; it is o
 | `run` | `command` required. Optional `device_id`, optional `wait_ms` (**default 0**). **Default is still immediate `{corr,status:"running"}`** — `POST /v1/run` is not held. |
 | `get_result` | Snapshot by `corr` when `wait_ms` is omitted/0. Optional `wait_ms` long-polls until done or the budget expires. |
 | `wait` | Explicit block: `{corr, device_id?, wait_ms?}`. Default `wait_ms` is the 30s cap. Long-polls `get_result`. |
-| `read_screen` / `type` | Same optional `device_id` fill. POSIX live PTY: `read_screen` is the current VT grid (not a raw byte dump). `type` still takes `keys`; optional `key` is a named press (`enter`, `ctrl+c`). Enter is CR; a single `keys` write of `text\\r` flushes the text then CR (ssh_send). `ctrl+c` is 0x03 plus SIGINT to the fg process group. |
+| `read_screen` / `type` | Same optional `device_id` fill. POSIX live PTY: `read_screen` is the current VT grid (not a raw byte dump; `__FLEET_PROMPT__` rows are stripped). After a corr finishes the grid is reset so the next command does not paint on leftover TUI chrome. `type` still takes `keys`; optional `key` is a named press (`enter`, `ctrl+c`). Enter is CR; a single `keys` write of `text\\r` flushes the text then CR (ssh_send). `ctrl+c` is 0x03 plus SIGINT to the fg process group. |
 | `set_computer` | Remember a device for later calls **in this MCP process only**. |
 | `get_current_computer` | Show last-used, last `cwd`, and the `FLEET_DEVICE_ID` start default. |
 

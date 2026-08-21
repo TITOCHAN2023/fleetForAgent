@@ -640,4 +640,54 @@ func TestLiveShellReadScreenDropsAltAfterTUI(t *testing.T) {
 	if strings.Contains(text, "TUI-BOX") {
 		t.Fatalf("stale alt-screen frame after TUI: %q", text)
 	}
+	if strings.Contains(text, promptPrefix) {
+		t.Fatalf("read_screen leaked completion marker: %q", text)
+	}
+}
+
+func TestLiveShellReadScreenAfterPrimaryTUIThenPwd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("live shell is POSIX-only")
+	}
+	s := newSupervisor()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		if s.live != nil {
+			s.live.kill()
+		}
+		s.mu.Unlock()
+	})
+	p, err := s.spawn("box1", "printf '\\033[H\\033[2J====CODEX====\\n| box |\\n============\\n'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p)
+	text, running, _, _, _, _ := s.paneSnapshot(p)
+	if running {
+		t.Fatal("TUI corr still running")
+	}
+	if strings.Contains(text, "CODEX") || strings.Contains(text, "| box |") {
+		t.Fatalf("stale primary TUI chrome: %q", text)
+	}
+	if strings.Contains(text, promptPrefix) {
+		t.Fatalf("read_screen leaked completion marker: %q", text)
+	}
+
+	p2, err := s.spawn("pwd1", "pwd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p2)
+	text2, _, _, _, _, _ := s.paneSnapshot(p2)
+	if strings.Contains(text2, "CODEX") || strings.Contains(text2, "| box |") {
+		t.Fatalf("pwd painted on leftover box: %q", text2)
+	}
+	if strings.Contains(text2, promptPrefix) {
+		t.Fatalf("read_screen leaked completion marker: %q", text2)
+	}
+	out, _ := p2.resultText()
+	want := strings.TrimSpace(out)
+	if want == "" || !strings.Contains(text2, want) {
+		t.Fatalf("read_screen after pwd=%q want to contain %q", text2, want)
+	}
 }

@@ -84,8 +84,7 @@ func (s *vtScreen) consumeQueries(p []byte) [][]byte {
 }
 
 // leaveAlt switches the emulator back to the primary screen. A TUI that
-// exits without CSI ?1049l leaves the last box on the alt buffer; the
-// live-shell PS1 is what a human sees after that.
+// exits without CSI ?1049l leaves the last box on the alt buffer.
 func (s *vtScreen) leaveAlt() {
 	if s == nil || s.term == nil {
 		return
@@ -97,6 +96,54 @@ func (s *vtScreen) leaveAlt() {
 	if s.term.Mode()&vt10x.ModeAltScreen != 0 {
 		_, _ = s.term.Write([]byte("\x1b[?47l"))
 	}
+}
+
+// resetPrimary replaces the emulator with a blank grid the size of the PTY.
+// leaveAlt is not enough when the app also drew on the primary buffer
+// (Codex). hinshun/vt10x RIS is ESC c; a new terminal is the same wipe
+// without writing a CSI parser.
+func (s *vtScreen) resetPrimary() {
+	if s == nil {
+		return
+	}
+	cols, rows := livePtyCols, livePtyRows
+	if s.term != nil {
+		if c, r := s.term.Size(); c > 0 && r > 0 {
+			cols, rows = c, r
+		}
+	}
+	s.pending = nil
+	s.term = vt10x.New(vt10x.WithSize(cols, rows), vt10x.WithWriter(s.replies))
+}
+
+// paintPlain writes command result text onto the current grid. CSI-bearing
+// TUI dumps are skipped so we do not redraw the leftover box.
+func (s *vtScreen) paintPlain(text string) {
+	if s == nil || text == "" || strings.Contains(text, "\x1b") {
+		return
+	}
+	s.write([]byte(text))
+	if !strings.HasSuffix(text, "\n") {
+		s.write([]byte("\n"))
+	}
+}
+
+func stripPromptRows(text string) string {
+	if text == "" || (!strings.Contains(text, promptPrefix) && !strings.Contains(text, doneMarkerPrefix)) {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	keep := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.Contains(line, promptPrefix) || strings.Contains(line, doneMarkerPrefix) {
+			continue
+		}
+		keep = append(keep, line)
+	}
+	for len(keep) > 0 && keep[len(keep)-1] == "" {
+		keep = keep[:len(keep)-1]
+	}
+	return strings.Join(keep, "\n")
 }
 
 func (s *vtScreen) grid() (text string, row, col int) {
@@ -127,5 +174,5 @@ func (s *vtScreen) grid() (text string, row, col int) {
 	if last < 0 {
 		return "", cur.Y, cur.X
 	}
-	return strings.Join(lines[:last+1], "\n"), cur.Y, cur.X
+	return stripPromptRows(strings.Join(lines[:last+1], "\n")), cur.Y, cur.X
 }

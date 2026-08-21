@@ -65,6 +65,39 @@ func TestVTScreenLeaveAltRestoresPrimary(t *testing.T) {
 	}
 }
 
+func TestVTScreenResetClearsPrimaryTUI(t *testing.T) {
+	var replies bytes.Buffer
+	sc := newVTScreen(livePtyCols, livePtyRows, &replies)
+	sc.write([]byte("\x1b[H\x1b[2J====CODEX====\n| box |\n============\n"))
+	text, _, _ := sc.grid()
+	if !strings.Contains(text, "CODEX") {
+		t.Fatalf("expected primary TUI, got %q", text)
+	}
+	sc.resetPrimary()
+	text, _, _ = sc.grid()
+	if strings.Contains(text, "CODEX") || strings.Contains(text, "box") {
+		t.Fatalf("reset left chrome: %q", text)
+	}
+	sc.paintPlain("/Users/bytedance")
+	text, _, _ = sc.grid()
+	if strings.TrimSpace(text) != "/Users/bytedance" {
+		t.Fatalf("plain paint=%q", text)
+	}
+}
+
+func TestVTScreenGridStripsPromptMarker(t *testing.T) {
+	var replies bytes.Buffer
+	sc := newVTScreen(livePtyCols, livePtyRows, &replies)
+	sc.write([]byte("pwd-line\n" + promptPrefix + "0\n"))
+	text, _, _ := sc.grid()
+	if strings.Contains(text, promptPrefix) {
+		t.Fatalf("read_screen leaked completion marker: %q", text)
+	}
+	if !strings.Contains(text, "pwd-line") {
+		t.Fatalf("grid lost output: %q", text)
+	}
+}
+
 func TestVTScreenDASplitAcrossWrites(t *testing.T) {
 	var replies bytes.Buffer
 	sc := newVTScreen(livePtyCols, livePtyRows, &replies)

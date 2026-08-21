@@ -30,20 +30,21 @@ type liveJob struct {
 }
 
 type liveShell struct {
-	cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	mu       sync.Mutex
-	writeMu  sync.Mutex
-	screen   *vtScreen
-	rawOut   string
-	rawErr   string
-	ready    bool
-	exited   bool
-	lastUsed time.Time
-	idleFor  time.Duration
-	onStdout func(string)
-	onStderr func(string)
-	onExit   func()
+	cmd        *exec.Cmd
+	stdin      io.WriteCloser
+	mu         sync.Mutex
+	writeMu    sync.Mutex
+	screen     *vtScreen
+	screenIdle bool // after a corr finishes, ignore PTY bytes until the next run
+	rawOut     string
+	rawErr     string
+	ready      bool
+	exited     bool
+	lastUsed   time.Time
+	idleFor    time.Duration
+	onStdout   func(string)
+	onStderr   func(string)
+	onExit     func()
 }
 
 func fileExists(path string) bool {
@@ -351,6 +352,12 @@ func (ls *liveShell) feedScreen(p []byte) {
 	if ls == nil || ls.screen == nil {
 		return
 	}
+	ls.mu.Lock()
+	idle := ls.screenIdle
+	ls.mu.Unlock()
+	if idle {
+		return
+	}
 	ls.screen.write(p)
 }
 
@@ -583,7 +590,11 @@ func (s *supervisor) startLiveJob(job *liveJob) error {
 	live.mu.Lock()
 	live.rawOut = ""
 	live.rawErr = ""
+	live.screenIdle = false
 	live.mu.Unlock()
+	if live.screen != nil {
+		live.screen.resetPrimary()
+	}
 	s.mu.Lock()
 	s.pending = job
 	if live.stdin != nil {
@@ -678,10 +689,14 @@ func (s *supervisor) tryFinishLive(job *liveJob, live *liveShell, force bool) bo
 	}
 	s.mu.Unlock()
 
-	if live.screen != nil {
-		live.screen.leaveAlt()
-	}
 	out = stripEchoedCommand(stripCompletionText(out), job.command)
+	if live.screen != nil {
+		live.screen.resetPrimary()
+		live.screen.paintPlain(out)
+	}
+	live.mu.Lock()
+	live.screenIdle = true
+	live.mu.Unlock()
 	job.pane.finishCommand(out, code)
 	job.pane.mu.Lock()
 	job.pane.stderr = newStreamBuf()

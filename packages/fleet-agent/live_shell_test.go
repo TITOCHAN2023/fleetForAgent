@@ -548,6 +548,27 @@ func TestRawOutputBeforePromptKeepsCSI(t *testing.T) {
 	}
 }
 
+func TestReplayAfterFinishPolicy(t *testing.T) {
+	if !replayAfterFinish(true, false, false, false, false) {
+		t.Fatal("short PS1 command (CUP/color) must replay")
+	}
+	if replayAfterFinish(true, false, false, true, false) {
+		t.Fatal("DA/CPR TUI must not replay")
+	}
+	if replayAfterFinish(true, false, true, false, false) {
+		t.Fatal("alt-screen TUI must not replay")
+	}
+	if replayAfterFinish(true, false, false, false, true) {
+		t.Fatal("typed interactive corr must not replay")
+	}
+	if replayAfterFinish(false, true, false, false, false) {
+		t.Fatal("child-quiet finish must not replay")
+	}
+	if replayAfterFinish(true, true, false, false, true) {
+		t.Fatal("type then child-quiet must not replay")
+	}
+}
+
 func TestLiveShellAnswersDAQuery(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("live shell is POSIX-only")
@@ -737,6 +758,84 @@ func TestLiveShellReadScreenAfterPrimaryTUIThenPwd(t *testing.T) {
 	}
 	if strings.Contains(text2, promptPrefix) {
 		t.Fatalf("read_screen leaked completion marker: %q", text2)
+	}
+	out, _ := p2.resultText()
+	want := strings.TrimSpace(out)
+	if want == "" || !strings.Contains(text2, want) {
+		t.Fatalf("read_screen after pwd=%q want to contain %q", text2, want)
+	}
+}
+
+func TestLiveShellReadScreenEmptyAfterDAPrimaryBox(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("live shell is POSIX-only")
+	}
+	s := newSupervisor()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		if s.live != nil {
+			s.live.kill()
+		}
+		s.mu.Unlock()
+	})
+	p, err := s.spawn("ida1", "printf '\\033[c\\033[H\\033[2J====BOX====\\n| tui |\\n'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p)
+	text, running, _, _, _, _ := s.paneSnapshot(p)
+	if running {
+		t.Fatal("DA TUI corr still running")
+	}
+	if strings.Contains(text, "====BOX====") || strings.Contains(text, "| tui |") {
+		t.Fatalf("after-finish DA TUI should be the blank reset grid, got %q", text)
+	}
+	if strings.Contains(text, promptPrefix) {
+		t.Fatalf("read_screen leaked completion marker: %q", text)
+	}
+}
+
+func TestLiveShellReadScreenEmptyAfterTypedChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("live shell is POSIX-only")
+	}
+	s := newSupervisor()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		if s.live != nil {
+			s.live.kill()
+		}
+		s.mu.Unlock()
+	})
+	p, err := s.spawn("itui1", "printf '\\033[H\\033[2J====BOX====\\n| tui |\\n'; sleep 30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitScreenHas(t, s, p, "====BOX====")
+	waitPaneTypable(t, p)
+	if err := p.typeInput("", "ctrl+c"); err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p)
+	text, running, _, _, _, _ := s.paneSnapshot(p)
+	if running {
+		t.Fatal("typed TUI corr still running")
+	}
+	if strings.Contains(text, "====BOX====") || strings.Contains(text, "| tui |") {
+		t.Fatalf("after-finish typed TUI should be the blank reset grid, got %q", text)
+	}
+	if strings.Contains(text, promptPrefix) {
+		t.Fatalf("read_screen leaked completion marker: %q", text)
+	}
+
+	p2, err := s.spawn("itui2", "pwd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p2)
+	text2, _, _, _, _, _ := s.paneSnapshot(p2)
+	if strings.Contains(text2, "====BOX====") || strings.Contains(text2, "| tui |") {
+		t.Fatalf("pwd painted on leftover TUI: %q", text2)
 	}
 	out, _ := p2.resultText()
 	want := strings.TrimSpace(out)

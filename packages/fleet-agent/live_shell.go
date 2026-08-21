@@ -184,6 +184,14 @@ func rawOutputBeforePrompt(buf string) string {
 	return buf[:i]
 }
 
+// replayAfterFinish keeps the last human frame for a short command
+// (CUP, color). Interactive TUIs leave the blank reset grid: they
+// probed DA/CPR, entered the alt screen, waited for type, or finished
+// on the child-quiet path.
+func replayAfterFinish(ps1 bool, force, usedAlt, answered, typed bool) bool {
+	return ps1 && !force && !usedAlt && !answered && !typed
+}
+
 func stripANSI(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -603,6 +611,11 @@ func (s *supervisor) startLiveJob(job *liveJob) error {
 	live.rawErr = ""
 	live.screenIdle = false
 	live.mu.Unlock()
+	if job.pane != nil {
+		job.pane.mu.Lock()
+		job.pane.typed = false
+		job.pane.mu.Unlock()
+	}
 	if live.screen != nil {
 		live.screen.resetPrimary()
 	}
@@ -692,11 +705,19 @@ func (s *supervisor) tryFinishLive(job *liveJob, live *liveShell, force bool) bo
 		replay = live.rawOut
 	}
 	usedAlt := live.screen != nil && live.screen.altUsed()
+	answered := live.screen != nil && live.screen.answered()
 	job.finishing = true
 	live.rawOut = rest
 	live.lastUsed = time.Now()
 	live.screenIdle = true
 	live.mu.Unlock()
+
+	typed := false
+	if job.pane != nil {
+		job.pane.mu.Lock()
+		typed = job.pane.typed
+		job.pane.mu.Unlock()
+	}
 
 	s.mu.Lock()
 	if s.pending == job {
@@ -707,7 +728,7 @@ func (s *supervisor) tryFinishLive(job *liveJob, live *liveShell, force bool) bo
 	out = stripEchoedCommand(stripCompletionText(out), job.command)
 	if live.screen != nil {
 		live.screen.resetPrimary()
-		if !usedAlt {
+		if replayAfterFinish(ok, force, usedAlt, answered, typed) {
 			live.screen.replay([]byte(replay))
 		}
 	}

@@ -17,10 +17,11 @@ const (
 const daPrimary = "\x1b[?1;2c"
 
 type vtScreen struct {
-	term    vt10x.Terminal
-	pending []byte
-	replies io.Writer
-	usedAlt bool
+	term          vt10x.Terminal
+	pending       []byte
+	replies       io.Writer
+	usedAlt       bool
+	answeredQuery bool
 }
 
 func newVTScreen(cols, rows int, replies io.Writer) *vtScreen {
@@ -82,6 +83,10 @@ func (s *vtScreen) altUsed() bool {
 	return s != nil && s.usedAlt
 }
 
+func (s *vtScreen) answered() bool {
+	return s != nil && s.answeredQuery
+}
+
 // consumeQueries answers DA written by the slave. DSR/CPR stay with vt10x
 // (CSI 5n / CSI 6n write through WithWriter). This is not a render parser.
 func (s *vtScreen) consumeQueries(p []byte) [][]byte {
@@ -112,6 +117,13 @@ func (s *vtScreen) consumeQueries(p []byte) [][]byte {
 		}
 		if buf[j] == 'c' {
 			replies = append(replies, []byte(daPrimary))
+			s.answeredQuery = true
+		}
+		if buf[j] == 'n' {
+			params := buf[i+2 : j]
+			if bytes.Contains(params, []byte{'5'}) || bytes.Contains(params, []byte{'6'}) {
+				s.answeredQuery = true
+			}
 		}
 		i = j + 1
 	}
@@ -149,6 +161,7 @@ func (s *vtScreen) resetPrimary() {
 	}
 	s.pending = nil
 	s.usedAlt = false
+	s.answeredQuery = false
 	s.term = vt10x.New(vt10x.WithSize(cols, rows), vt10x.WithWriter(s.replies))
 }
 

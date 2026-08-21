@@ -24,6 +24,9 @@ func TestVTScreenAnswersDA(t *testing.T) {
 	var replies bytes.Buffer
 	sc := newVTScreen(livePtyCols, livePtyRows, &replies)
 	sc.write([]byte("hello\x1b[c\x1b[0c"))
+	if !sc.answered() {
+		t.Fatal("DA must mark answeredQuery")
+	}
 	got := replies.String()
 	if strings.Count(got, daPrimary) < 2 {
 		t.Fatalf("DA replies=%q", got)
@@ -43,6 +46,9 @@ func TestVTScreenAnswersCPR(t *testing.T) {
 	sc.write([]byte("\x1b[H\x1b[6n"))
 	if !bytes.Contains(replies.Bytes(), []byte("\x1b[1;1R")) {
 		t.Fatalf("CPR reply=%q", replies.Bytes())
+	}
+	if !sc.answered() {
+		t.Fatal("CPR must mark answeredQuery")
 	}
 }
 
@@ -115,6 +121,9 @@ func TestVTScreenNoReplayAfterAlt(t *testing.T) {
 	}
 	if sc.altUsed() {
 		t.Fatal("resetPrimary must clear usedAlt")
+	}
+	if sc.answered() {
+		t.Fatal("resetPrimary must clear answeredQuery")
 	}
 }
 

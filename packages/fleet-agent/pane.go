@@ -81,6 +81,7 @@ type pane struct {
 	stdout            *streamBuf
 	stderr            *streamBuf
 	running           bool
+	typed             bool
 	exitCode          int
 	seq               int
 	stdin             io.WriteCloser
@@ -269,6 +270,9 @@ func (p *pane) typeInput(keys, named string) error {
 	w := p.stdin
 	oneshot := p.cmd != nil
 	alive := p.running
+	if !oneshot && alive {
+		p.typed = true
+	}
 	p.mu.Unlock()
 	if w == nil {
 		return io.ErrClosedPipe

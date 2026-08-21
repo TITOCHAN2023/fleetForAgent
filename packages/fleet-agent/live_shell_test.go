@@ -83,6 +83,10 @@ func TestParsePrompt(t *testing.T) {
 	if !ok || code != 0 || out != "bar" {
 		t.Fatalf("no-newline output: ok=%v code=%d out=%q", ok, code, out)
 	}
+	out, _, code, ok = parsePrompt("done\n" + promptPrefix + "\x1b[0m0\n")
+	if !ok || code != 0 || !strings.Contains(out, "done") {
+		t.Fatalf("CSI-wrapped PS1: ok=%v code=%d out=%q", ok, code, out)
+	}
 }
 
 func TestExitCommandCode(t *testing.T) {
@@ -379,6 +383,21 @@ func TestLiveShellReadThenType(t *testing.T) {
 		t.Fatalf("read consumed a completion printf: %q", out)
 	}
 	assertNoCompletion(t, out, stderr)
+
+	p2, err := s.spawn("rd2", `read -r x; printf 'got=%s\n' "$x"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneTypable(t, p2)
+	if err := p2.typeKeys("hello\r"); err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p2)
+	out2, err2 := p2.resultText()
+	if strings.TrimSpace(out2) != "got=hello" {
+		t.Fatalf("single keys hello\\r: stdout=%q stderr=%q", out2, err2)
+	}
+	assertNoCompletion(t, out2, err2)
 }
 
 func TestLiveShellTTYAndTerm(t *testing.T) {
@@ -572,5 +591,53 @@ func TestLiveShellTypeCtrlCStopsSleep(t *testing.T) {
 	waitPaneDone(t, p)
 	if p.exitCode == 0 {
 		t.Fatalf("sleep survived ctrl+c, exit_code=%d", p.exitCode)
+	}
+}
+
+func TestLiveShellFinishesWhenPromptMarkerGone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("live shell is POSIX-only")
+	}
+	s := newSupervisor()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		if s.live != nil {
+			s.live.kill()
+		}
+		s.mu.Unlock()
+	})
+	p, err := s.spawn("np1", "PS1='broken> '; sleep 0.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p)
+	if p.stillRunning() {
+		t.Fatal("corr must finish after the child exits even without __FLEET_PROMPT__")
+	}
+}
+
+func TestLiveShellReadScreenDropsAltAfterTUI(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("live shell is POSIX-only")
+	}
+	s := newSupervisor()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		if s.live != nil {
+			s.live.kill()
+		}
+		s.mu.Unlock()
+	})
+	p, err := s.spawn("alt1", "printf '\\033[?1049h\\033[H\\033[2JTUI-BOX\\n'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p)
+	text, running, _, _, _, _ := s.paneSnapshot(p)
+	if running {
+		t.Fatal("pane still running after TUI command")
+	}
+	if strings.Contains(text, "TUI-BOX") {
+		t.Fatalf("stale alt-screen frame after TUI: %q", text)
 	}
 }

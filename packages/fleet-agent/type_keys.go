@@ -3,9 +3,17 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
+	"os"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
+
+// Codex/vim composers often miss Enter when text and CR arrive in one
+// kernel write (the same class as ssh_send(text)+Enter). Flush the text,
+// settle one frame, then write CR so a single type() of `hello\r` submits.
+const typeEnterSettle = 40 * time.Millisecond
 
 // ssh-pty-mcp ssh_press named keys (src/keys.rs), plus Enter aliases.
 // ctrl+\ is SIGQUIT on a tty; 888 needed the signal, not just a byte.
@@ -53,6 +61,33 @@ func liveEnterBytes(keys string) []byte {
 	s := strings.ReplaceAll(keys, "\r\n", "\r")
 	s = strings.ReplaceAll(s, "\n", "\r")
 	return []byte(s)
+}
+
+func writeTypedKeys(w io.Writer, payload []byte) error {
+	if w == nil {
+		return io.ErrClosedPipe
+	}
+	for len(payload) > 0 {
+		i := bytes.IndexByte(payload, '\r')
+		if i < 0 {
+			_, err := w.Write(payload)
+			return err
+		}
+		if i > 0 {
+			if _, err := w.Write(payload[:i]); err != nil {
+				return err
+			}
+			if f, ok := w.(*os.File); ok {
+				_ = f.Sync()
+			}
+			time.Sleep(typeEnterSettle)
+		}
+		if _, err := w.Write([]byte{'\r'}); err != nil {
+			return err
+		}
+		payload = payload[i+1:]
+	}
+	return nil
 }
 
 func withSignals(s typeStroke) typeStroke {

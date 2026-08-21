@@ -46,6 +46,25 @@ func TestVTScreenAnswersCPR(t *testing.T) {
 	}
 }
 
+func TestVTScreenLeaveAltRestoresPrimary(t *testing.T) {
+	var replies bytes.Buffer
+	sc := newVTScreen(livePtyCols, livePtyRows, &replies)
+	sc.write([]byte("shell-line\n"))
+	sc.write([]byte("\x1b[?1049h\x1b[H\x1b[2JTUI-BOX"))
+	text, _, _ := sc.grid()
+	if !strings.Contains(text, "TUI-BOX") {
+		t.Fatalf("expected alt-screen TUI, got %q", text)
+	}
+	sc.leaveAlt()
+	text, _, _ = sc.grid()
+	if strings.Contains(text, "TUI-BOX") {
+		t.Fatalf("stale alt screen after leaveAlt: %q", text)
+	}
+	if !strings.Contains(text, "shell-line") {
+		t.Fatalf("primary frame lost: %q", text)
+	}
+}
+
 func TestVTScreenDASplitAcrossWrites(t *testing.T) {
 	var replies bytes.Buffer
 	sc := newVTScreen(livePtyCols, livePtyRows, &replies)

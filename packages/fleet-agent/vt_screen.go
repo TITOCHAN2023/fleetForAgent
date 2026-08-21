@@ -83,6 +83,22 @@ func (s *vtScreen) consumeQueries(p []byte) [][]byte {
 	return replies
 }
 
+// leaveAlt switches the emulator back to the primary screen. A TUI that
+// exits without CSI ?1049l leaves the last box on the alt buffer; the
+// live-shell PS1 is what a human sees after that.
+func (s *vtScreen) leaveAlt() {
+	if s == nil || s.term == nil {
+		return
+	}
+	if s.term.Mode()&vt10x.ModeAltScreen == 0 {
+		return
+	}
+	_, _ = s.term.Write([]byte("\x1b[?1049l"))
+	if s.term.Mode()&vt10x.ModeAltScreen != 0 {
+		_, _ = s.term.Write([]byte("\x1b[?47l"))
+	}
+}
+
 func (s *vtScreen) grid() (text string, row, col int) {
 	if s == nil || s.term == nil {
 		return "", 0, 0

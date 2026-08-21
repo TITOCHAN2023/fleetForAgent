@@ -5,6 +5,28 @@ import (
 	"testing"
 )
 
+type writeLog struct {
+	writes [][]byte
+}
+
+func (w *writeLog) Write(p []byte) (int, error) {
+	w.writes = append(w.writes, append([]byte(nil), p...))
+	return len(p), nil
+}
+
+func TestWriteTypedKeysSplitsTextAndCR(t *testing.T) {
+	var w writeLog
+	if err := writeTypedKeys(&w, []byte("hello\r")); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.writes) < 2 {
+		t.Fatalf("want separate text and CR writes, got %#v", w.writes)
+	}
+	if !bytes.Equal(w.writes[0], []byte("hello")) || !bytes.Equal(w.writes[len(w.writes)-1], []byte{'\r'}) {
+		t.Fatalf("writes=%#v", w.writes)
+	}
+}
+
 func TestEncodeTypeEnterIsCR(t *testing.T) {
 	for _, in := range []struct{ keys, named string }{
 		{"", "enter"},

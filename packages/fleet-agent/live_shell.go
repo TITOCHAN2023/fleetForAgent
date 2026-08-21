@@ -18,6 +18,7 @@ import (
 const (
 	shellIdleFor     = 2 * time.Hour
 	shellReadyWait   = 10 * time.Second
+	childQuietFor    = 200 * time.Millisecond
 	promptPrefix     = "__FLEET_PROMPT__"
 	doneMarkerPrefix = "__MCP_DONE__" // legacy; never written on the live path
 )
@@ -159,7 +160,52 @@ func passwdShellField(line string) string {
 // non-digits (an assignment echoing $?) are skipped. The prompt may sit on
 // the same line as command output (printf '%s' with no trailing newline).
 func parsePrompt(buf string) (output, rest string, exit int, ok bool) {
-	return parseCompletion(buf, promptPrefix)
+	out, rest, code, ok := parseCompletion(buf, promptPrefix)
+	if ok {
+		return out, rest, code, true
+	}
+	// TUI teardown often wraps PS1 in CSI. Strip for the match only.
+	stripped := stripANSI(buf)
+	if stripped == buf {
+		return "", buf, 0, false
+	}
+	return parseCompletion(stripped, promptPrefix)
+}
+
+func stripANSI(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			i += 2
+			for i < len(s) && (s[i] < 0x40 || s[i] > 0x7e) {
+				i++
+			}
+			if i < len(s) {
+				i++
+			}
+			continue
+		}
+		if s[i] == 0x1b && i+1 < len(s) && (s[i+1] == ']' || s[i+1] == 'P' || s[i+1] == 'X' || s[i+1] == '^' || s[i+1] == '_') {
+			i += 2
+			for i < len(s) {
+				if s[i] == 0x07 {
+					i++
+					break
+				}
+				if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\' {
+					i += 2
+					break
+				}
+				i++
+			}
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
 }
 
 func parseCompletion(buf, marker string) (output, rest string, exit int, ok bool) {
@@ -555,6 +601,7 @@ func (s *supervisor) startLiveJob(job *liveJob) error {
 		s.mu.Unlock()
 		return err
 	}
+	go s.watchLiveJob(job, live)
 	if _, isExit := exitCommandCode(job.command); isExit {
 		go func() {
 			deadline := time.Now().Add(1500 * time.Millisecond)
@@ -588,25 +635,52 @@ func (s *supervisor) feedLive(chunk string) {
 	}
 	live.mu.Lock()
 	live.rawOut += chunk
-	out, rest, code, ok := parsePrompt(live.rawOut)
-	if ok {
-		live.rawOut = rest
-		job.finishing = true
-		live.lastUsed = time.Now()
-	}
 	live.mu.Unlock()
-	if !ok {
-		cleaned := stripCompletionText(chunk)
-		if cleaned != "" {
-			job.pane.append("stdout", cleaned)
-		}
+	if s.tryFinishLive(job, live, false) {
 		return
 	}
+	cleaned := stripCompletionText(chunk)
+	if cleaned != "" {
+		job.pane.append("stdout", cleaned)
+	}
+}
+
+// tryFinishLive completes the pending corr when the live shell is back at
+// PS1 (raw or CSI-stripped, or the VT grid) or when force is set (child
+// died and the stream went quiet — ssh-pty-mcp / mcp-ssh-terminal).
+func (s *supervisor) tryFinishLive(job *liveJob, live *liveShell, force bool) bool {
+	if job == nil || live == nil {
+		return false
+	}
+	live.mu.Lock()
+	if job.finishing {
+		live.mu.Unlock()
+		return true
+	}
+	out, rest, code, ok := parsePrompt(live.rawOut)
+	if !ok && !force {
+		live.mu.Unlock()
+		return false
+	}
+	if !ok {
+		out = live.rawOut
+		rest = ""
+		code = 0
+	}
+	job.finishing = true
+	live.rawOut = rest
+	live.lastUsed = time.Now()
+	live.mu.Unlock()
+
 	s.mu.Lock()
 	if s.pending == job {
 		s.pending = nil
 	}
 	s.mu.Unlock()
+
+	if live.screen != nil {
+		live.screen.leaveAlt()
+	}
 	out = stripEchoedCommand(stripCompletionText(out), job.command)
 	job.pane.finishCommand(out, code)
 	job.pane.mu.Lock()
@@ -616,6 +690,44 @@ func (s *supervisor) feedLive(chunk string) {
 		live.kill()
 	}
 	go s.pumpLive()
+	return true
+}
+
+func (s *supervisor) watchLiveJob(job *liveJob, live *liveShell) {
+	if job == nil || live == nil {
+		return
+	}
+	shellPgid := 0
+	if live.cmd != nil && live.cmd.Process != nil {
+		shellPgid = live.cmd.Process.Pid
+	}
+	sawChild := false
+	var quietAt time.Time
+	lastRaw := ""
+	for job.pane.stillRunning() && live.alive() {
+		if s.tryFinishLive(job, live, false) {
+			return
+		}
+		pgid := foregroundPgid(live.stdin)
+		if pgid > 1 && shellPgid > 0 && pgid != shellPgid {
+			sawChild = true
+			quietAt = time.Time{}
+		}
+		live.mu.Lock()
+		raw := live.rawOut
+		live.mu.Unlock()
+		backAtShell := sawChild && (pgid == shellPgid || pgid <= 1)
+		if backAtShell {
+			if raw != lastRaw || quietAt.IsZero() {
+				lastRaw = raw
+				quietAt = time.Now()
+			} else if time.Since(quietAt) >= childQuietFor {
+				s.tryFinishLive(job, live, true)
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func (s *supervisor) onLiveExit() {

@@ -293,7 +293,7 @@ func (p *pane) typeInput(keys, named string) error {
 		return err
 	}
 	if len(stroke.payload) > 0 {
-		if _, err := w.Write(stroke.payload); err != nil {
+		if err := writeTypedKeys(w, stroke.payload); err != nil {
 			return err
 		}
 	}

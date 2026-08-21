@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -9,7 +10,7 @@ import (
 
 func waitPaneDone(t *testing.T, p *pane) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(25 * time.Second)
 	for time.Now().Before(deadline) {
 		if !p.stillRunning() {
 			return
@@ -92,5 +93,97 @@ func TestLiveShellPersistsEnvAndCwd(t *testing.T) {
 	}
 	if p4.exitCode != 0 && p4.stillRunning() {
 		t.Fatal("pwd still running")
+	}
+}
+
+func TestPickShellIgnoresInheritedSHELL(t *testing.T) {
+	t.Setenv("SHELL", "/bin/false")
+	t.Setenv("FLEET_SHELL", "")
+	got := pickShell()
+	if got == "/bin/false" {
+		t.Fatal("inherited SHELL must not win")
+	}
+	override := "/bin/bash"
+	if !fileExists(override) {
+		override = "/bin/sh"
+	}
+	t.Setenv("FLEET_SHELL", override)
+	if pickShell() != override {
+		t.Fatalf("FLEET_SHELL should win, got %q", pickShell())
+	}
+}
+
+func TestLiveShellStartsInHomeAndExpandsAlias(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("live shell is POSIX-only")
+	}
+	home := userHome()
+	if home == "" {
+		t.Skip("no home")
+	}
+	s := newSupervisor()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		if s.live != nil {
+			s.live.kill()
+		}
+		s.mu.Unlock()
+	})
+
+	p1, err := s.spawn("h1", "pwd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p1)
+	pwd, _ := p1.resultText()
+	got, err := filepath.EvalSymlinks(strings.TrimSpace(pwd))
+	if err != nil {
+		got = strings.TrimSpace(pwd)
+	}
+	want, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		want = home
+	}
+	if got != want && !strings.HasPrefix(got, want) && filepath.Clean(got) != filepath.Clean(want) {
+		t.Fatalf("first pwd=%q want home %q (raw %q)", got, want, pwd)
+	}
+
+	p2, err := s.spawn("a1", "alias ll='ls -ld'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p2)
+	p3, err := s.spawn("a2", "type ll")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p3)
+	typed, stderr := p3.resultText()
+	if !strings.Contains(typed, "ll") || !(strings.Contains(typed, "alias") || strings.Contains(typed, "ls -ld")) {
+		t.Fatalf("type ll should find alias, stdout=%q stderr=%q", typed, stderr)
+	}
+
+	p4, err := s.spawn("e1", "cd /tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p4)
+	p5, err := s.spawn("e2", "exit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p5)
+	p6, err := s.spawn("e3", "pwd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p6)
+	pwd2, _ := p6.resultText()
+	got2, err := filepath.EvalSymlinks(strings.TrimSpace(pwd2))
+	if err != nil {
+		got2 = strings.TrimSpace(pwd2)
+	}
+	if got2 != want && !strings.HasPrefix(got2, want) && filepath.Clean(got2) != filepath.Clean(want) {
+		t.Fatalf("after exit pwd=%q want home %q (raw %q)", got2, want, pwd2)
 	}
 }

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -17,7 +20,7 @@ import (
 const (
 	shellIdleFor     = 2 * time.Hour
 	shellReadyMark   = "__FLEET_SHELL_READY__"
-	shellReadyWait   = 3 * time.Second
+	shellReadyWait   = 10 * time.Second
 	doneMarkerPrefix = "__MCP_DONE__"
 )
 
@@ -41,21 +44,114 @@ type liveShell struct {
 	onExit   func()
 }
 
+func fileExists(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && !st.IsDir()
+}
+
+func usableShell(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" || !fileExists(path) {
+		return false
+	}
+	base := filepath.Base(path)
+	if base == "nologin" || base == "false" || base == "sync" {
+		return false
+	}
+	return true
+}
+
+func userHome() string {
+	if h, err := os.UserHomeDir(); err == nil && strings.TrimSpace(h) != "" {
+		return h
+	}
+	if h := strings.TrimSpace(os.Getenv("HOME")); h != "" {
+		return h
+	}
+	return ""
+}
+
+// pickShell is the account login shell, not inherited $SHELL from the launcher.
+// FLEET_SHELL wins when set. Darwin uses dscl; elsewhere getent/passwd.
 func pickShell() string {
-	if s := strings.TrimSpace(os.Getenv("SHELL")); s != "" {
-		if st, err := os.Stat(s); err == nil && !st.IsDir() {
-			return s
-		}
+	if s := strings.TrimSpace(os.Getenv("FLEET_SHELL")); usableShell(s) {
+		return s
 	}
-	if runtime.GOOS == "darwin" {
-		if st, err := os.Stat("/bin/zsh"); err == nil && !st.IsDir() {
-			return "/bin/zsh"
-		}
+	if s := accountLoginShell(); usableShell(s) {
+		return s
 	}
-	if st, err := os.Stat("/bin/bash"); err == nil && !st.IsDir() {
+	if runtime.GOOS == "darwin" && usableShell("/bin/zsh") {
+		return "/bin/zsh"
+	}
+	if usableShell("/bin/bash") {
 		return "/bin/bash"
 	}
 	return "/bin/sh"
+}
+
+func accountUser() string {
+	if u := strings.TrimSpace(os.Getenv("USER")); u != "" {
+		return u
+	}
+	if u := strings.TrimSpace(os.Getenv("LOGNAME")); u != "" {
+		return u
+	}
+	if u, err := user.Current(); err == nil && u != nil && u.Username != "" {
+		return u.Username
+	}
+	return ""
+}
+
+func accountLoginShell() string {
+	name := accountUser()
+	if runtime.GOOS == "darwin" && name != "" {
+		out, err := exec.Command("dscl", ".", "-read", "/Users/"+name, "UserShell").Output()
+		if err == nil {
+			line := strings.TrimSpace(string(out))
+			if i := strings.LastIndex(line, " "); i >= 0 {
+				s := strings.TrimSpace(line[i+1:])
+				if strings.HasPrefix(s, "/") {
+					return s
+				}
+			}
+		}
+	}
+	if name != "" {
+		if s := loginShellFromPasswd(name); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func loginShellFromPasswd(name string) string {
+	if out, err := exec.Command("getent", "passwd", name).Output(); err == nil {
+		if s := passwdShellField(string(out)); s != "" {
+			return s
+		}
+	}
+	f, err := os.Open("/etc/passwd")
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		if !strings.HasPrefix(line, name+":") {
+			continue
+		}
+		return passwdShellField(line)
+	}
+	return ""
+}
+
+func passwdShellField(line string) string {
+	parts := strings.Split(strings.TrimSpace(line), ":")
+	if len(parts) >= 7 {
+		return strings.TrimSpace(parts[6])
+	}
+	return ""
 }
 
 func newMarkerToken() string {
@@ -89,7 +185,10 @@ func parseDoneMarker(buf, marker string) (output, rest string, exit int, ok bool
 }
 
 func startLiveShell() (*liveShell, error) {
-	cmd := exec.Command(pickShell())
+	cmd := exec.Command(pickShell(), "-il")
+	if home := userHome(); home != "" {
+		cmd.Dir = home
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -144,7 +243,10 @@ func startLiveShell() (*liveShell, error) {
 		ls.markExit()
 	}()
 	_, _ = io.WriteString(stdin, "export PS1=\"\"\n")
-	_, _ = io.WriteString(stdin, "stty -echo 2>/dev/null\n")
+	_, _ = io.WriteString(stdin, "stty -echo 2>/dev/null || true\n")
+	// -il still needs expand_aliases on bash; setopt is the zsh equivalent.
+	_, _ = io.WriteString(stdin, "shopt -s expand_aliases 2>/dev/null || true\n")
+	_, _ = io.WriteString(stdin, "setopt aliases 2>/dev/null || true\n")
 	_, _ = io.WriteString(stdin, "printf '"+shellReadyMark+"\\n'\n")
 	select {
 	case <-readyCh:

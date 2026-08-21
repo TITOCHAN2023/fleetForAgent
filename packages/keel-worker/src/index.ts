@@ -1,14 +1,17 @@
 /**
- * KEEL hub — Cloudflare Worker + one Durable Object per device.
- * Devices connect OUT over WSS. Agents call HTTPS tools.
+ * KEEL hub — Cloudflare Worker + Durable Objects.
  *
- * Deploy later with wrangler. This preview uses the same envelope
- * in src/lib/fleet/protocol.ts against a simulated fleet.
+ * Devices (Windows / Mac / Linux agents) dial OUT over WSS to /v1/device.
+ * Operators call HTTPS: list_computers / select_computer / run / get_result.
+ * No inbound ports on the machines. No intranet overlay.
+ *
+ * Auth: set secret HUB_TOKEN (wrangler secret put HUB_TOKEN). Empty = open (dev only).
  */
 
 export interface Env {
   DEVICE: DurableObjectNamespace;
-  HUB_SIGNING_KEY: string;
+  FLEET: DurableObjectNamespace;
+  HUB_TOKEN?: string;
 }
 
 type Envelope = {
@@ -20,46 +23,62 @@ type Envelope = {
   body: Record<string, unknown>;
 };
 
-function envelope(type: string, body: Record<string, unknown> = {}, corr?: string): Envelope {
-  const env: Envelope = { v: 1, type, id: crypto.randomUUID(), t: Date.now(), body };
-  if (corr) env.corr = corr;
-  return env;
-}
+type DeviceRow = {
+  id: string;
+  name: string;
+  os: string;
+  online: boolean;
+  lastSeen: number;
+  agentVer?: string;
+};
+
+const CORS: Record<string, string> = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-headers":
+    "authorization, content-type, x-device-id, x-device-name, x-device-os, x-fleet-proto",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
+};
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+
     const url = new URL(request.url);
 
-    if (url.pathname === "/v1/device") {
-      const deviceId = request.headers.get("x-device-id");
-      const token = bearer(request);
-      if (!deviceId || !token) return json({ error: "unauthorized" }, 401);
-      const id = env.DEVICE.idFromName(deviceId);
-      return env.DEVICE.get(id).fetch(request);
+    if (url.pathname === "/" || url.pathname === "/v1/health") {
+      return json({ name: "keel-hub", v: 1, ok: true });
     }
 
+    if (url.pathname === "/v1/device") {
+      if (!authorized(request, env)) return json({ error: "unauthorized" }, 401);
+      const deviceId = deviceIdFrom(request);
+      if (!deviceId) return json({ error: "x-device-id required" }, 400);
+      const stub = env.DEVICE.get(env.DEVICE.idFromName(deviceId));
+      return stub.fetch(request);
+    }
+
+    if (!authorized(request, env)) return json({ error: "unauthorized" }, 401);
+
+    const fleet = env.FLEET.get(env.FLEET.idFromName("fleet"));
+
     if (url.pathname === "/v1/list_computers" && request.method === "POST") {
-      if (!bearer(request)) return json({ error: "unauthorized" }, 401);
-      return json({ computers: [] });
+      return fleet.fetch(new Request("https://fleet/list", { method: "GET" }));
     }
 
     if (url.pathname === "/v1/select_computer" && request.method === "POST") {
-      if (!bearer(request)) return json({ error: "unauthorized" }, 401);
       const body = (await request.json()) as { id?: string };
       if (!body.id) return json({ error: "id required" }, 400);
-      const id = env.DEVICE.idFromName(body.id);
-      return env.DEVICE.get(id).fetch(
-        new Request(new URL("/select", request.url), { method: "POST", headers: request.headers }),
-      );
+      return json({ selected: body.id });
     }
 
     if (url.pathname === "/v1/run" && request.method === "POST") {
-      if (!bearer(request)) return json({ error: "unauthorized" }, 401);
       const body = (await request.json()) as { device_id?: string; command?: string };
-      if (!body.device_id || !body.command) return json({ error: "device_id and command required" }, 400);
-      const id = env.DEVICE.idFromName(body.device_id);
-      return env.DEVICE.get(id).fetch(
-        new Request(new URL("/run", request.url), {
+      if (!body.device_id || !body.command) {
+        return json({ error: "device_id and command required" }, 400);
+      }
+      const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+      return stub.fetch(
+        new Request("https://device/run", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ command: body.command }),
@@ -67,9 +86,47 @@ export default {
       );
     }
 
-    return json({ name: "keel-hub", v: 1 }, 200);
+    if (url.pathname === "/v1/get_result" && request.method === "POST") {
+      const body = (await request.json()) as { device_id?: string; corr?: string };
+      if (!body.device_id || !body.corr) return json({ error: "device_id and corr required" }, 400);
+      const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+      return stub.fetch(new Request(`https://device/result?corr=${encodeURIComponent(body.corr)}`));
+    }
+
+    return json({ error: "not found" }, 404);
   },
 };
+
+export class FleetDO implements DurableObject {
+  ctx: DurableObjectState;
+  env: Env;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    this.ctx = ctx;
+    this.env = env;
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === "/list") {
+      const computers = await this.list();
+      return json({ computers });
+    }
+    if (url.pathname === "/upsert" && request.method === "POST") {
+      const row = (await request.json()) as DeviceRow;
+      await this.ctx.storage.put(`d:${row.id}`, row);
+      return json({ ok: true });
+    }
+    return json({ error: "not found" }, 404);
+  }
+
+  async list(): Promise<DeviceRow[]> {
+    const map = await this.ctx.storage.list<DeviceRow>({ prefix: "d:" });
+    const rows = [...map.values()];
+    rows.sort((a, b) => Number(b.online) - Number(a.online) || b.lastSeen - a.lastSeen);
+    return rows;
+  }
+}
 
 export class DeviceDO implements DurableObject {
   ctx: DurableObjectState;
@@ -83,14 +140,25 @@ export class DeviceDO implements DurableObject {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+
     if (request.headers.get("Upgrade") === "websocket") {
       const pair = new WebSocketPair();
       this.ctx.acceptWebSocket(pair[1]);
       for (const extra of this.ctx.getWebSockets()) {
         if (extra !== pair[1]) extra.close(1012, "replaced");
       }
-      pair[1].serializeAttachment({ connectedAt: Date.now() });
+      const id = deviceIdFrom(request) ?? "unknown";
+      pair[1].serializeAttachment({
+        deviceId: id,
+        name: request.headers.get("x-device-name") ?? id,
+        os: request.headers.get("x-device-os") ?? "linux",
+      });
       pair[1].send(JSON.stringify(envelope("hello_ok", { heartbeat_s: 25 })));
+      await this.mark(id, {
+        name: request.headers.get("x-device-name") ?? id,
+        os: request.headers.get("x-device-os") ?? "linux",
+        online: true,
+      });
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
 
@@ -99,9 +167,15 @@ export class DeviceDO implements DurableObject {
       if (sockets.length === 0) return json({ error: "offline" }, 409);
       const body = (await request.json()) as { command: string };
       const corr = crypto.randomUUID();
-      const msg = envelope("run", { command: body.command, timeout_ms: 25000 }, corr);
-      sockets[0]!.send(JSON.stringify(msg));
+      sockets[0]!.send(JSON.stringify(envelope("run", { command: body.command, timeout_ms: 25000 }, corr)));
       return json({ corr, status: "running" });
+    }
+
+    if (url.pathname === "/result") {
+      const corr = url.searchParams.get("corr") ?? "";
+      const row = await this.ctx.storage.get<Record<string, unknown>>(`res:${corr}`);
+      if (!row) return json({ status: "pending", corr });
+      return json({ status: "done", corr, ...row });
     }
 
     return json({ ok: true });
@@ -119,14 +193,68 @@ export class DeviceDO implements DurableObject {
       ws.close(1003, "bad proto");
       return;
     }
-    if (parsed.type === "pong" || parsed.type === "hello" || parsed.type === "result" || parsed.type === "chunk") {
+    const att = (ws.deserializeAttachment() ?? {}) as { deviceId?: string; name?: string; os?: string };
+
+    if (parsed.type === "hello") {
+      const os = String(parsed.body.os ?? att.os ?? "linux");
+      const name = String(parsed.body.hostname ?? att.name ?? att.deviceId ?? "device");
+      await this.mark(att.deviceId ?? "unknown", {
+        name,
+        os,
+        online: true,
+        agentVer: String(parsed.body.agent_ver ?? ""),
+      });
       return;
+    }
+
+    if (parsed.type === "result" && parsed.corr) {
+      await this.ctx.storage.put(`res:${parsed.corr}`, {
+        ok: parsed.body.ok ?? false,
+        exit_code: parsed.body.exit_code ?? 1,
+        error: parsed.body.error ?? "",
+        stdout: parsed.body.stdout ?? "",
+        t: parsed.t,
+      });
     }
   }
 
-  async webSocketClose() {
-    /* presence drops when no sockets remain */
+  async webSocketClose(ws: WebSocket) {
+    const att = (ws.deserializeAttachment() ?? {}) as { deviceId?: string; name?: string; os?: string };
+    if (att.deviceId) {
+      await this.mark(att.deviceId, { name: att.name ?? att.deviceId, os: att.os ?? "linux", online: false });
+    }
   }
+
+  private fleet() {
+    return this.env.FLEET.get(this.env.FLEET.idFromName("fleet"));
+  }
+
+  private async mark(
+    id: string,
+    extra: { name: string; os: string; online: boolean; agentVer?: string },
+  ) {
+    const row: DeviceRow = {
+      id,
+      name: extra.name,
+      os: extra.os,
+      online: extra.online,
+      lastSeen: Date.now(),
+      agentVer: extra.agentVer,
+    };
+    await this.fleet().fetch(
+      new Request("https://fleet/upsert", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(row),
+      }),
+    );
+  }
+}
+
+function authorized(request: Request, env: Env): boolean {
+  const need = env.HUB_TOKEN?.trim();
+  if (!need) return true;
+  return bearer(request) === need;
 }
 
 function bearer(request: Request) {
@@ -134,9 +262,22 @@ function bearer(request: Request) {
   return h.startsWith("Bearer ") ? h.slice(7) : "";
 }
 
+function deviceIdFrom(request: Request): string | null {
+  const header = request.headers.get("x-device-id")?.trim();
+  if (header) return header;
+  const q = new URL(request.url).searchParams.get("id")?.trim();
+  return q || null;
+}
+
+function envelope(type: string, body: Record<string, unknown> = {}, corr?: string): Envelope {
+  const env: Envelope = { v: 1, type, id: crypto.randomUUID(), t: Date.now(), body };
+  if (corr) env.corr = corr;
+  return env;
+}
+
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...CORS },
   });
 }

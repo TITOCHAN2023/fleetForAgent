@@ -12,8 +12,18 @@ dist
 screenshots
 artifacts
 packages/keel-agent/dist
+packages/keel-worker/.dev.vars
 coverage
-
 .grok/
 AGENTS.md
 AGENTS.project.md
+
+# Agent installers live on GitHub Releases
+public/dl/*.exe
+public/dl/*.dmg
+public/dl/*.zip
+public/dl/*.tar.gz
+public/releases/*.exe
+public/releases/*.dmg
+public/releases/*.zip
+public/releases/*.tar.gz

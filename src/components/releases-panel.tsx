@@ -3,6 +3,8 @@ import { Button } from "@/components/ui/button";
 import { useI18n } from "@/lib/i18n/use-i18n";
 import type { MessageKey } from "@/lib/i18n/messages";
 
+const GH = "https://github.com/TITOCHAN2023/fleetForAgent/releases/latest/download";
+
 const BUILDS: {
   id: string;
   os: MessageKey;
@@ -23,6 +25,15 @@ export function ReleasesPanel() {
       <section className="rounded-xl border border-border bg-surface p-5">
         <h2 className="text-base font-medium">{t("rel.title")}</h2>
         <p className="mt-2 max-w-2xl text-sm text-muted">{t("rel.body")}</p>
+        <p className="mt-3 text-sm">
+          <a className="underline underline-offset-4" href="https://github.com/TITOCHAN2023/fleetForAgent/releases/latest">
+            GitHub Releases
+          </a>
+          <span className="text-subtle"> · </span>
+          <a className="underline underline-offset-4" href="https://github.com/TITOCHAN2023/fleetForAgent/blob/main/docs/DEPLOY.md">
+            {t("rel.deploy")}
+          </a>
+        </p>
         <ol className="mt-5 max-w-xl list-decimal space-y-2 pl-5 text-sm text-muted">
           <li>{t("rel.s1")}</li>
           <li>{t("rel.s2")}</li>
@@ -44,13 +55,13 @@ export function ReleasesPanel() {
               <p className="mt-2 font-mono text-xs text-subtle">{b.file}</p>
               <div className="mt-4 flex flex-wrap gap-2">
                 <Button asChild variant="secondary">
-                  <a href={`/dl/${b.file}`} download>
+                  <a href={`${GH}/${b.file}`}>
                     {t("rel.download")}
                   </a>
                 </Button>
                 {b.id.startsWith("mac") && (
                   <Button asChild variant="ghost">
-                    <a href={`/dl/${b.file.replace(".dmg", ".zip")}`} download>
+                    <a href={`${GH}/${b.file.replace(".dmg", ".zip")}`}>
                       zip
                     </a>
                   </Button>

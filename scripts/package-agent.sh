@@ -61,7 +61,17 @@ PLIST
   elif command -v mkisofs >/dev/null 2>&1; then
     mkisofs -quiet -V "Keel Agent" -r -apple -o "$dmg" "$stage"
   else
-    (cd "$stage" && zip -r "$OUT/KeelAgent-macos-${arch}.zip" "Keel Agent.app")
+    python3 - <<PY
+import zipfile, os
+from pathlib import Path
+stage = Path("$stage")
+out = Path("$OUT/KeelAgent-macos-${arch}.zip")
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for p in (stage / "Keel Agent.app").rglob("*"):
+        if p.is_file():
+            z.write(p, p.relative_to(stage).as_posix())
+print("zip", out)
+PY
     # fallback dmg = zip payload with .dmg name so the download link exists
     cp "$OUT/KeelAgent-macos-${arch}.zip" "$dmg"
   fi

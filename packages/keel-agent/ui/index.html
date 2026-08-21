@@ -50,8 +50,11 @@
           <button id="enabled">On</button>
         </div>
         <div class="row" style="margin-top:12px">
-          <input id="hub" placeholder="keel.example.workers.dev" />
+          <input id="hub" placeholder="keel-hub.example.workers.dev" />
           <button id="connect" class="primary">Connect</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <input id="token" placeholder="Hub token (optional)" autocomplete="off" />
         </div>
         <p id="err" class="muted"></p>
       </section>
@@ -136,6 +139,7 @@
         $("conn").className = "badge " + conn[1];
         $("enabled").textContent = s.enabled ? t.on : t.offsw;
         if (s.hubInput) $("hub").value = s.hubInput;
+        if (s.hubToken) $("token").value = s.hubToken;
         $("err").textContent = s.error || "";
         document.querySelectorAll(".level").forEach((b) => b.classList.toggle("on", b.dataset.permit === s.permit));
         if (s.pending) { $("pendingCard").style.display = "block"; $("pendingCmd").textContent = s.pending.command; }
@@ -146,7 +150,7 @@
         const s = await api("/api/state");
         render(await api("/api/enabled", { enabled: !s.enabled }));
       };
-      $("connect").onclick = async () => render(await api("/api/connect", { hub: $("hub").value }));
+      $("connect").onclick = async () => render(await api("/api/connect", { hub: $("hub").value, token: $("token").value }));
       document.querySelectorAll(".level").forEach((b) => {
         b.onclick = async () => render(await api("/api/permit", { permit: b.dataset.permit }));
       });

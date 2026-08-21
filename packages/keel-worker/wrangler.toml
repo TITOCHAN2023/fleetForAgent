@@ -2,9 +2,18 @@ name = "keel-hub"
 main = "src/index.ts"
 compatibility_date = "2026-04-07"
 
-[durable_objects]
-bindings = [{ name = "DEVICE", class_name = "DeviceDO" }]
+# Optional shared token. Leave unset for a first bring-up, then:
+#   npx wrangler secret put HUB_TOKEN
+# [vars] must not hold the token.
+
+[[durable_objects.bindings]]
+name = "DEVICE"
+class_name = "DeviceDO"
+
+[[durable_objects.bindings]]
+name = "FLEET"
+class_name = "FleetDO"
 
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["DeviceDO"]
+new_sqlite_classes = ["DeviceDO", "FleetDO"]

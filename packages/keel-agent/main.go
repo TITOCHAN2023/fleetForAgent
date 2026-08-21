@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -58,14 +60,16 @@ type Envelope struct {
 }
 
 type State struct {
-	Enabled  bool     `json:"enabled"`
-	Permit   Permit   `json:"permit"`
-	HubInput string   `json:"hubInput"`
-	WSS      string   `json:"wss"`
-	Conn     string   `json:"conn"`
-	Error    string   `json:"error"`
+	Enabled  bool      `json:"enabled"`
+	Permit   Permit    `json:"permit"`
+	HubInput string    `json:"hubInput"`
+	HubToken string    `json:"hubToken"`
+	DeviceID string    `json:"deviceId"`
+	WSS      string    `json:"wss"`
+	Conn     string    `json:"conn"`
+	Error    string    `json:"error"`
 	Logs     []LogLine `json:"logs"`
-	Pending  *Pending `json:"pending"`
+	Pending  *Pending  `json:"pending"`
 }
 
 type Agent struct {
@@ -73,6 +77,8 @@ type Agent struct {
 	enabled  bool
 	permit   Permit
 	hubInput string
+	hubToken string
+	deviceID string
 	wss      string
 	conn     string
 	err      string
@@ -101,6 +107,8 @@ func (a *Agent) snapshot() State {
 		Enabled:  a.enabled,
 		Permit:   a.permit,
 		HubInput: a.hubInput,
+		HubToken: a.hubToken,
+		DeviceID: a.deviceID,
 		WSS:      a.wss,
 		Conn:     a.conn,
 		Error:    a.err,
@@ -114,6 +122,8 @@ func (a *Agent) save() {
 		"enabled":  a.enabled,
 		"permit":   a.permit,
 		"hubInput": a.hubInput,
+		"hubToken": a.hubToken,
+		"deviceId": a.deviceID,
 	}, "", "  ")
 	_ = os.WriteFile(a.cfgPath, b, 0o600)
 }
@@ -122,20 +132,30 @@ func (a *Agent) load() {
 	b, err := os.ReadFile(a.cfgPath)
 	if err != nil {
 		a.permit = PermitAsk
+		a.deviceID = newDeviceID()
+		a.save()
 		return
 	}
 	var cfg struct {
 		Enabled  bool   `json:"enabled"`
 		Permit   Permit `json:"permit"`
 		HubInput string `json:"hubInput"`
+		HubToken string `json:"hubToken"`
+		DeviceID string `json:"deviceId"`
 	}
 	if json.Unmarshal(b, &cfg) == nil {
 		a.enabled = cfg.Enabled
 		a.permit = cfg.Permit
 		a.hubInput = cfg.HubInput
+		a.hubToken = cfg.HubToken
+		a.deviceID = cfg.DeviceID
 	}
 	if a.permit == "" {
 		a.permit = PermitAsk
+	}
+	if a.deviceID == "" {
+		a.deviceID = newDeviceID()
+		a.save()
 	}
 }
 
@@ -198,19 +218,32 @@ func (a *Agent) connect(hub string) error {
 	a.wss = wss
 	a.conn = "connecting"
 	a.err = ""
+	if a.deviceID == "" {
+		a.deviceID = newDeviceID()
+	}
 	a.log("info", "connecting "+wss)
 	if a.cancel != nil {
 		a.cancel()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
+	headers := map[string][]string{
+		"X-Fleet-Proto": {"1"},
+		"X-Device-Id":   {a.deviceID},
+		"X-Device-Name": {hostname()},
+		"X-Device-Os":   {osKind()},
+	}
+	tok := a.hubToken
+	if tok == "" {
+		tok = os.Getenv("KEEL_HUB_TOKEN")
+	}
+	if tok != "" {
+		headers["Authorization"] = []string{"Bearer " + tok}
+	}
+	deviceID := a.deviceID
 	a.mu.Unlock()
 
-	c, _, err := websocket.Dial(ctx, wss, &websocket.DialOptions{
-		HTTPHeader: map[string][]string{
-			"X-Fleet-Proto": {"1"},
-		},
-	})
+	c, _, err := websocket.Dial(ctx, wss, &websocket.DialOptions{HTTPHeader: headers})
 	a.mu.Lock()
 	if err != nil {
 		a.conn = "error"
@@ -222,24 +255,37 @@ func (a *Agent) connect(hub string) error {
 	}
 	a.ws = c
 	a.conn = "online"
-	a.log("info", "online")
+	a.log("info", "online id="+deviceID)
 	a.save()
 	hello := Envelope{V: 1, Type: "hello", ID: fmt.Sprintf("%d", time.Now().UnixNano()), T: time.Now().UnixMilli(), Body: map[string]any{
-		"os": map[string]string{"darwin": "darwin", "windows": "windows"}[runtime.GOOS],
+		"os":        osKind(),
 		"arch":      runtime.GOARCH,
 		"hostname":  hostname(),
 		"caps":      []string{"shell"},
 		"agent_ver": "0.2.0",
 		"permit":    string(a.permit),
 		"egress":    "internet",
+		"device_id": deviceID,
 	}}
-	if hello.Body["os"] == "" {
-		hello.Body["os"] = "linux"
-	}
 	a.mu.Unlock()
 	_ = wsjson.Write(ctx, c, hello)
 	go a.readLoop(ctx, c)
 	return nil
+}
+
+func osKind() string {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		return runtime.GOOS
+	}
+	return "linux"
+}
+
+func newDeviceID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
 }
 
 func hostname() string {
@@ -424,9 +470,18 @@ func main() {
 	})
 	mux.HandleFunc("/api/connect", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Hub string `json:"hub"`
+			Hub   string `json:"hub"`
+			Token string `json:"token"`
 		}
 		_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
+		if body.Token != "" || body.Hub != "" {
+			agent.mu.Lock()
+			if body.Token != "" {
+				agent.hubToken = body.Token
+			}
+			agent.save()
+			agent.mu.Unlock()
+		}
 		go func() { _ = agent.connect(body.Hub) }()
 		time.Sleep(80 * time.Millisecond)
 		agent.mu.Lock()

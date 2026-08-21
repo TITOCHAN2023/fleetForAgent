@@ -20,11 +20,36 @@ func waitPaneDone(t *testing.T, p *pane) {
 	t.Fatalf("pane %s still running: %q", p.corr, p.command)
 }
 
-func TestParseDoneMarker(t *testing.T) {
-	marker := "__MCP_DONE__abc-123__"
-	out, rest, code, ok := parseDoneMarker("hello\n"+marker+"0\nmore\n", marker)
+func waitPaneTypable(t *testing.T, p *pane) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		p.mu.Lock()
+		w := p.stdin
+		running := p.running
+		p.mu.Unlock()
+		if running && w != nil {
+			time.Sleep(150 * time.Millisecond)
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pane %s never became typable", p.corr)
+}
+
+func assertNoCompletion(t *testing.T, out, stderr string) {
+	t.Helper()
+	for _, s := range []string{out, stderr} {
+		if strings.Contains(s, promptPrefix) || strings.Contains(s, doneMarkerPrefix) {
+			t.Fatalf("completion text leaked: stdout=%q stderr=%q", out, stderr)
+		}
+	}
+}
+
+func TestParsePrompt(t *testing.T) {
+	out, rest, code, ok := parsePrompt("hello\n" + promptPrefix + "0\nmore\n")
 	if !ok {
-		t.Fatal("expected marker")
+		t.Fatal("expected prompt")
 	}
 	if out != "hello\n" {
 		t.Fatalf("output=%q", out)
@@ -35,26 +60,23 @@ func TestParseDoneMarker(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code=%d", code)
 	}
-	_, _, _, ok = parseDoneMarker("hello "+marker+"1", marker)
+	_, _, _, ok = parsePrompt("hello " + promptPrefix + "1")
 	if ok {
 		t.Fatal("incomplete (no newline) must not parse")
 	}
-	out, _, code, ok = parseDoneMarker("oops\n"+marker+"7\n", marker)
+	out, _, code, ok = parsePrompt("oops\n" + promptPrefix + "7\n")
 	if !ok || code != 7 || out != "oops\n" {
 		t.Fatalf("exit 7: ok=%v code=%d out=%q", ok, code, out)
 	}
-	echoed := "printf '" + marker + "%d\\n' $?\n" + marker + "0\n"
-	out, rest, code, ok = parseDoneMarker(echoed, marker)
+	echoed := "PS1='" + promptPrefix + "$?'\n" + promptPrefix + "0\n"
+	out, rest, code, ok = parsePrompt(echoed)
 	if !ok || code != 0 {
-		t.Fatalf("echoed printf source must be skipped: ok=%v code=%d out=%q", ok, code, out)
+		t.Fatalf("PS1 assignment must be skipped: ok=%v code=%d out=%q", ok, code, out)
 	}
-	if strings.Contains(out, marker+"0") {
-		t.Fatalf("marker leaked into output: %q", out)
+	if strings.Contains(out, promptPrefix+"0") {
+		t.Fatalf("prompt leaked into output: %q", out)
 	}
-	if rest != "" {
-		t.Fatalf("rest=%q", rest)
-	}
-	out, _, code, ok = parseDoneMarker("bar"+marker+"0\n", marker)
+	out, _, code, ok = parsePrompt("bar" + promptPrefix + "0\n")
 	if !ok || code != 0 || out != "bar" {
 		t.Fatalf("no-newline output: ok=%v code=%d out=%q", ok, code, out)
 	}
@@ -78,19 +100,19 @@ func TestExitCommandCode(t *testing.T) {
 }
 
 func TestHasReadyLine(t *testing.T) {
-	if hasReadyLine("printf '%s\\n' '" + shellReadyMark + "'\n") {
-		t.Fatal("echoed printf must not count as ready")
+	if hasReadyLine("PS1='" + promptPrefix + "$?'\n") {
+		t.Fatal("PS1 assignment must not count as ready")
 	}
-	if !hasReadyLine("noise\n" + shellReadyMark + "\n") {
-		t.Fatal("expected exact ready line")
+	if !hasReadyLine("noise\n" + promptPrefix + "0\n") {
+		t.Fatal("expected prompt ready line")
 	}
 }
 
-func TestStripDoneLines(t *testing.T) {
-	in := "keep\nprintf '" + doneMarkerPrefix + "abc__%d\\n' $?\nkeep2\n"
-	got := stripDoneLines(in)
-	if strings.Contains(got, doneMarkerPrefix) {
-		t.Fatalf("marker leaked: %q", got)
+func TestStripCompletionText(t *testing.T) {
+	in := "keep\n" + promptPrefix + "0\nkeep2\n"
+	got := stripCompletionText(in)
+	if strings.Contains(got, promptPrefix) {
+		t.Fatalf("prompt leaked: %q", got)
 	}
 	if !strings.Contains(got, "keep") || !strings.Contains(got, "keep2") {
 		t.Fatalf("stripped too much: %q", got)
@@ -125,9 +147,7 @@ func TestLiveShellPersistsEnvAndCwd(t *testing.T) {
 	if strings.TrimSpace(out) != "bar" {
 		t.Fatalf("env persist: stdout=%q stderr=%q", out, stderr)
 	}
-	if strings.Contains(out, doneMarkerPrefix) || strings.Contains(stderr, doneMarkerPrefix) {
-		t.Fatalf("marker leaked: stdout=%q stderr=%q", out, stderr)
-	}
+	assertNoCompletion(t, out, stderr)
 
 	p3, err := s.spawn("c3", "cd /tmp")
 	if err != nil {
@@ -214,9 +234,7 @@ func TestLiveShellStartsInHomeAndExpandsAlias(t *testing.T) {
 	if !strings.Contains(typed, "ll") || !(strings.Contains(typed, "alias") || strings.Contains(typed, "ls -ld")) {
 		t.Fatalf("type ll should find alias, stdout=%q stderr=%q", typed, stderr)
 	}
-	if strings.Contains(typed, doneMarkerPrefix) || strings.Contains(stderr, doneMarkerPrefix) {
-		t.Fatalf("marker leaked: stdout=%q stderr=%q", typed, stderr)
-	}
+	assertNoCompletion(t, typed, stderr)
 
 	p4, err := s.spawn("e1", "cd /tmp")
 	if err != nil {
@@ -271,9 +289,7 @@ func TestLiveShellEchoHiHasCleanStreams(t *testing.T) {
 	if strings.TrimSpace(stderr) != "" {
 		t.Fatalf("stderr should be empty, got %q", stderr)
 	}
-	if strings.Contains(out, doneMarkerPrefix) || strings.Contains(stderr, doneMarkerPrefix) {
-		t.Fatalf("marker leaked: stdout=%q stderr=%q", out, stderr)
-	}
+	assertNoCompletion(t, out, stderr)
 	if strings.Contains(out, "echo hi") || strings.Contains(stderr, "echo hi") {
 		t.Fatalf("typed command echoed: stdout=%q stderr=%q", out, stderr)
 	}
@@ -290,7 +306,72 @@ func TestLiveShellEchoHiHasCleanStreams(t *testing.T) {
 	if !strings.Contains(err2, "err") {
 		t.Fatalf("stderr=%q want err", err2)
 	}
-	if strings.Contains(out2, doneMarkerPrefix) || strings.Contains(err2, doneMarkerPrefix) {
-		t.Fatalf("marker leaked: stdout=%q stderr=%q", out2, err2)
+	assertNoCompletion(t, out2, err2)
+}
+
+func TestLiveShellReadThenType(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("live shell is POSIX-only")
 	}
+	s := newSupervisor()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		if s.live != nil {
+			s.live.kill()
+		}
+		s.mu.Unlock()
+	})
+
+	p, err := s.spawn("rd1", `read -r x; printf 'got=%s\n' "$x"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneTypable(t, p)
+	if !p.stillRunning() {
+		out, stderr := p.resultText()
+		t.Fatalf("read finished before type: stdout=%q stderr=%q", out, stderr)
+	}
+	if err := p.typeKeys("typed_ok\n"); err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p)
+	out, stderr := p.resultText()
+	if strings.TrimSpace(out) != "got=typed_ok" {
+		t.Fatalf("stdout=%q want got=typed_ok (stderr=%q)", out, stderr)
+	}
+	if strings.Contains(out, "got=printf") || strings.Contains(out, doneMarkerPrefix) {
+		t.Fatalf("read consumed a completion printf: %q", out)
+	}
+	assertNoCompletion(t, out, stderr)
+}
+
+func TestLiveShellTTYAndTerm(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("live shell is POSIX-only")
+	}
+	s := newSupervisor()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		if s.live != nil {
+			s.live.kill()
+		}
+		s.mu.Unlock()
+	})
+
+	p, err := s.spawn("tty1", `tty; printf 'TERM=%s\n' "$TERM"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p)
+	out, stderr := p.resultText()
+	if strings.Contains(out, "not a tty") {
+		t.Fatalf("tty should be a real PTY, got %q (stderr=%q)", out, stderr)
+	}
+	if !strings.Contains(out, "/dev/") {
+		t.Fatalf("tty path missing: %q", out)
+	}
+	if !strings.Contains(out, "TERM=xterm-256color") {
+		t.Fatalf("TERM=%q want xterm-256color", out)
+	}
+	assertNoCompletion(t, out, stderr)
 }

@@ -6,22 +6,30 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/creack/pty"
 )
 
 // startLiveShell opens an interactive login shell on a real PTY (ssh-mcp-sessions
-// conn.shell). stty -echo then actually applies, so typed commands and the
-// marker are not echoed. stderr stays a pipe so command stderr is still split.
+// conn.shell). TERM is xterm-256color so tty/isatty and Codex doctor see a
+// real terminal. stty -echo applies. stderr stays a pipe so command stderr
+// is still split. Completion is the unique PS1, not a printf on stdin.
 func startLiveShell() (*liveShell, error) {
 	cmd := exec.Command(pickShell(), "-il")
 	if home := userHome(); home != "" {
 		cmd.Dir = home
 	}
-	if os.Getenv("TERM") == "" {
-		cmd.Env = append(os.Environ(), "TERM=xterm")
+	env := os.Environ()
+	out := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if strings.HasPrefix(e, "TERM=") {
+			continue
+		}
+		out = append(out, e)
 	}
+	cmd.Env = append(out, "TERM=xterm-256color")
 
 	errR, errW, err := os.Pipe()
 	if err != nil {

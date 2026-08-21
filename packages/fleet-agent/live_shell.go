@@ -2,8 +2,6 @@ package main
 
 import (
 	"bufio"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -19,15 +17,15 @@ import (
 
 const (
 	shellIdleFor     = 2 * time.Hour
-	shellReadyMark   = "__FLEET_SHELL_READY__"
 	shellReadyWait   = 10 * time.Second
-	doneMarkerPrefix = "__MCP_DONE__"
+	promptPrefix     = "__FLEET_PROMPT__"
+	doneMarkerPrefix = "__MCP_DONE__" // legacy; never written on the live path
 )
 
 type liveJob struct {
-	pane    *pane
-	command string
-	marker  string
+	pane      *pane
+	command   string
+	finishing bool
 }
 
 type liveShell struct {
@@ -35,6 +33,7 @@ type liveShell struct {
 	stdin    io.WriteCloser
 	mu       sync.Mutex
 	rawOut   string
+	rawErr   string
 	ready    bool
 	exited   bool
 	lastUsed time.Time
@@ -154,19 +153,14 @@ func passwdShellField(line string) string {
 	return ""
 }
 
-func newMarkerToken() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("%d", time.Now().UnixNano())
-	}
-	return hex.EncodeToString(b)
+// parsePrompt finds PS1 '__FLEET_PROMPT__<exit>\n'. Hits followed by
+// non-digits (an assignment echoing $?) are skipped. The prompt may sit on
+// the same line as command output (printf '%s' with no trailing newline).
+func parsePrompt(buf string) (output, rest string, exit int, ok bool) {
+	return parseCompletion(buf, promptPrefix)
 }
 
-// parseDoneMarker finds printf '__MCP_DONE__{uuid}__%d\n' $? output.
-// marker is "__MCP_DONE__{uuid}__" then digits and newline. Hits followed by
-// non-digits (the echoed printf '%d' source) are skipped. The marker may sit
-// on the same line as command output (printf '%s' with no trailing newline).
-func parseDoneMarker(buf, marker string) (output, rest string, exit int, ok bool) {
+func parseCompletion(buf, marker string) (output, rest string, exit int, ok bool) {
 	if marker == "" {
 		return "", buf, 0, false
 	}
@@ -192,23 +186,30 @@ func parseDoneMarker(buf, marker string) (output, rest string, exit int, ok bool
 	}
 }
 
-func stripReadyNoise(s string) string {
-	if !strings.Contains(s, shellReadyMark) {
-		return s
-	}
-	s = strings.ReplaceAll(s, shellReadyMark+"\n", "")
-	s = strings.ReplaceAll(s, shellReadyMark, "")
+func stripTermNoise(s string) string {
+	s = strings.ReplaceAll(s, "\x1b[?2004h", "")
+	s = strings.ReplaceAll(s, "\x1b[?2004l", "")
+	s = strings.ReplaceAll(s, "\x1b[?2004H", "")
+	s = strings.ReplaceAll(s, "\x1b[?2004L", "")
 	return s
 }
 
-func stripDoneLines(s string) string {
-	if !strings.Contains(s, doneMarkerPrefix) {
+func stripCompletionText(s string) string {
+	s = stripTermNoise(s)
+	for {
+		out, rest, _, ok := parsePrompt(s)
+		if !ok {
+			break
+		}
+		s = out + rest
+	}
+	if !strings.Contains(s, promptPrefix) && !strings.Contains(s, doneMarkerPrefix) {
 		return s
 	}
 	lines := strings.Split(s, "\n")
 	keep := make([]string, 0, len(lines))
 	for _, line := range lines {
-		if strings.Contains(line, doneMarkerPrefix) {
+		if strings.Contains(line, promptPrefix) || strings.Contains(line, doneMarkerPrefix) {
 			continue
 		}
 		keep = append(keep, line)
@@ -238,34 +239,38 @@ func exitCommandCode(command string) (int, bool) {
 }
 
 func hasReadyLine(buf string) bool {
-	s := strings.ReplaceAll(buf, "\r\n", "\n")
-	s = strings.ReplaceAll(s, "\r", "\n")
-	for _, line := range strings.Split(s, "\n") {
-		if line == shellReadyMark {
-			return true
-		}
+	_, _, _, ok := parsePrompt(buf)
+	return ok
+}
+
+func (ls *liveShell) ingestReady(chunk string, readyCh chan struct{}) bool {
+	ls.mu.Lock()
+	if ls.ready {
+		ls.mu.Unlock()
+		return false
 	}
-	return false
+	ls.rawOut += chunk
+	if hasReadyLine(ls.rawOut) {
+		ls.ready = true
+		ls.rawOut = ""
+		ls.rawErr = ""
+		ls.mu.Unlock()
+		select {
+		case readyCh <- struct{}{}:
+		default:
+		}
+		return true
+	}
+	ls.mu.Unlock()
+	return true
 }
 
 func beginLiveIO(ls *liveShell, stdout, stderr io.Reader, readyCh chan struct{}) {
 	go drainLive(stdout, func(chunk string) {
-		ls.mu.Lock()
-		if !ls.ready {
-			ls.rawOut += chunk
-			if hasReadyLine(ls.rawOut) {
-				ls.ready = true
-				ls.rawOut = ""
-				ls.mu.Unlock()
-				select {
-				case readyCh <- struct{}{}:
-				default:
-				}
-				return
-			}
-			ls.mu.Unlock()
+		if ls.ingestReady(chunk, readyCh) {
 			return
 		}
+		ls.mu.Lock()
 		cb := ls.onStdout
 		ls.mu.Unlock()
 		if cb != nil {
@@ -273,31 +278,44 @@ func beginLiveIO(ls *liveShell, stdout, stderr io.Reader, readyCh chan struct{})
 		}
 	}, func() { ls.markExit() })
 	go drainLive(stderr, func(chunk string) {
+		if ls.ingestReady(chunk, readyCh) {
+			return
+		}
 		ls.mu.Lock()
 		cb := ls.onStderr
-		ready := ls.ready
 		ls.mu.Unlock()
-		if ready && cb != nil {
+		if cb != nil {
 			cb(chunk)
 		}
 	}, nil)
 }
 
 func waitLiveReady(ls *liveShell, stdin io.Writer, readyCh <-chan struct{}) {
-	_, _ = io.WriteString(stdin, "export PS1=\"\"\n")
-	_, _ = io.WriteString(stdin, "stty -echo 2>/dev/null || true\n")
-	// -il still needs expand_aliases on bash; setopt is the zsh equivalent.
-	_, _ = io.WriteString(stdin, "shopt -s expand_aliases 2>/dev/null || true\n")
-	_, _ = io.WriteString(stdin, "setopt aliases 2>/dev/null || true\n")
-	_, _ = io.WriteString(stdin, "printf '%s\\n' '"+shellReadyMark+"'\n")
+	// One compound command so bash/zsh print a single completion prompt.
+	// bash: \n in PS1 is a prompt escape. zsh: PROMPT=$'...%?\n'.
+	_, _ = io.WriteString(stdin, "stty -echo 2>/dev/null || true; "+
+		"bind 'set enable-bracketed-paste off' 2>/dev/null || true; "+
+		"shopt -s expand_aliases 2>/dev/null || true; "+
+		"setopt aliases 2>/dev/null || true; "+
+		"unset PROMPT_COMMAND; PROMPT_COMMAND=; "+
+		"precmd() { :; }; "+
+		"PS1='"+promptPrefix+"$?\\n'; "+
+		"PROMPT=$'"+promptPrefix+"%?\\n'\n")
 	select {
 	case <-readyCh:
 	case <-time.After(shellReadyWait):
 		ls.mu.Lock()
 		ls.ready = true
 		ls.rawOut = ""
+		ls.rawErr = ""
 		ls.mu.Unlock()
 	}
+	// Drop a trailing extra prompt before the first run is written.
+	time.Sleep(50 * time.Millisecond)
+	ls.mu.Lock()
+	ls.rawOut = ""
+	ls.rawErr = ""
+	ls.mu.Unlock()
 }
 
 func drainLive(r io.Reader, onChunk func(string), onEOF func()) {
@@ -457,6 +475,7 @@ func (s *supervisor) ensureLive() error {
 	next.onStdout = func(chunk string) { s.onLiveStdout(chunk) }
 	next.onStderr = func(chunk string) { s.onLiveStderr(chunk) }
 	next.onExit = func() { s.onLiveExit() }
+	time.Sleep(50 * time.Millisecond)
 	s.mu.Lock()
 	s.live = next
 	s.mu.Unlock()
@@ -470,8 +489,6 @@ func (s *supervisor) startLiveJob(job *liveJob) error {
 	if live == nil {
 		return fmt.Errorf("live shell gone")
 	}
-	token := newMarkerToken()
-	job.marker = doneMarkerPrefix + token + "__"
 	cmd := job.command
 	if !strings.HasSuffix(cmd, "\n") {
 		cmd += "\n"
@@ -479,6 +496,7 @@ func (s *supervisor) startLiveJob(job *liveJob) error {
 	live.touch()
 	live.mu.Lock()
 	live.rawOut = ""
+	live.rawErr = ""
 	live.mu.Unlock()
 	s.mu.Lock()
 	s.pending = job
@@ -488,6 +506,7 @@ func (s *supervisor) startLiveJob(job *liveJob) error {
 		job.pane.mu.Unlock()
 	}
 	s.mu.Unlock()
+	// Only the user command. Completion is the PS1 prompt, not a printf on stdin.
 	if err := live.write(cmd); err != nil {
 		s.mu.Lock()
 		if s.pending == job {
@@ -496,21 +515,20 @@ func (s *supervisor) startLiveJob(job *liveJob) error {
 		s.mu.Unlock()
 		return err
 	}
-	// `exit` closes the login shell before the marker can run; wait for onLiveExit.
-	if _, isExit := exitCommandCode(job.command); !isExit {
-		if err := live.write(fmt.Sprintf("printf '%s%%d\\n' $?\n", job.marker)); err != nil {
-			s.mu.Lock()
-			if s.pending == job {
-				s.pending = nil
-			}
-			s.mu.Unlock()
-			return err
-		}
-	}
 	return nil
 }
 
 func (s *supervisor) onLiveStdout(chunk string) {
+	s.feedLive("stdout", chunk)
+}
+
+func (s *supervisor) onLiveStderr(chunk string) {
+	s.feedLive("stderr", chunk)
+}
+
+// feedLive records a chunk and completes the job when PS1 reappears.
+// bash/zsh write the prompt to stderr, so both streams must be scanned.
+func (s *supervisor) feedLive(which, chunk string) {
 	s.mu.Lock()
 	job := s.pending
 	live := s.live
@@ -519,38 +537,71 @@ func (s *supervisor) onLiveStdout(chunk string) {
 		return
 	}
 	live.mu.Lock()
-	live.rawOut += chunk
-	out, rest, code, ok := parseDoneMarker(live.rawOut, job.marker)
+	if job.finishing {
+		if which != "stderr" {
+			live.rawOut += chunk
+		} else {
+			live.rawErr += chunk
+		}
+		live.mu.Unlock()
+		return
+	}
+	if which == "stderr" {
+		live.rawErr += chunk
+	} else {
+		live.rawOut += chunk
+	}
+	out, rest, code, ok := parsePrompt(live.rawOut)
+	stderrBefore := live.rawErr
+	fromStderr := false
 	if ok {
 		live.rawOut = rest
+	} else if eout, erest, ecode, eok := parsePrompt(live.rawErr); eok {
+		ok = true
+		fromStderr = true
+		code = ecode
+		out = live.rawOut
+		stderrBefore = eout
+		live.rawErr = erest
+	}
+	if ok {
+		job.finishing = true
 		live.lastUsed = time.Now()
 	}
 	live.mu.Unlock()
 	if !ok {
-		job.pane.append("stdout", chunk)
+		cleaned := stripCompletionText(chunk)
+		if cleaned != "" {
+			job.pane.append(which, cleaned)
+		}
 		return
+	}
+	if fromStderr {
+		// Prompt is on stderr; stdout may still be in the PTY read queue.
+		time.Sleep(25 * time.Millisecond)
+		live.mu.Lock()
+		out = live.rawOut
+		if o2, r2, _, ook := parsePrompt(out); ook {
+			out = o2
+			live.rawOut = r2
+		} else {
+			live.rawOut = ""
+		}
+		live.mu.Unlock()
 	}
 	s.mu.Lock()
 	if s.pending == job {
 		s.pending = nil
 	}
 	s.mu.Unlock()
-	job.pane.finishCommand(stripReadyNoise(out), code)
+	job.pane.finishCommand(out, code)
+	job.pane.mu.Lock()
+	job.pane.stderr = newStreamBuf()
+	if cleaned := stripCompletionText(stderrBefore); cleaned != "" {
+		job.pane.stderr.append(cleaned)
+	}
+	job.pane.mu.Unlock()
 	go s.pumpLive()
-}
-
-func (s *supervisor) onLiveStderr(chunk string) {
-	s.mu.Lock()
-	job := s.pending
-	s.mu.Unlock()
-	if job == nil {
-		return
-	}
-	chunk = stripDoneLines(chunk)
-	if chunk == "" {
-		return
-	}
-	job.pane.append("stderr", chunk)
 }
 
 func (s *supervisor) onLiveExit() {
@@ -588,13 +639,13 @@ func (p *pane) stillRunning() bool {
 func (p *pane) finishCommand(stdout string, code int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	stdout = stripDoneLines(stripReadyNoise(stdout))
+	stdout = stripCompletionText(stdout)
 	p.stdout = newStreamBuf()
 	if stdout != "" {
 		p.stdout.append(stdout)
 	}
 	if p.stderr != nil {
-		cleaned := stripDoneLines(p.stderr.render())
+		cleaned := stripCompletionText(p.stderr.render())
 		p.stderr = newStreamBuf()
 		if cleaned != "" {
 			p.stderr.append(cleaned)

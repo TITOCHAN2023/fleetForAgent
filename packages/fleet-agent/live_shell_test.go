@@ -109,6 +109,12 @@ func TestHasReadyLine(t *testing.T) {
 	}
 }
 
+func TestLiveSetupHasNoStty(t *testing.T) {
+	if strings.Contains(liveSetupCommand(), "stty") {
+		t.Fatal("setup must not inject stty (SIGTTOU stopped job)")
+	}
+}
+
 func TestStripEchoedCommand(t *testing.T) {
 	got := stripEchoedCommand("echo hi\nreal err\n", "echo hi")
 	if strings.Contains(got, "echo hi") {

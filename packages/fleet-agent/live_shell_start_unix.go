@@ -14,8 +14,9 @@ import (
 
 // startLiveShell opens an interactive login shell on a real PTY (ssh-mcp-sessions
 // conn.shell). TERM is xterm-256color so tty/isatty and Codex doctor see a
-// real terminal. stty -echo applies. stderr stays a pipe so command stderr
-// is still split. Completion is the unique PS1, not a printf on stdin.
+// real terminal. ECHO is cleared on the PTY master (not via slave stty).
+// stderr stays a pipe so command stderr is still split. Completion is the
+// unique PS1, not a printf on stdin.
 func startLiveShell() (*liveShell, error) {
 	cmd := exec.Command(pickShell(), "-il")
 	if home := userHome(); home != "" {
@@ -44,6 +45,7 @@ func startLiveShell() (*liveShell, error) {
 		return nil, fmt.Errorf("pty start: %w", err)
 	}
 	_ = errW.Close()
+	disableMasterEcho(ptmx)
 
 	ls := &liveShell{cmd: cmd, stdin: ptmx, lastUsed: time.Now(), idleFor: shellIdleFor}
 	readyCh := make(chan struct{}, 1)

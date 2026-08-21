@@ -194,8 +194,8 @@ func stripTermNoise(s string) string {
 	return s
 }
 
-// stripEchoedCommand drops a line that is only the typed command (zsh/bash
-// may still echo it on stderr even after stty -echo).
+// stripEchoedCommand drops a line that is only the typed command (leftover
+// echo if a login rc turned ECHO back on before we re-apply master termios).
 func stripEchoedCommand(s, command string) string {
 	cmd := strings.TrimSpace(strings.TrimRight(command, "\n"))
 	if cmd == "" || !strings.Contains(s, cmd) {
@@ -308,18 +308,23 @@ func beginLiveIO(ls *liveShell, stdout, stderr io.Reader, readyCh chan struct{})
 	}, nil)
 }
 
+func liveSetupCommand() string {
+	// No stty: tcsetattr from a non-foreground slave job gets SIGTTOU
+	// even when tostop is off, and the stopped stty blocks exit.
+	return "export TERM=xterm-256color; " +
+		"bind 'set enable-bracketed-paste off' 2>/dev/null || true; " +
+		"shopt -s expand_aliases 2>/dev/null || true; " +
+		"setopt aliases 2>/dev/null || true; " +
+		"unset PROMPT_COMMAND; PROMPT_COMMAND=; " +
+		"precmd() { :; }; " +
+		"PS1='" + promptPrefix + "$?\\n'; " +
+		"PROMPT=$'" + promptPrefix + "%?\\n'\n"
+}
+
 func waitLiveReady(ls *liveShell, stdin io.Writer, readyCh <-chan struct{}) {
 	// One compound command so bash/zsh print a single completion prompt.
 	// bash: \n in PS1 is a prompt escape. zsh: PROMPT=$'...%?\n'.
-	_, _ = io.WriteString(stdin, "export TERM=xterm-256color; "+
-		"stty -echo 2>/dev/null || true; "+
-		"bind 'set enable-bracketed-paste off' 2>/dev/null || true; "+
-		"shopt -s expand_aliases 2>/dev/null || true; "+
-		"setopt aliases 2>/dev/null || true; "+
-		"unset PROMPT_COMMAND; PROMPT_COMMAND=; "+
-		"precmd() { :; }; "+
-		"PS1='"+promptPrefix+"$?\\n'; "+
-		"PROMPT=$'"+promptPrefix+"%?\\n'\n")
+	_, _ = io.WriteString(stdin, liveSetupCommand())
 	select {
 	case <-readyCh:
 	case <-time.After(shellReadyWait):
@@ -328,6 +333,10 @@ func waitLiveReady(ls *liveShell, stdin io.Writer, readyCh <-chan struct{}) {
 		ls.rawOut = ""
 		ls.rawErr = ""
 		ls.mu.Unlock()
+	}
+	// Login rc often turns echo back on; re-apply from the master.
+	if f, ok := stdin.(*os.File); ok {
+		disableMasterEcho(f)
 	}
 	// Drop a trailing extra prompt before the first run is written.
 	time.Sleep(50 * time.Millisecond)
@@ -408,7 +417,7 @@ func (ls *liveShell) kill() {
 		_ = stdin.Close()
 	}
 	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
+		killLiveProcess(cmd.Process)
 	}
 }
 
@@ -536,8 +545,14 @@ func (s *supervisor) startLiveJob(job *liveJob) error {
 	}
 	if _, isExit := exitCommandCode(job.command); isExit {
 		go func() {
-			time.Sleep(1500 * time.Millisecond)
-			if job.pane.stillRunning() {
+			deadline := time.Now().Add(1500 * time.Millisecond)
+			for time.Now().Before(deadline) && job.pane.stillRunning() {
+				time.Sleep(20 * time.Millisecond)
+			}
+			// "exit" can return a prompt while the shell stays alive
+			// ("There are stopped jobs"). Always reap the group so the
+			// next run is a fresh login shell in $HOME.
+			if live.alive() {
 				live.kill()
 			}
 		}()
@@ -621,6 +636,7 @@ func (s *supervisor) feedLive(which, chunk string) {
 		s.pending = nil
 	}
 	s.mu.Unlock()
+	out = stripEchoedCommand(stripCompletionText(out), job.command)
 	job.pane.finishCommand(out, code)
 	job.pane.mu.Lock()
 	job.pane.stderr = newStreamBuf()
@@ -628,6 +644,9 @@ func (s *supervisor) feedLive(which, chunk string) {
 		job.pane.stderr.append(cleaned)
 	}
 	job.pane.mu.Unlock()
+	if _, isExit := exitCommandCode(job.command); isExit && live.alive() {
+		live.kill()
+	}
 	go s.pumpLive()
 }
 

@@ -78,10 +78,58 @@ func TestVTScreenResetClearsPrimaryTUI(t *testing.T) {
 	if strings.Contains(text, "CODEX") || strings.Contains(text, "box") {
 		t.Fatalf("reset left chrome: %q", text)
 	}
-	sc.paintPlain("/Users/bytedance")
+	sc.replay([]byte("/Users/bytedance\n"))
 	text, _, _ = sc.grid()
 	if strings.TrimSpace(text) != "/Users/bytedance" {
-		t.Fatalf("plain paint=%q", text)
+		t.Fatalf("replay paint=%q", text)
+	}
+}
+
+func TestVTScreenReplayCupAfterReset(t *testing.T) {
+	var replies bytes.Buffer
+	sc := newVTScreen(livePtyCols, livePtyRows, &replies)
+	sc.write([]byte("leftover\n"))
+	sc.resetPrimary()
+	sc.replay([]byte("\x1b[H\x1b[2J\x1b[1;1Hline-one\x1b[2;1Hline-two"))
+	text, _, _ := sc.grid()
+	if strings.Contains(text, "\x1b") || strings.Contains(text, "leftover") {
+		t.Fatalf("replay grid=%q", text)
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) < 2 || lines[0] != "line-one" || lines[1] != "line-two" {
+		t.Fatalf("CUP replay want line-one/line-two, got %q", text)
+	}
+}
+
+func TestVTScreenNoReplayAfterAlt(t *testing.T) {
+	var replies bytes.Buffer
+	sc := newVTScreen(livePtyCols, livePtyRows, &replies)
+	sc.write([]byte("\x1b[?1049h\x1b[H\x1b[2JTUI-BOX\x1b[?1049l"))
+	if !sc.altUsed() {
+		t.Fatal("smcup must set usedAlt even when rmcup follows in the same write")
+	}
+	sc.resetPrimary()
+	text, _, _ := sc.grid()
+	if strings.Contains(text, "TUI-BOX") {
+		t.Fatalf("alt reset without replay must be empty, got %q", text)
+	}
+	if sc.altUsed() {
+		t.Fatal("resetPrimary must clear usedAlt")
+	}
+}
+
+func TestVTScreenReplayDoesNotAnswerDA(t *testing.T) {
+	var replies bytes.Buffer
+	sc := newVTScreen(livePtyCols, livePtyRows, &replies)
+	sc.resetPrimary()
+	before := replies.Len()
+	sc.replay([]byte("\x1b[cplain\n"))
+	if replies.Len() != before {
+		t.Fatalf("replay must not write DA to the PTY master: %q", replies.Bytes())
+	}
+	text, _, _ := sc.grid()
+	if !strings.Contains(text, "plain") {
+		t.Fatalf("replay lost plain text: %q", text)
 	}
 }
 

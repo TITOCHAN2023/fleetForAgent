@@ -173,6 +173,17 @@ func parsePrompt(buf string) (output, rest string, exit int, ok bool) {
 	return parseCompletion(stripped, promptPrefix)
 }
 
+// rawOutputBeforePrompt is the PTY byte prefix before `__FLEET_PROMPT__`,
+// CSI and CR included. Replayed through a fresh emulator so color/CUP
+// become the last human frame instead of being discarded.
+func rawOutputBeforePrompt(buf string) string {
+	i := strings.Index(buf, promptPrefix)
+	if i < 0 {
+		return buf
+	}
+	return buf[:i]
+}
+
 func stripANSI(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -673,14 +684,18 @@ func (s *supervisor) tryFinishLive(job *liveJob, live *liveShell, force bool) bo
 		live.mu.Unlock()
 		return false
 	}
+	replay := rawOutputBeforePrompt(live.rawOut)
 	if !ok {
 		out = live.rawOut
 		rest = ""
 		code = 0
+		replay = live.rawOut
 	}
+	usedAlt := live.screen != nil && live.screen.altUsed()
 	job.finishing = true
 	live.rawOut = rest
 	live.lastUsed = time.Now()
+	live.screenIdle = true
 	live.mu.Unlock()
 
 	s.mu.Lock()
@@ -692,11 +707,10 @@ func (s *supervisor) tryFinishLive(job *liveJob, live *liveShell, force bool) bo
 	out = stripEchoedCommand(stripCompletionText(out), job.command)
 	if live.screen != nil {
 		live.screen.resetPrimary()
-		live.screen.paintPlain(out)
+		if !usedAlt {
+			live.screen.replay([]byte(replay))
+		}
 	}
-	live.mu.Lock()
-	live.screenIdle = true
-	live.mu.Unlock()
 	job.pane.finishCommand(out, code)
 	job.pane.mu.Lock()
 	job.pane.stderr = newStreamBuf()

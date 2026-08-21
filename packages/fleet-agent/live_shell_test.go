@@ -493,6 +493,59 @@ func TestLiveShellReadScreenIsCurrentFrame(t *testing.T) {
 	if len(lines) < 2 || lines[0] != "line-one" || lines[1] != "line-two" {
 		t.Fatalf("current frame want first two lines line-one/line-two, got %q", text)
 	}
+
+	waitPaneDone(t, p)
+	after, running, _, _, _, _ := s.paneSnapshot(p)
+	if running {
+		t.Fatal("CUP corr still running")
+	}
+	if strings.Contains(after, "\x1b") || strings.Contains(after, promptPrefix) {
+		t.Fatalf("after-finish CUP leaked CSI or prompt: %q", after)
+	}
+	lines = strings.Split(after, "\n")
+	if len(lines) < 2 || lines[0] != "line-one" || lines[1] != "line-two" {
+		t.Fatalf("after-finish CUP want line-one/line-two, got %q", after)
+	}
+}
+
+func TestLiveShellReadScreenAfterColorPrintf(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("live shell is POSIX-only")
+	}
+	s := newSupervisor()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		if s.live != nil {
+			s.live.kill()
+		}
+		s.mu.Unlock()
+	})
+	p, err := s.spawn("color1", "printf '\\033[31mred-line\\033[0m\\n'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p)
+	text, running, _, _, _, _ := s.paneSnapshot(p)
+	if running {
+		t.Fatal("color corr still running")
+	}
+	if strings.Contains(text, "\x1b") || strings.Contains(text, promptPrefix) {
+		t.Fatalf("after-finish color leaked CSI or prompt: %q", text)
+	}
+	if !strings.Contains(text, "red-line") {
+		t.Fatalf("after-finish color want red-line, got %q", text)
+	}
+}
+
+func TestRawOutputBeforePromptKeepsCSI(t *testing.T) {
+	raw := "\x1b[31mred-line\x1b[0m\n" + promptPrefix + "0\n"
+	got := rawOutputBeforePrompt(raw)
+	if !strings.Contains(got, "\x1b[31m") || !strings.Contains(got, "red-line") {
+		t.Fatalf("replay prefix dropped CSI: %q", got)
+	}
+	if strings.Contains(got, promptPrefix) {
+		t.Fatalf("replay prefix included prompt: %q", got)
+	}
 }
 
 func TestLiveShellAnswersDAQuery(t *testing.T) {
@@ -666,8 +719,8 @@ func TestLiveShellReadScreenAfterPrimaryTUIThenPwd(t *testing.T) {
 	if running {
 		t.Fatal("TUI corr still running")
 	}
-	if strings.Contains(text, "CODEX") || strings.Contains(text, "| box |") {
-		t.Fatalf("stale primary TUI chrome: %q", text)
+	if !strings.Contains(text, "CODEX") || !strings.Contains(text, "| box |") {
+		t.Fatalf("after-finish CUP-on-primary should keep the last frame, got %q", text)
 	}
 	if strings.Contains(text, promptPrefix) {
 		t.Fatalf("read_screen leaked completion marker: %q", text)

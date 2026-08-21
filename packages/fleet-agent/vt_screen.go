@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"strings"
 
@@ -19,6 +20,7 @@ type vtScreen struct {
 	term    vt10x.Terminal
 	pending []byte
 	replies io.Writer
+	usedAlt bool
 }
 
 func newVTScreen(cols, rows int, replies io.Writer) *vtScreen {
@@ -37,14 +39,47 @@ func newVTScreen(cols, rows int, replies io.Writer) *vtScreen {
 	}
 }
 
+func sawAltEnter(p []byte) bool {
+	return bytes.Contains(p, []byte("?1049h")) ||
+		bytes.Contains(p, []byte("?1047h")) ||
+		bytes.Contains(p, []byte("?47h"))
+}
+
 func (s *vtScreen) write(p []byte) {
 	if s == nil || s.term == nil || len(p) == 0 {
 		return
 	}
+	if s.term.Mode()&vt10x.ModeAltScreen != 0 || sawAltEnter(p) {
+		s.usedAlt = true
+	}
 	_, _ = s.term.Write(p)
+	if s.term.Mode()&vt10x.ModeAltScreen != 0 {
+		s.usedAlt = true
+	}
 	for _, reply := range s.consumeQueries(p) {
 		_, _ = s.replies.Write(reply)
 	}
+}
+
+// replay paints raw PTY bytes onto a fresh emulator without answering
+// DA/CPR on the live-shell master (those replies would become stdin).
+func (s *vtScreen) replay(p []byte) {
+	if s == nil || len(p) == 0 {
+		return
+	}
+	cols, rows := livePtyCols, livePtyRows
+	if s.term != nil {
+		if c, r := s.term.Size(); c > 0 && r > 0 {
+			cols, rows = c, r
+		}
+	}
+	s.pending = nil
+	s.term = vt10x.New(vt10x.WithSize(cols, rows), vt10x.WithWriter(io.Discard))
+	_, _ = s.term.Write(p)
+}
+
+func (s *vtScreen) altUsed() bool {
+	return s != nil && s.usedAlt
 }
 
 // consumeQueries answers DA written by the slave. DSR/CPR stay with vt10x
@@ -113,19 +148,8 @@ func (s *vtScreen) resetPrimary() {
 		}
 	}
 	s.pending = nil
+	s.usedAlt = false
 	s.term = vt10x.New(vt10x.WithSize(cols, rows), vt10x.WithWriter(s.replies))
-}
-
-// paintPlain writes command result text onto the current grid. CSI-bearing
-// TUI dumps are skipped so we do not redraw the leftover box.
-func (s *vtScreen) paintPlain(text string) {
-	if s == nil || text == "" || strings.Contains(text, "\x1b") {
-		return
-	}
-	s.write([]byte(text))
-	if !strings.HasSuffix(text, "\n") {
-		s.write([]byte("\n"))
-	}
 }
 
 func stripPromptRows(text string) string {

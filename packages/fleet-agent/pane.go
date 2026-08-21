@@ -3,24 +3,83 @@ package main
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
 	screenInterval = 250 * time.Millisecond
 	ringLines      = 200
+	headLines      = 200
 	screenLines    = 80
 )
+
+type streamBuf struct {
+	head     []string
+	tail     []string
+	current  string
+	headDone bool
+	dropped  int
+}
+
+func newStreamBuf() *streamBuf {
+	return &streamBuf{}
+}
+
+func (s *streamBuf) append(chunk string) {
+	chunk = strings.ReplaceAll(chunk, "\r", "")
+	if !utf8.ValidString(chunk) {
+		chunk = strings.ToValidUTF8(chunk, "\uFFFD")
+	}
+	parts := strings.Split(chunk, "\n")
+	s.current += parts[0]
+	for _, rest := range parts[1:] {
+		s.pushCompleted(s.current)
+		s.current = rest
+	}
+}
+
+func (s *streamBuf) pushCompleted(line string) {
+	if !s.headDone {
+		s.head = append(s.head, line)
+		if len(s.head) >= headLines {
+			s.headDone = true
+		}
+		return
+	}
+	s.tail = append(s.tail, line)
+	if len(s.tail) > ringLines {
+		s.dropped++
+		s.tail = s.tail[1:]
+	}
+}
+
+func (s *streamBuf) render() string {
+	parts := append([]string{}, s.head...)
+	if s.headDone {
+		if s.dropped > 0 {
+			parts = append(parts, "", fmt.Sprintf("[... %d lines omitted ...]", s.dropped), "")
+		}
+		parts = append(parts, s.tail...)
+	}
+	if s.current != "" {
+		parts = append(parts, s.current)
+	}
+	return strings.Join(parts, "\n")
+}
 
 type pane struct {
 	id, corr, command string
 	mu                sync.Mutex
 	lines             []string
+	stdout            *streamBuf
+	stderr            *streamBuf
 	running           bool
 	exitCode          int
 	seq               int
@@ -70,6 +129,8 @@ func (s *supervisor) spawn(corr, command string) (*pane, error) {
 		stdin:   stdin,
 		cmd:     cmd,
 		lines:   []string{""},
+		stdout:  newStreamBuf(),
+		stderr:  newStreamBuf(),
 	}
 	s.mu.Lock()
 	s.panes[p.id] = p
@@ -78,8 +139,8 @@ func (s *supervisor) spawn(corr, command string) (*pane, error) {
 	}
 	s.order = append(s.order, p.id)
 	s.mu.Unlock()
-	go drain(p, stdout)
-	go drain(p, stderr)
+	go drain(p, stdout, "stdout")
+	go drain(p, stderr, "stderr")
 	go func() {
 		err := cmd.Wait()
 		code := 0
@@ -99,13 +160,13 @@ func (s *supervisor) spawn(corr, command string) (*pane, error) {
 	return p, nil
 }
 
-func drain(p *pane, r io.Reader) {
+func drain(p *pane, r io.Reader, which string) {
 	br := bufio.NewReader(r)
 	buf := make([]byte, 4096)
 	for {
 		n, err := br.Read(buf)
 		if n > 0 {
-			p.append(string(buf[:n]))
+			p.append(which, string(buf[:n]))
 		}
 		if err != nil {
 			return
@@ -113,9 +174,25 @@ func drain(p *pane, r io.Reader) {
 	}
 }
 
-func (p *pane) append(chunk string) {
+func (p *pane) append(which, chunk string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.appendDisplayLocked(chunk)
+	if p.stdout == nil {
+		p.stdout = newStreamBuf()
+	}
+	if p.stderr == nil {
+		p.stderr = newStreamBuf()
+	}
+	if which == "stderr" {
+		p.stderr.append(chunk)
+	} else {
+		p.stdout.append(chunk)
+	}
+	p.dirty = true
+}
+
+func (p *pane) appendDisplayLocked(chunk string) {
 	chunk = strings.ReplaceAll(chunk, "\r", "")
 	parts := strings.Split(chunk, "\n")
 	if len(p.lines) == 0 {
@@ -126,7 +203,6 @@ func (p *pane) append(chunk string) {
 	if len(p.lines) > ringLines {
 		p.lines = p.lines[len(p.lines)-ringLines:]
 	}
-	p.dirty = true
 }
 
 func (p *pane) snapshot() (text string, running bool, code int, seq int) {
@@ -140,6 +216,18 @@ func (p *pane) snapshot() (text string, running bool, code int, seq int) {
 	text = strings.Join(p.lines[start:], "\n")
 	p.dirty = false
 	return text, p.running, p.exitCode, p.seq
+}
+
+func (p *pane) resultText() (stdout, stderr string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stdout == nil {
+		p.stdout = newStreamBuf()
+	}
+	if p.stderr == nil {
+		p.stderr = newStreamBuf()
+	}
+	return p.stdout.render(), p.stderr.render()
 }
 
 func (p *pane) typeKeys(keys string) error {

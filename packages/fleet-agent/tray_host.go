@@ -71,8 +71,8 @@ func onTrayReady(a *Agent) {
 	// Mac: click shows the menu. Linux: no settings page; the dbus menu is the UI.
 	switch runtime.GOOS {
 	case "windows":
-		systray.SetOnClick(func(systray.IMenu) { openBrowser(settingsURL) })
-		systray.SetOnDClick(func(systray.IMenu) { openBrowser(settingsURL) })
+		systray.SetOnClick(func(systray.IMenu) { openBrowser(settingsURL()) })
+		systray.SetOnDClick(func(systray.IMenu) { openBrowser(settingsURL()) })
 		systray.SetOnRClick(func(m systray.IMenu) { _ = m.ShowMenu() })
 	case "linux":
 		// StatusNotifierItem shows the dbus menu on right-click. Do not open a browser.
@@ -82,7 +82,7 @@ func onTrayReady(a *Agent) {
 
 	tray.status = systray.AddMenuItem("Offline", "")
 	tray.status.Disable()
-	tray.open = systray.AddMenuItem("Open Settings", settingsURL)
+	tray.open = systray.AddMenuItem("Open Settings", settingsURL())
 	tray.reconnect = systray.AddMenuItem("Reconnect", "")
 	if runtime.GOOS == "linux" {
 		tray.open.Hide()
@@ -102,7 +102,7 @@ func onTrayReady(a *Agent) {
 	systray.AddSeparator()
 	tray.quit = systray.AddMenuItem("Quit Fleet Agent", "")
 
-	tray.open.Click(func() { openBrowser(settingsURL) })
+	tray.open.Click(func() { openBrowser(settingsURL()) })
 	tray.reconnect.Click(func() {
 		a.mu.Lock()
 		hub := a.hubInput

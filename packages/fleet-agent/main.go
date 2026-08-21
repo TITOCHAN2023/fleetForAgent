@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -26,8 +25,6 @@ import (
 
 const (
 	agentVersion = "0.2.3"
-	settingsAddr = "127.0.0.1:17890"
-	settingsURL  = "http://127.0.0.1:17890"
 )
 
 //go:embed ui/index.html
@@ -487,8 +484,8 @@ func (a *Agent) spawnPane(ctx context.Context, c *websocket.Conn, corr, cmd stri
 			code := p.exitCode
 			p.mu.Unlock()
 			if done {
-				text, _, _, _ := p.snapshot()
-				_ = wsjson.Write(ctx, c, resultEnv(corr, code == 0, code, text, ""))
+				stdout, stderr := p.resultText()
+				_ = wsjson.Write(ctx, c, resultEnv(corr, code == 0, code, stdout, stderr))
 				a.mu.Lock()
 				a.log("info", fmt.Sprintf("result %d: %s", code, cmd))
 				a.mu.Unlock()
@@ -637,10 +634,9 @@ func main() {
 		os.Exit(runCLI(args))
 	}
 
-	home, _ := os.UserHomeDir()
-	dir := filepath.Join(home, ".fleet-agent")
+	dir := fleetHome()
 	_ = os.MkdirAll(dir, 0o700)
-	agent := &Agent{permit: PermitAsk, conn: "offline", cfgPath: filepath.Join(dir, "config.json"), panes: newSupervisor()}
+	agent := &Agent{permit: PermitAsk, conn: "offline", cfgPath: configPath(), panes: newSupervisor()}
 	agent.load()
 
 	mux := http.NewServeMux()
@@ -725,14 +721,14 @@ func main() {
 		}()
 	})
 
-	ln, err := net.Listen("tcp", settingsAddr)
+	ln, err := net.Listen("tcp", settingsAddr())
 	if err != nil {
 		if runtime.GOOS == "linux" {
 			log.Println("already running")
 			return
 		}
 		log.Println("already running, opening settings")
-		openBrowser(settingsURL)
+		openBrowser(settingsURL())
 		time.Sleep(400 * time.Millisecond)
 		return
 	}
@@ -740,9 +736,9 @@ func main() {
 		log.Fatal(http.Serve(ln, mux))
 	}()
 	if runtime.GOOS == "linux" {
-		log.Println("linux tray; hub from FLEET_URL + FLEET_TOKEN or ~/.fleet-agent/config.json")
+		log.Println("linux tray; hub from FLEET_URL + FLEET_TOKEN or", configPath())
 	} else {
-		log.Println("settings", settingsURL)
+		log.Println("settings", settingsURL())
 	}
 
 	startKeepAliveLoop()
@@ -762,7 +758,7 @@ func main() {
 		go func() { _ = agent.connect(hub) }()
 	}
 	if runtime.GOOS != "linux" && (first || !trayEnabled) {
-		openBrowser(settingsURL)
+		openBrowser(settingsURL())
 	}
 	if runtime.GOOS == "linux" && first {
 		log.Println("no hub set: export FLEET_URL and FLEET_TOKEN, then restart")

@@ -1,0 +1,65 @@
+import { Apple, Monitor, Server } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { useI18n } from "@/lib/i18n/use-i18n";
+import type { MessageKey } from "@/lib/i18n/messages";
+
+const BUILDS: {
+  id: string;
+  os: MessageKey;
+  file: string;
+  hint: MessageKey;
+  icon: typeof Monitor;
+}[] = [
+  { id: "win", os: "rel.win", file: "KeelAgent-windows-amd64.exe", hint: "rel.winHint", icon: Monitor },
+  { id: "mac-arm", os: "rel.macArm", file: "KeelAgent-macos-arm64.dmg", hint: "rel.macArmHint", icon: Apple },
+  { id: "mac-intel", os: "rel.macIntel", file: "KeelAgent-macos-amd64.dmg", hint: "rel.macIntelHint", icon: Apple },
+  { id: "linux", os: "rel.linux", file: "keel-agent-linux-amd64.tar.gz", hint: "rel.linuxHint", icon: Server },
+];
+
+export function ReleasesPanel() {
+  const { t } = useI18n();
+  return (
+    <div className="grid gap-4">
+      <section className="rounded-xl border border-border bg-surface p-5">
+        <h2 className="text-base font-medium">{t("rel.title")}</h2>
+        <p className="mt-2 max-w-2xl text-sm text-muted">{t("rel.body")}</p>
+        <ol className="mt-5 max-w-xl list-decimal space-y-2 pl-5 text-sm text-muted">
+          <li>{t("rel.s1")}</li>
+          <li>{t("rel.s2")}</li>
+          <li>{t("rel.s3")}</li>
+          <li>{t("rel.s4")}</li>
+          <li>{t("rel.s5")}</li>
+        </ol>
+      </section>
+      <div className="grid gap-3 md:grid-cols-2">
+        {BUILDS.map((b) => {
+          const Icon = b.icon;
+          return (
+            <article key={b.id} className="rounded-xl border border-border bg-surface p-5">
+              <div className="flex items-center gap-2">
+                <Icon className="size-4" strokeWidth={1.75} />
+                <h3 className="text-sm font-medium">{t(b.os)}</h3>
+              </div>
+              <p className="mt-3 text-sm text-muted">{t(b.hint)}</p>
+              <p className="mt-2 font-mono text-xs text-subtle">{b.file}</p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button asChild variant="secondary">
+                  <a href={`/dl/${b.file}`} download>
+                    {t("rel.download")}
+                  </a>
+                </Button>
+                {b.id.startsWith("mac") && (
+                  <Button asChild variant="ghost">
+                    <a href={`/dl/${b.file.replace(".dmg", ".zip")}`} download>
+                      zip
+                    </a>
+                  </Button>
+                )}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,4 @@
+aea62d337632a946f328e22ddd38f8a8885876d21888fcce4eb2085bf01d05e7  KeelAgent-windows-amd64.exe
+fe300558f9826bb32f8855a17cd451fc9e18eefa30c992b0b9da569b04039f0d  KeelAgent-macos-arm64.dmg
+b4bfd3d4883ea15cdfa076b73c5aa3633b3e11957d82df997e8cc87d8e42d095  KeelAgent-macos-amd64.dmg
+7f59db5d408a0d05173ef38ed7fa2beac57c03dd34954b684f8a2c875877881a  keel-agent-linux-amd64.tar.gz

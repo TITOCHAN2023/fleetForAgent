@@ -1,0 +1,15 @@
+node_modules
+dist
+.output
+.vinxi
+.tanstack
+.vite
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+screenshots
+artifacts
+packages/keel-agent/dist
+coverage

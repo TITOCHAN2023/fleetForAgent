@@ -1,0 +1,1 @@
+import{s as e}from"./link-BE7oXOZY.js";import{S as t}from"./index-D_O6aEdB.js";import{r as n,t as r}from"./login-landing-CYBh-SO-.js";var i=e();function a(){let{user:e}=n();return e?(0,i.jsx)(t,{to:`/`}):(0,i.jsx)(r,{})}export{a as component};

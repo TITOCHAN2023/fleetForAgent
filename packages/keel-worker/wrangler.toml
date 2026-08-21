@@ -1,0 +1,10 @@
+name = "keel-hub"
+main = "src/index.ts"
+compatibility_date = "2026-04-07"
+
+[durable_objects]
+bindings = [{ name = "DEVICE", class_name = "DeviceDO" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["DeviceDO"]

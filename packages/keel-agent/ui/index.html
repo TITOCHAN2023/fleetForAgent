@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KEEL Agent</title>
+    <style>
+      :root { --bg:#090b0d; --surface:#111418; --elevated:#181c21; --fg:#e8eaed; --muted:#8b929c; --subtle:#5c6370; --border:#23282f; --ok:#8fbf9f; --warn:#c4b08a; --bad:#d48a80; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 "Segoe UI", "IBM Plex Sans", sans-serif; }
+      body { padding: 24px; }
+      h1 { font-size: 16px; font-weight: 500; margin: 0; }
+      h2 { font-size: 14px; font-weight: 500; margin: 0 0 8px; }
+      p, .muted { color: var(--muted); }
+      .wrap { max-width: 880px; margin: 0 auto; display: grid; gap: 16px; }
+      .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px; }
+      .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      input { flex: 1; min-width: 180px; height: 44px; border-radius: 8px; border: 1px solid var(--border); background: var(--elevated); color: var(--fg); padding: 0 12px; font: inherit; }
+      button { height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--elevated); color: var(--fg); font: inherit; cursor: pointer; }
+      button.primary { background: #d4d8de; color: var(--bg); border: 0; }
+      button.danger { color: var(--bad); }
+      .level { display: block; width: 100%; text-align: left; margin-top: 8px; padding: 12px 14px; }
+      .level.on { background: var(--elevated); }
+      .badge { font-size: 12px; border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; color: var(--muted); }
+      .badge.ok { color: var(--ok); }
+      .badge.bad { color: var(--bad); }
+      .badge.warn { color: var(--warn); }
+      pre { background: var(--elevated); padding: 12px; border-radius: 8px; overflow: auto; font-size: 12px; }
+      .log { max-height: 280px; overflow: auto; font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
+      .log div.warn { color: var(--warn); }
+      .log div.error { color: var(--bad); }
+      .lang { margin-left: auto; display: flex; gap: 4px; }
+      .lang button { height: 32px; padding: 0 10px; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <section class="card">
+        <div class="row">
+          <h1>KEEL Agent</h1>
+          <span id="conn" class="badge">Offline</span>
+          <div class="lang">
+            <button type="button" id="en">EN</button>
+            <button type="button" id="zh">中文</button>
+          </div>
+        </div>
+        <p id="t-body">Enter the Worker domain and dial out. No inbound port.</p>
+        <div class="row" style="margin-top:16px">
+          <span id="t-allow">Allow this computer to run</span>
+          <button id="enabled">On</button>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <input id="hub" placeholder="keel.example.workers.dev" />
+          <button id="connect" class="primary">Connect</button>
+        </div>
+        <p id="err" class="muted"></p>
+      </section>
+      <section class="card">
+        <h2 id="t-permit">Run policy</h2>
+        <button class="level" data-permit="off" id="lv-off"></button>
+        <button class="level" data-permit="ask" id="lv-ask"></button>
+        <button class="level" data-permit="allow" id="lv-allow"></button>
+      </section>
+      <section class="card" id="pendingCard" style="display:none">
+        <h2 id="t-consent">Needs approval here</h2>
+        <pre id="pendingCmd"></pre>
+        <div class="row">
+          <button id="approve" class="primary">Allow</button>
+          <button id="deny" class="danger">Deny</button>
+        </div>
+      </section>
+      <section class="card">
+        <h2 id="t-logs">Logs</h2>
+        <div class="log" id="logs"></div>
+      </section>
+    </div>
+    <script>
+      const I18N = {
+        en: {
+          body: "Enter the Worker domain and dial out. No inbound port.",
+          allow: "Allow this computer to run",
+          on: "On", offsw: "Off",
+          connect: "Connect",
+          offline: "Offline", connecting: "Connecting", online: "Connected to Worker", error: "Connect failed",
+          permit: "Run policy",
+          off: "<b>Off</b><br><span class='muted'>Refuse every command</span>",
+          ask: "<b>Ask at the machine</b><br><span class='muted'>Someone here must tap Allow</span>",
+          allowLv: "<b>Allow all</b><br><span class='muted'>Run immediately; destructive commands stay blocked</span>",
+          consent: "Needs approval here", approve: "Allow", deny: "Deny", logs: "Logs",
+        },
+        zh: {
+          body: "填写 Worker 域名，连出去。不开放入站端口。",
+          allow: "允许在这台电脑上运行",
+          on: "已开", offsw: "打开",
+          connect: "连接",
+          offline: "未连接", connecting: "连接中", online: "已连接 Worker", error: "连接失败",
+          permit: "执行权限",
+          off: "<b>停用</b><br><span class='muted'>什么命令都不执行</span>",
+          ask: "<b>需当面同意</b><br><span class='muted'>有人在电脑前点同意才跑</span>",
+          allowLv: "<b>自动执行</b><br><span class='muted'>直接跑，危险命令仍拦截</span>",
+          consent: "需要当面同意", approve: "同意执行", deny: "拒绝", logs: "运行日志",
+        }
+      };
+      let locale = localStorage.getItem("keel-locale") === "zh" ? "zh" : "en";
+      const $ = (id) => document.getElementById(id);
+      function applyLang() {
+        const t = I18N[locale];
+        document.documentElement.lang = locale === "zh" ? "zh-Hant" : "en";
+        $("t-body").textContent = t.body;
+        $("t-allow").textContent = t.allow;
+        $("connect").textContent = t.connect;
+        $("t-permit").textContent = t.permit;
+        $("lv-off").innerHTML = t.off;
+        $("lv-ask").innerHTML = t.ask;
+        $("lv-allow").innerHTML = t.allowLv;
+        $("t-consent").textContent = t.consent;
+        $("approve").textContent = t.approve;
+        $("deny").textContent = t.deny;
+        $("t-logs").textContent = t.logs;
+      }
+      $("en").onclick = () => { locale = "en"; localStorage.setItem("keel-locale", "en"); applyLang(); };
+      $("zh").onclick = () => { locale = "zh"; localStorage.setItem("keel-locale", "zh"); applyLang(); };
+      async function api(path, body) {
+        const res = await fetch(path, {
+          method: body ? "POST" : "GET",
+          headers: body ? { "content-type": "application/json" } : undefined,
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        return res.json();
+      }
+      function render(s) {
+        const t = I18N[locale];
+        const map = { offline: [t.offline, ""], connecting: [t.connecting, "warn"], online: [t.online, "ok"], error: [t.error, "bad"] };
+        const conn = map[s.conn] || map.offline;
+        $("conn").textContent = conn[0];
+        $("conn").className = "badge " + conn[1];
+        $("enabled").textContent = s.enabled ? t.on : t.offsw;
+        if (s.hubInput) $("hub").value = s.hubInput;
+        $("err").textContent = s.error || "";
+        document.querySelectorAll(".level").forEach((b) => b.classList.toggle("on", b.dataset.permit === s.permit));
+        if (s.pending) { $("pendingCard").style.display = "block"; $("pendingCmd").textContent = s.pending.command; }
+        else $("pendingCard").style.display = "none";
+        $("logs").innerHTML = (s.logs || []).map((l) => `<div class="${l.level}">${l.msg}</div>`).join("");
+      }
+      $("enabled").onclick = async () => {
+        const s = await api("/api/state");
+        render(await api("/api/enabled", { enabled: !s.enabled }));
+      };
+      $("connect").onclick = async () => render(await api("/api/connect", { hub: $("hub").value }));
+      document.querySelectorAll(".level").forEach((b) => {
+        b.onclick = async () => render(await api("/api/permit", { permit: b.dataset.permit }));
+      });
+      $("approve").onclick = async () => render(await api("/api/approve", {}));
+      $("deny").onclick = async () => render(await api("/api/deny", {}));
+      applyLang();
+      async function poll() { try { render(await api("/api/state")); } catch {} }
+      poll();
+      setInterval(poll, 1000);
+    </script>
+  </body>
+</html>

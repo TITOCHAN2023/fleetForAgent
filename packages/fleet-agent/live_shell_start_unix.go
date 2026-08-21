@@ -33,13 +33,14 @@ func startLiveShell() (*liveShell, error) {
 	}
 	cmd.Env = liveShellEnv()
 
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 40, Cols: 120})
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: livePtyRows, Cols: livePtyCols})
 	if err != nil {
 		return nil, fmt.Errorf("pty start: %w", err)
 	}
 	disableMasterEcho(ptmx)
 
 	ls := &liveShell{cmd: cmd, stdin: ptmx, lastUsed: time.Now(), idleFor: shellIdleFor}
+	ls.screen = newVTScreen(livePtyCols, livePtyRows, ls)
 	readyCh := make(chan struct{}, 1)
 	beginLiveIO(ls, ptmx, readyCh)
 	go func() {

@@ -32,6 +32,8 @@ type liveShell struct {
 	cmd      *exec.Cmd
 	stdin    io.WriteCloser
 	mu       sync.Mutex
+	writeMu  sync.Mutex
+	screen   *vtScreen
 	rawOut   string
 	rawErr   string
 	ready    bool
@@ -284,17 +286,26 @@ func (ls *liveShell) ingestReady(chunk string, readyCh chan struct{}) bool {
 }
 
 func beginLiveIO(ls *liveShell, ptyMaster io.Reader, readyCh chan struct{}) {
-	go drainLive(ptyMaster, func(chunk string) {
-		if ls.ingestReady(chunk, readyCh) {
+	go drainLive(ptyMaster, func(chunk []byte) {
+		ls.feedScreen(chunk)
+		s := string(chunk)
+		if ls.ingestReady(s, readyCh) {
 			return
 		}
 		ls.mu.Lock()
 		cb := ls.onStdout
 		ls.mu.Unlock()
 		if cb != nil {
-			cb(chunk)
+			cb(s)
 		}
 	}, func() { ls.markExit() })
+}
+
+func (ls *liveShell) feedScreen(p []byte) {
+	if ls == nil || ls.screen == nil {
+		return
+	}
+	ls.screen.write(p)
 }
 
 func liveSetupCommand() string {
@@ -335,12 +346,12 @@ func waitLiveReady(ls *liveShell, stdin io.Writer, readyCh <-chan struct{}) {
 	ls.mu.Unlock()
 }
 
-func drainLive(r io.Reader, onChunk func(string), onEOF func()) {
+func drainLive(r io.Reader, onChunk func([]byte), onEOF func()) {
 	buf := make([]byte, 4096)
 	for {
 		n, err := r.Read(buf)
 		if n > 0 && onChunk != nil {
-			onChunk(string(buf[:n]))
+			onChunk(append([]byte(nil), buf[:n]...))
 		}
 		if err != nil {
 			if onEOF != nil {
@@ -388,11 +399,24 @@ func (ls *liveShell) touch() {
 }
 
 func (ls *liveShell) write(s string) error {
-	if ls.stdin == nil {
+	return ls.writeBytes([]byte(s))
+}
+
+func (ls *liveShell) writeBytes(p []byte) error {
+	if ls == nil || ls.stdin == nil {
 		return io.ErrClosedPipe
 	}
-	_, err := io.WriteString(ls.stdin, s)
+	ls.writeMu.Lock()
+	defer ls.writeMu.Unlock()
+	_, err := ls.stdin.Write(p)
 	return err
+}
+
+func (ls *liveShell) Write(p []byte) (int, error) {
+	if err := ls.writeBytes(p); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 func (ls *liveShell) kill() {

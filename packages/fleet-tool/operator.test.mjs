@@ -235,6 +235,11 @@ test("explicit device_id updates last-used; later calls can omit it", async () =
 
   const typed = await op.callTool("type", { keys: "q\n" });
   assert.equal(typed.device_id, "mac-1");
+  await op.callTool("type", { key: "enter" });
+  const typeBodies = calls.filter((c) => c.path === "/v1/type").map((c) => c.body);
+  assert.equal(typeBodies[0].keys, "q\n");
+  assert.equal(typeBodies[1].key, "enter");
+  assert.equal(typeBodies[1].keys, "enter");
   const screen = await op.callTool("read_screen", {});
   assert.equal(screen.device_id, "mac-1");
   const peek = await op.callTool("get_result", { corr: "c-1" });

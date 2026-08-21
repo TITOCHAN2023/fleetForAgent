@@ -221,11 +221,11 @@ export function createHub({ token = "", now = () => Date.now() } = {}) {
     }
 
     if (url.pathname === "/v1/type" && req.method === "POST") {
-      if (!body.device_id || body.keys == null) {
-        write(res, 400, { error: "device_id and keys required" });
+      if (!body.device_id || (body.keys == null && body.key == null)) {
+        write(res, 400, { error: "device_id and keys or key required" });
         return;
       }
-      const ok = sendTo(body.device_id, envelope("type", { keys: body.keys, corr: body.corr }));
+      const ok = sendTo(body.device_id, envelope("type", { keys: body.keys, key: body.key, corr: body.corr }));
       if (!ok) {
         write(res, 409, { error: "offline" });
         return;

@@ -212,6 +212,11 @@ func (p *pane) appendDisplayLocked(chunk string) {
 }
 
 func (p *pane) snapshot() (text string, running bool, code int, seq int) {
+	text, running, code, seq, _, _ = p.snapshotFrame()
+	return
+}
+
+func (p *pane) snapshotFrame() (text string, running bool, code, seq, row, col int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.seq++
@@ -221,7 +226,26 @@ func (p *pane) snapshot() (text string, running bool, code int, seq int) {
 	}
 	text = strings.Join(p.lines[start:], "\n")
 	p.dirty = false
-	return text, p.running, p.exitCode, p.seq
+	return text, p.running, p.exitCode, p.seq, 0, 0
+}
+
+func (s *supervisor) paneSnapshot(p *pane) (text string, running bool, code, seq, row, col int) {
+	if p == nil {
+		return "", false, 0, 0, 0, 0
+	}
+	s.mu.Lock()
+	live := s.live
+	s.mu.Unlock()
+	if live != nil && live.screen != nil {
+		text, row, col = live.screen.grid()
+		p.mu.Lock()
+		p.seq++
+		running, code, seq = p.running, p.exitCode, p.seq
+		p.dirty = false
+		p.mu.Unlock()
+		return
+	}
+	return p.snapshotFrame()
 }
 
 func (p *pane) resultText() (stdout, stderr string) {
@@ -237,6 +261,10 @@ func (p *pane) resultText() (stdout, stderr string) {
 }
 
 func (p *pane) typeKeys(keys string) error {
+	return p.typeInput(keys, "")
+}
+
+func (p *pane) typeInput(keys, named string) error {
 	p.mu.Lock()
 	w := p.stdin
 	oneshot := p.cmd != nil
@@ -248,8 +276,29 @@ func (p *pane) typeKeys(keys string) error {
 	if oneshot && !alive {
 		return io.ErrClosedPipe
 	}
-	_, err := io.WriteString(w, keys)
-	return err
+	if oneshot {
+		if strings.TrimSpace(named) != "" {
+			stroke, err := encodeType("", named)
+			if err != nil {
+				return err
+			}
+			_, err = w.Write(stroke.payload)
+			return err
+		}
+		_, err := io.WriteString(w, keys)
+		return err
+	}
+	stroke, err := encodeType(keys, named)
+	if err != nil {
+		return err
+	}
+	if len(stroke.payload) > 0 {
+		if _, err := w.Write(stroke.payload); err != nil {
+			return err
+		}
+	}
+	signalForeground(w, stroke.sigint, stroke.sigquit)
+	return nil
 }
 
 func (s *supervisor) get(id string) *pane {

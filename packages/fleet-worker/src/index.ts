@@ -147,15 +147,15 @@ export default {
     }
 
     if (url.pathname === "/v1/type" && request.method === "POST") {
-      const body = (await request.json()) as { device_id?: string; keys?: string; corr?: string };
-      if (!body.device_id || body.keys == null) return json({ error: "device_id and keys required" }, 400);
+      const body = (await request.json()) as { device_id?: string; keys?: string; key?: string; corr?: string };
+      if (!body.device_id || (body.keys == null && body.key == null)) return json({ error: "device_id and keys or key required" }, 400);
       if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
       const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
       return stub.fetch(
         new Request("https://device/type", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ keys: body.keys, corr: body.corr }),
+          body: JSON.stringify({ keys: body.keys, key: body.key, corr: body.corr }),
         }),
       );
     }
@@ -426,8 +426,8 @@ export class DeviceDO implements DurableObject {
     if (url.pathname === "/type" && request.method === "POST") {
       const sockets = this.ctx.getWebSockets();
       if (sockets.length === 0) return json({ error: "offline" }, 409);
-      const body = (await request.json()) as { keys: string; corr?: string };
-      sockets[0]!.send(JSON.stringify(envelope("type", { keys: body.keys, corr: body.corr })));
+      const body = (await request.json()) as { keys?: string; key?: string; corr?: string };
+      sockets[0]!.send(JSON.stringify(envelope("type", { keys: body.keys, key: body.key, corr: body.corr })));
       return json({ ok: true, status: "typed" });
     }
 

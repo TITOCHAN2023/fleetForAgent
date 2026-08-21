@@ -157,6 +157,17 @@ test("run on offline device is 409; type does not wait", async (t) => {
   assert.equal(typed.json.status, "typed");
   const down = await waitType(dev.inbox, "type");
   assert.equal(down.body.keys, "q\n");
+
+  const named = await post(http, "/v1/type", { device_id: "dev-1", key: "ctrl+c" });
+  assert.equal(named.status, 200);
+  const t0 = Date.now();
+  let downKey;
+  while (Date.now() - t0 < 1000) {
+    downKey = dev.inbox.find((m) => m.type === "type" && m.body?.key === "ctrl+c");
+    if (downKey) break;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assert.equal(downKey?.body?.key, "ctrl+c");
 });
 
 test("new socket kicks the old one", async (t) => {

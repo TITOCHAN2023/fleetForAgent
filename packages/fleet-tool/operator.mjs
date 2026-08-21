@@ -146,7 +146,7 @@ export function buildTools() {
     },
     {
       name: "read_screen",
-      description: "Snapshot the pane. Does not attach or stream.",
+      description: "Snapshot the pane current frame (rendered grid on a live PTY). Does not attach or stream.",
       inputSchema: {
         type: "object",
         properties: { device_id: deviceId, corr: { type: "string" } },
@@ -154,11 +154,16 @@ export function buildTools() {
     },
     {
       name: "type",
-      description: "Fire-and-forget keystrokes into the pane stdin.",
+      description:
+        "Fire-and-forget keystrokes into the pane stdin. keys is a string (newlines become Enter/CR on the live PTY). Optional key is a named press like ssh_press: enter, ctrl+c, up. ctrl+c sends 0x03 and SIGINT to the foreground process group.",
       inputSchema: {
         type: "object",
-        required: ["keys"],
-        properties: { device_id: deviceId, keys: { type: "string" }, corr: { type: "string" } },
+        properties: {
+          device_id: deviceId,
+          keys: { type: "string", description: "Literal keystrokes. Still accepted. Newlines become CR on the live PTY." },
+          key: { type: "string", description: "Named key (enter, ctrl+c, up, f5, ...). Optional; do not invent a sixth tool." },
+          corr: { type: "string" },
+        },
       },
     },
     {
@@ -320,9 +325,12 @@ export function createOperator({
     }
 
     if (name === "type") {
-      if (args.keys == null) throw new Error("keys required");
+      if (args.keys == null && args.key == null) throw new Error("keys or key required");
       const deviceId = resolveDevice(args);
-      const body = { device_id: deviceId, keys: args.keys };
+      const body = { device_id: deviceId };
+      if (args.keys != null) body.keys = args.keys;
+      if (args.key != null && String(args.key) !== "") body.key = String(args.key);
+      if (body.keys == null && body.key) body.keys = body.key;
       if (args.corr != null && String(args.corr) !== "") body.corr = args.corr;
       const row = await rpc("/v1/type", body);
       return withDevice(row, deviceId);

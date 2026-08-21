@@ -116,12 +116,12 @@ export async function handleHubHttp(request: Request): Promise<Response> {
 
   if (path === "/v1/type" && request.method === "POST") {
     const deviceId = String(body.device_id ?? "");
-    if (!deviceId || body.keys == null) return json({ error: "device_id and keys required" }, 400);
+    if (!deviceId || (body.keys == null && body.key == null)) return json({ error: "device_id and keys or key required" }, 400);
     if (!(await ownsDevice(userId, deviceId))) return json({ error: "not found" }, 404);
     const ok = sendToDevice(
       userId,
       deviceId,
-      envelope("type", { keys: body.keys, corr: body.corr }),
+      envelope("type", { keys: body.keys, key: body.key, corr: body.corr }),
     );
     if (!ok) return json({ error: "offline" }, 409);
     return json({ ok: true, status: "typed" });

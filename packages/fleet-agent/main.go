@@ -426,11 +426,12 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 			go a.handleRun(ctx, c, env.Corr, cmd)
 		case "type":
 			keys, _ := env.Body["keys"].(string)
+			key, _ := env.Body["key"].(string)
 			id, _ := env.Body["pane_id"].(string)
 			if id == "" {
 				id, _ = env.Body["corr"].(string)
 			}
-			go a.handleType(ctx, c, env.Corr, id, keys)
+			go a.handleType(ctx, c, env.Corr, id, keys, key)
 		case "read_screen":
 			id, _ := env.Body["pane_id"].(string)
 			if id == "" {
@@ -516,7 +517,7 @@ func (a *Agent) spawnPane(ctx context.Context, c *websocket.Conn, corr, cmd stri
 	}()
 }
 
-func (a *Agent) handleType(ctx context.Context, c *websocket.Conn, corr, id, keys string) {
+func (a *Agent) handleType(ctx context.Context, c *websocket.Conn, corr, id, keys, key string) {
 	a.mu.Lock()
 	sup := a.panes
 	a.mu.Unlock()
@@ -529,7 +530,7 @@ func (a *Agent) handleType(ctx context.Context, c *websocket.Conn, corr, id, key
 		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "typed", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"ok": false, "error": "pane gone"}})
 		return
 	}
-	err := p.typeKeys(keys)
+	err := p.typeInput(keys, key)
 	ok := err == nil
 	msg := ""
 	if err != nil {
@@ -551,9 +552,10 @@ func (a *Agent) handleScreen(ctx context.Context, c *websocket.Conn, corr, id st
 		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"text": "", "running": false}})
 		return
 	}
-	text, running, code, seq := p.snapshot()
+	text, running, code, seq, row, col := sup.paneSnapshot(p)
 	_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{
 		"pane_id": p.id, "text": text, "running": running, "exit_code": code, "seq": seq,
+		"cursor_row": row, "cursor_col": col,
 	}})
 }
 
@@ -575,9 +577,10 @@ func (a *Agent) coalesceLoop(ctx context.Context, c *websocket.Conn) {
 			if p == nil {
 				continue
 			}
-			text, running, code, seq := p.snapshot()
+			text, running, code, seq, row, col := sup.paneSnapshot(p)
 			_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: p.corr, T: time.Now().UnixMilli(), Body: map[string]any{
 				"pane_id": p.id, "text": text, "running": running, "exit_code": code, "seq": seq,
+				"cursor_row": row, "cursor_col": col,
 			}})
 		}
 	}

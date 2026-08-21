@@ -1,9 +1,11 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -429,5 +431,146 @@ func TestLiveShellTTYAndTerm(t *testing.T) {
 		if !strings.Contains(py, "1 1 1") {
 			t.Fatalf("python isatty want 1 1 1, got %q", py)
 		}
+	}
+}
+
+func waitScreenHas(t *testing.T, s *supervisor, p *pane, want string) string {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	var text string
+	for time.Now().Before(deadline) {
+		text, _, _, _, _, _ = s.paneSnapshot(p)
+		if strings.Contains(text, want) && !strings.Contains(text, "\x1b") {
+			return text
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("screen never showed %q (csi=%v): %q", want, strings.Contains(text, "\x1b"), text)
+	return text
+}
+
+func TestLiveShellReadScreenIsCurrentFrame(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("live shell is POSIX-only")
+	}
+	s := newSupervisor()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		if s.live != nil {
+			s.live.kill()
+		}
+		s.mu.Unlock()
+	})
+
+	p, err := s.spawn("tui1", "printf '\\033[H\\033[2J\\033[1;1Hline-one\\033[2;1Hline-two'; sleep 4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := waitScreenHas(t, s, p, "line-one")
+	if strings.Contains(text, "\x1b") || strings.Contains(text, "[1;1H") {
+		t.Fatalf("read_screen returned CSI soup: %q", text)
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) < 2 || lines[0] != "line-one" || lines[1] != "line-two" {
+		t.Fatalf("current frame want first two lines line-one/line-two, got %q", text)
+	}
+}
+
+func TestLiveShellAnswersDAQuery(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("live shell is POSIX-only")
+	}
+	s := newSupervisor()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		if s.live != nil {
+			s.live.kill()
+		}
+		s.mu.Unlock()
+	})
+
+	p, err := s.spawn("da1", "printf '\\033[c\\033[c\\033[cDA_SENT\\n'; sleep 2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := waitScreenHas(t, s, p, "DA_SENT")
+	if strings.Contains(text, "\x1b[c") || strings.Contains(text, "[c") {
+		t.Fatalf("DA queries accumulated on screen: %q", text)
+	}
+}
+
+func TestLiveShellPythonReadsDA(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("live shell is POSIX-only")
+	}
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("no python3")
+	}
+	s := newSupervisor()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		if s.live != nil {
+			s.live.kill()
+		}
+		s.mu.Unlock()
+	})
+	dir := t.TempDir()
+	script := filepath.Join(dir, "da.py")
+	body := `import os, select, sys, termios, tty
+fd = sys.stdin.fileno()
+old = termios.tcgetattr(fd)
+try:
+    tty.setraw(fd)
+    os.write(1, b"\x1b[c")
+    sys.stdout.flush()
+    r, _, _ = select.select([fd], [], [], 2.0)
+    data = os.read(fd, 32) if r else b""
+finally:
+    termios.tcsetattr(fd, termios.TCSADRAIN, old)
+sys.stdout.write("\n")
+if data.startswith(b"\x1b[?") and data.endswith(b"c"):
+    sys.stdout.write("DA_OK\n")
+else:
+    sys.stdout.write("DA_BAD\n")
+    sys.exit(1)
+`
+	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.spawn("da2", "python3 "+strconv.Quote(script))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p)
+	out, stderr := p.resultText()
+	if !strings.Contains(out, "DA_OK") {
+		t.Fatalf("DA query was not answered: stdout=%q stderr=%q", out, stderr)
+	}
+}
+
+func TestLiveShellTypeCtrlCStopsSleep(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("live shell is POSIX-only")
+	}
+	s := newSupervisor()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		if s.live != nil {
+			s.live.kill()
+		}
+		s.mu.Unlock()
+	})
+
+	p, err := s.spawn("int1", "sleep 30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneTypable(t, p)
+	if err := p.typeInput("", "ctrl+c"); err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p)
+	if p.exitCode == 0 {
+		t.Fatalf("sleep survived ctrl+c, exit_code=%d", p.exitCode)
 	}
 }

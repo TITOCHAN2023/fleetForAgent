@@ -57,14 +57,14 @@ export const TOOLS = [
   {
     name: "read_screen",
     description:
-      "Snapshot the pane (tmux capture-pane). Does not attach, does not stream. Latest-wins on the device.",
+      "Snapshot the pane current frame. Does not attach, does not stream. Latest-wins on the device.",
     input: { corr: "string?" },
   },
   {
     name: "type",
     description:
       "Fire-and-forget keystrokes into the pane stdin. Never waits for the process.",
-    input: { keys: "string", corr: "string?" },
+    input: { keys: "string?", key: "string?", corr: "string?" },
   },
   {
     name: "list_panes",

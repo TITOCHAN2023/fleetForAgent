@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>KEEL Agent</title>
+    <title>Fleet Agent</title>
     <style>
       :root { --bg:#090b0d; --surface:#111418; --elevated:#181c21; --fg:#e8eaed; --muted:#8b929c; --subtle:#5c6370; --border:#23282f; --ok:#8fbf9f; --warn:#c4b08a; --bad:#d48a80; }
       * { box-sizing: border-box; }
@@ -37,7 +37,7 @@
     <div class="wrap">
       <section class="card">
         <div class="row">
-          <h1>KEEL Agent</h1>
+          <h1>Fleet Agent</h1>
           <span id="conn" class="badge">Offline</span>
           <div class="lang">
             <button type="button" id="en">EN</button>
@@ -50,7 +50,7 @@
           <button id="enabled">On</button>
         </div>
         <div class="row" style="margin-top:12px">
-          <input id="hub" placeholder="keel-hub.example.workers.dev" />
+          <input id="hub" placeholder="fleet-hub.example.workers.dev" />
           <button id="connect" class="primary">Connect</button>
         </div>
         <div class="row" style="margin-top:8px">
@@ -104,7 +104,7 @@
           consent: "需要当面同意", approve: "同意执行", deny: "拒绝", logs: "运行日志",
         }
       };
-      let locale = localStorage.getItem("keel-locale") === "zh" ? "zh" : "en";
+      let locale = localStorage.getItem("fleet-locale") === "zh" ? "zh" : "en";
       const $ = (id) => document.getElementById(id);
       function applyLang() {
         const t = I18N[locale];
@@ -121,8 +121,8 @@
         $("deny").textContent = t.deny;
         $("t-logs").textContent = t.logs;
       }
-      $("en").onclick = () => { locale = "en"; localStorage.setItem("keel-locale", "en"); applyLang(); };
-      $("zh").onclick = () => { locale = "zh"; localStorage.setItem("keel-locale", "zh"); applyLang(); };
+      $("en").onclick = () => { locale = "en"; localStorage.setItem("fleet-locale", "en"); applyLang(); };
+      $("zh").onclick = () => { locale = "zh"; localStorage.setItem("fleet-locale", "zh"); applyLang(); };
       async function api(path, body) {
         const res = await fetch(path, {
           method: body ? "POST" : "GET",

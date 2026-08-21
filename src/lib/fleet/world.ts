@@ -14,9 +14,9 @@ export type NetNode = {
 
 /** Hub lives on the public internet (TEST-NET-3). Pods reach it only by going out. */
 export const HUB = {
-  slug: "keel-hub",
-  name: "KEEL hub",
-  host: "hub.keel",
+  slug: "fleet-hub",
+  name: "Fleet hub",
+  host: "hub.fleet",
   publicIp: "203.0.113.10",
 } as const;
 
@@ -108,11 +108,11 @@ function isPrivateV4(token: string) {
 export function resolvePingTarget(_from: NetNode, token: string, roster: NetNode[]): PingTarget {
   const t = token.trim().toLowerCase();
   if (!t) return { kind: "unknown", token };
-  if (t === HUB.publicIp || t === HUB.host || t === "hub.keel") return { kind: "hub" };
+  if (t === HUB.publicIp || t === HUB.host || t === "hub.fleet") return { kind: "hub" };
   if (t === "8.8.8.8" || t === "1.1.1.1") return { kind: "wan", ip: token.trim() };
   if (isPrivateV4(t)) return { kind: "private", token: token.trim() };
   for (const n of roster) {
-    if (t === n.hostname || t === n.slug || t === n.podId || t === `${n.slug}.keel`) {
+    if (t === n.hostname || t === n.slug || t === n.podId || t === `${n.slug}.fleet`) {
       return { kind: "peer", token };
     }
   }

@@ -39,7 +39,7 @@ export function LoginLanding() {
         <section className="flex flex-col justify-between border-b border-border px-6 py-10 md:border-r md:border-b-0 md:px-10 md:py-14">
           <div>
             <div className="flex items-center justify-between gap-3">
-              <p className="font-mono text-xs tracking-[0.22em] text-muted uppercase">Keel</p>
+              <p className="font-mono text-xs tracking-[0.22em] text-muted uppercase">Fleet</p>
               <LocaleSwitch />
             </div>
             <h1 className="mt-6 max-w-sm text-4xl font-medium tracking-tight text-fg md:text-5xl">

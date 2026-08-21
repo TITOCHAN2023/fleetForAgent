@@ -7,12 +7,12 @@ import {
 import type { ShellResult } from "../fleet/shell";
 
 test("normalizeHub fills wss path from a bare domain", () => {
-  const n = normalizeHub("keel.example.workers.dev");
+  const n = normalizeHub("fleet.example.workers.dev");
   assert.equal(n.ok, true);
   if (!n.ok) return;
-  assert.equal(n.host, "keel.example.workers.dev");
-  assert.equal(n.wss, "wss://keel.example.workers.dev/v1/device");
-  assert.equal(n.http, "https://keel.example.workers.dev");
+  assert.equal(n.host, "fleet.example.workers.dev");
+  assert.equal(n.wss, "wss://fleet.example.workers.dev/v1/device");
+  assert.equal(n.http, "https://fleet.example.workers.dev");
 });
 
 test("normalizeHub keeps explicit wss url", () => {
@@ -46,21 +46,21 @@ function runtime(now = { t: 1_000 }) {
 
 test("connect requires the local switch", async () => {
   const r = new AgentRuntime();
-  const snap = await r.connect("hub.keel");
+  const snap = await r.connect("hub.fleet");
   assert.equal(snap.conn, "error");
   assert.match(snap.error, /Turn on/);
 });
 
 test("connect succeeds with a fake transport", async () => {
   const r = runtime();
-  await r.connect("hub.keel", { connect: async () => {} });
+  await r.connect("hub.fleet", { connect: async () => {} });
   assert.equal(r.conn, "online");
-  assert.equal(r.hub && r.hub.ok ? r.hub.host : "", "hub.keel");
+  assert.equal(r.hub && r.hub.ok ? r.hub.host : "", "hub.fleet");
 });
 
 test("permit off refuses every run", async () => {
   const r = runtime();
-  await r.connect("hub.keel", { connect: async () => {} });
+  await r.connect("hub.fleet", { connect: async () => {} });
   r.setPermit("off");
   const out = r.incomingRun("uname -a");
   assert.equal(out.status, "refused");
@@ -71,7 +71,7 @@ test("permit off refuses every run", async () => {
 
 test("permit allow executes immediately", async () => {
   const r = runtime();
-  await r.connect("hub.keel", { connect: async () => {} });
+  await r.connect("hub.fleet", { connect: async () => {} });
   r.setPermit("allow");
   const out = r.incomingRun("uname -a");
   assert.equal(out.status, "ok");
@@ -82,7 +82,7 @@ test("permit allow executes immediately", async () => {
 
 test("permit ask waits, then approve runs", async () => {
   const r = runtime();
-  await r.connect("hub.keel", { connect: async () => {} });
+  await r.connect("hub.fleet", { connect: async () => {} });
   r.setPermit("ask");
   const pending = r.incomingRun("ver");
   assert.equal(pending.status, "pending");
@@ -102,7 +102,7 @@ test("permit ask deny does not execute", async () => {
     },
   });
   r.setEnabled(true);
-  await r.connect("hub.keel", { connect: async () => {} });
+  await r.connect("hub.fleet", { connect: async () => {} });
   r.setPermit("ask");
   const pending = r.incomingRun("whoami");
   const denied = r.deny(pending.corr);
@@ -114,7 +114,7 @@ test("permit ask deny does not execute", async () => {
 test("ask consent times out", async () => {
   const clock = { t: 10_000 };
   const r = runtime(clock);
-  await r.connect("hub.keel", { connect: async () => {} });
+  await r.connect("hub.fleet", { connect: async () => {} });
   r.setPermit("ask");
   r.incomingRun("id");
   clock.t = 20_000;
@@ -127,7 +127,7 @@ test("ask consent times out", async () => {
 
 test("destructive command is blocked even on allow", async () => {
   const r = runtime();
-  await r.connect("hub.keel", { connect: async () => {} });
+  await r.connect("hub.fleet", { connect: async () => {} });
   r.setPermit("allow");
   const out = r.incomingRun("rm -rf /");
   assert.equal(out.status, "refused");
@@ -143,7 +143,7 @@ test("offline incoming run is refused", () => {
 
 test("second ask is rejected while one is pending", async () => {
   const r = runtime();
-  await r.connect("hub.keel", { connect: async () => {} });
+  await r.connect("hub.fleet", { connect: async () => {} });
   r.setPermit("ask");
   r.incomingRun("first");
   const second = r.incomingRun("second");
@@ -153,7 +153,7 @@ test("second ask is rejected while one is pending", async () => {
 
 test("disabling the switch drops a pending ask", async () => {
   const r = runtime();
-  await r.connect("hub.keel", { connect: async () => {} });
+  await r.connect("hub.fleet", { connect: async () => {} });
   r.setPermit("ask");
   r.incomingRun("whoami");
   r.setEnabled(false);
@@ -163,7 +163,7 @@ test("disabling the switch drops a pending ask", async () => {
 
 test("logs record connect and run", async () => {
   const r = runtime();
-  await r.connect("hub.keel", { connect: async () => {} });
+  await r.connect("hub.fleet", { connect: async () => {} });
   r.setPermit("allow");
   r.incomingRun("date");
   assert.ok(r.logs.some((l) => l.msg.includes("online")));

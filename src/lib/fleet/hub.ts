@@ -18,7 +18,7 @@ export type HubDispatch = {
 };
 
 function home(device: ShellDevice) {
-  return resolveNode(device).os === "windows" ? "C:\\Users\\keel" : device.os === "darwin" ? "/Users/keel" : "/home/keel";
+  return resolveNode(device).os === "windows" ? "C:\\Users\\fleet" : device.os === "darwin" ? "/Users/fleet" : "/home/fleet";
 }
 
 export function dispatchRun(opts: {

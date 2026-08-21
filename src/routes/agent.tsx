@@ -14,7 +14,7 @@ function AgentPage() {
   return (
     <main className="bg-bg text-fg min-h-svh">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3 md:px-6">
-        <span className="font-mono text-xs tracking-[0.22em] uppercase">Keel agent</span>
+        <span className="font-mono text-xs tracking-[0.22em] uppercase">Fleet agent</span>
         <nav className="flex items-center gap-4 text-sm text-muted">
           <LocaleSwitch />
           <Link to="/releases" className="hover:text-fg">

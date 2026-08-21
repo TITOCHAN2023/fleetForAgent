@@ -236,7 +236,7 @@ func (a *Agent) connect(hub string) error {
 	}
 	tok := a.hubToken
 	if tok == "" {
-		tok = os.Getenv("KEEL_HUB_TOKEN")
+		tok = os.Getenv("FLEET_HUB_TOKEN")
 	}
 	if tok != "" {
 		headers["Authorization"] = []string{"Bearer " + tok}
@@ -293,7 +293,7 @@ func newDeviceID() string {
 func hostname() string {
 	h, _ := os.Hostname()
 	if h == "" {
-		return "keel-agent"
+		return "fleet-agent"
 	}
 	return h
 }
@@ -346,19 +346,19 @@ func (a *Agent) handleRun(ctx context.Context, c *websocket.Conn, corr, cmd stri
 	if !a.enabled || a.permit == PermitOff {
 		a.log("warn", "refused (off): "+cmd)
 		a.mu.Unlock()
-		_ = wsjson.Write(ctx, c, resultEnv(corr, false, 126, "", "keel: permit=off — 本机不允许执行"))
+		_ = wsjson.Write(ctx, c, resultEnv(corr, false, 126, "", "fleet: permit=off — 本机不允许执行"))
 		return
 	}
 	if destructive.MatchString(cmd) {
 		a.log("error", "blocked destructive: "+cmd)
 		a.mu.Unlock()
-		_ = wsjson.Write(ctx, c, resultEnv(corr, false, 126, "", "keel: refused by device policy"))
+		_ = wsjson.Write(ctx, c, resultEnv(corr, false, 126, "", "fleet: refused by device policy"))
 		return
 	}
 	if a.permit == PermitAsk {
 		if a.pending != nil {
 			a.mu.Unlock()
-			_ = wsjson.Write(ctx, c, resultEnv(corr, false, 1, "", "keel: another command is waiting for consent"))
+			_ = wsjson.Write(ctx, c, resultEnv(corr, false, 1, "", "fleet: another command is waiting for consent"))
 			return
 		}
 		a.pending = &Pending{Corr: corr, Command: cmd, Requested: time.Now().UnixMilli()}
@@ -524,7 +524,7 @@ func (a *Agent) deny() {
 	if p == nil || ws == nil {
 		return
 	}
-	_ = wsjson.Write(context.Background(), ws, resultEnv(p.Corr, false, 1, "", "keel: denied at the machine"))
+	_ = wsjson.Write(context.Background(), ws, resultEnv(p.Corr, false, 1, "", "fleet: denied at the machine"))
 	a.mu.Lock()
 	a.log("warn", "denied: "+p.Command)
 	a.mu.Unlock()
@@ -537,7 +537,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 func main() {
 	home, _ := os.UserHomeDir()
-	dir := filepath.Join(home, ".keel-agent")
+	dir := filepath.Join(home, ".fleet-agent")
 	_ = os.MkdirAll(dir, 0o700)
 	agent := &Agent{permit: PermitAsk, conn: "offline", cfgPath: filepath.Join(dir, "config.json"), panes: newSupervisor()}
 	agent.load()

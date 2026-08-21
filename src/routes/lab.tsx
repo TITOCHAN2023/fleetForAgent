@@ -10,7 +10,7 @@ function LabPage() {
   return (
     <main className="bg-bg text-fg min-h-svh">
       <header className="flex items-center justify-between border-b border-border px-4 py-3 md:px-6">
-        <span className="font-mono text-xs tracking-[0.22em] uppercase">Keel lab</span>
+        <span className="font-mono text-xs tracking-[0.22em] uppercase">Fleet lab</span>
         <nav className="flex items-center gap-4 text-sm text-muted">
           <LocaleSwitch />
           <Link to="/" className="hover:text-fg">

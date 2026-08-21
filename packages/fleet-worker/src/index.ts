@@ -1,5 +1,5 @@
 /**
- * KEEL hub — Cloudflare Worker + Durable Objects.
+ * Fleet hub — Cloudflare Worker + Durable Objects.
  *
  * Devices (Windows / Mac / Linux agents) dial OUT over WSS to /v1/device.
  * Operators call HTTPS: list_computers / select_computer / run / get_result.
@@ -46,7 +46,7 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/" || url.pathname === "/v1/health") {
-      return json({ name: "keel-hub", v: 1, ok: true });
+      return json({ name: "fleet-hub", v: 1, ok: true });
     }
 
     if (url.pathname === "/v1/device") {

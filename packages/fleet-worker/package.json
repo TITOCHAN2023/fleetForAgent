@@ -1,5 +1,5 @@
 {
-  "name": "keel-hub",
+  "name": "fleet-hub",
   "private": true,
   "type": "module",
   "scripts": {

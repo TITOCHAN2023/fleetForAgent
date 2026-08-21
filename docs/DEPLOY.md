@@ -7,7 +7,7 @@
         只出网 WSS
             │
             ▼
-   Cloudflare Worker  (keel-hub)
+   Cloudflare Worker  (fleet-hub)
    Durable Object / 设备
             ▲
             │  HTTPS
@@ -27,7 +27,7 @@ https://github.com/TITOCHAN2023/fleetForAgent/releases/latest
 
 ```bash
 git clone https://github.com/TITOCHAN2023/fleetForAgent.git
-cd fleetForAgent/packages/keel-worker
+cd fleetForAgent/packages/fleet-worker
 npm install
 npx wrangler login
 npx wrangler deploy
@@ -36,7 +36,7 @@ npx wrangler deploy
 成功后会打印类似：
 
 ```
-https://keel-hub.<你的账号>.workers.dev
+https://fleet-hub.<你的账号>.workers.dev
 ```
 
 这就是 Agent 里填的 **Worker 域名**。也可以绑自己的域名（Cloudflare Dashboard → Workers → Triggers → Custom Domain）。
@@ -72,17 +72,17 @@ Agent 填 `http://127.0.0.1:8787`（会转成 `ws://…/v1/device`）。
 
 | 系统 | 文件 |
 |---|---|
-| Windows | `KeelAgent-windows-amd64.exe` |
-| macOS Apple 芯片 | `KeelAgent-macos-arm64.dmg`（打不开用旁边的 zip） |
-| macOS Intel | `KeelAgent-macos-amd64.dmg` |
-| Linux | `keel-agent-linux-amd64.tar.gz` |
+| Windows | `FleetAgent-windows-amd64.exe` |
+| macOS Apple 芯片 | `FleetAgent-macos-arm64.dmg`（打不开用旁边的 zip） |
+| macOS Intel | `FleetAgent-macos-amd64.dmg` |
+| Linux | `fleet-agent-linux-amd64.tar.gz` |
 
 然后：
 
-1. 打开安装包（Windows 双击 exe；Mac 拖到应用程序；Linux 解压跑 `./keel-agent`）。
+1. 打开安装包（Windows 双击 exe；Mac 拖到应用程序；Linux 解压跑 `./fleet-agent`）。
 2. 浏览器会开 `http://127.0.0.1:17890` 设置页。
 3. 打开「允许在这台电脑上运行」。
-4. 填 Worker 域名（不要带路径，例如 `keel-hub.xxx.workers.dev`）。
+4. 填 Worker 域名（不要带路径，例如 `fleet-hub.xxx.workers.dev`）。
 5. 如果 Worker 设了 `HUB_TOKEN`，填同一个 token。
 6. 点连接，状态变成「已连接 Worker」。
 7. 选权限：
@@ -96,7 +96,7 @@ Agent 填 `http://127.0.0.1:8787`（会转成 `ws://…/v1/device`）。
 
 ```bash
 npm run release:agent
-gh release create v0.x.0 public/dl/KeelAgent-* public/dl/keel-agent-linux-amd64.tar.gz
+gh release create v0.x.0 public/dl/FleetAgent-* public/dl/fleet-agent-linux-amd64.tar.gz
 ```
 
 ---
@@ -106,13 +106,13 @@ gh release create v0.x.0 public/dl/KeelAgent-* public/dl/keel-agent-linux-amd64.
 健康检查：
 
 ```bash
-curl https://keel-hub.<account>.workers.dev/v1/health
+curl https://fleet-hub.<account>.workers.dev/v1/health
 ```
 
 列设备（不返回 IP）：
 
 ```bash
-curl -X POST https://keel-hub.<account>.workers.dev/v1/list_computers \
+curl -X POST https://fleet-hub.<account>.workers.dev/v1/list_computers \
   -H "authorization: Bearer $HUB_TOKEN" \
   -H "content-type: application/json" \
   -d '{}'
@@ -121,7 +121,7 @@ curl -X POST https://keel-hub.<account>.workers.dev/v1/list_computers \
 跑一条命令：
 
 ```bash
-curl -X POST https://keel-hub.<account>.workers.dev/v1/run \
+curl -X POST https://fleet-hub.<account>.workers.dev/v1/run \
   -H "authorization: Bearer $HUB_TOKEN" \
   -H "content-type: application/json" \
   -d '{"device_id":"<id>","command":"uname -a"}'
@@ -130,7 +130,7 @@ curl -X POST https://keel-hub.<account>.workers.dev/v1/run \
 返回 `{ "corr": "...", "status": "running" }`。再取结果：
 
 ```bash
-curl -X POST https://keel-hub.<account>.workers.dev/v1/get_result \
+curl -X POST https://fleet-hub.<account>.workers.dev/v1/get_result \
   -H "authorization: Bearer $HUB_TOKEN" \
   -H "content-type: application/json" \
   -d '{"device_id":"<id>","corr":"<corr>"}'

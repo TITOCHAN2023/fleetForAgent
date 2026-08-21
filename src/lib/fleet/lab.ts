@@ -55,9 +55,9 @@ export function runLabSuite(): { passed: number; failed: number; checks: LabChec
     check("d-swvers", "darwin", "sw_vers reports macOS 15.3", sw.stdout.includes("macOS") && sw.stdout.includes("15.3"), sw.stdout),
   );
   const macHome = sh("darwin", "pwd");
-  checks.push(check("d-pwd", "darwin", "home is /Users/keel", macHome.stdout.trim() === "/Users/keel", macHome.stdout));
+  checks.push(check("d-pwd", "darwin", "home is /Users/fleet", macHome.stdout.trim() === "/Users/fleet", macHome.stdout));
   const macWho = sh("darwin", "whoami");
-  checks.push(check("d-who", "darwin", "whoami is keel", macWho.stdout.trim() === "keel", macWho.stdout));
+  checks.push(check("d-who", "darwin", "whoami is fleet", macWho.stdout.trim() === "fleet", macWho.stdout));
   const macOsrel = sh("darwin", "cat /etc/os-release");
   checks.push(
     check("d-osrel", "darwin", "/etc/os-release does not exist", macOsrel.exitCode !== 0 && macOsrel.stderr.toLowerCase().includes("no such file"), macOsrel.stderr),
@@ -107,7 +107,7 @@ export function runLabSuite(): { passed: number; failed: number; checks: LabChec
     check("l-osrel", "linux", "/etc/os-release is Ubuntu 24.04", osrel.exitCode === 0 && osrel.stdout.includes("Ubuntu") && osrel.stdout.includes("24.04"), osrel.stdout),
   );
   const linHome = sh("linux", "pwd");
-  checks.push(check("l-pwd", "linux", "home is /home/keel", linHome.stdout.trim() === "/home/keel", linHome.stdout));
+  checks.push(check("l-pwd", "linux", "home is /home/fleet", linHome.stdout.trim() === "/home/fleet", linHome.stdout));
   const linSw = sh("linux", "sw_vers");
   checks.push(check("l-no-swvers", "linux", "sw_vers is not a Linux command", linSw.exitCode !== 0 && linSw.stderr.includes("command not found"), linSw.stderr));
   const linIpc = sh("linux", "ipconfig");
@@ -129,7 +129,7 @@ export function runLabSuite(): { passed: number; failed: number; checks: LabChec
   const linDir = sh("linux", "dir");
   checks.push(check("l-no-dir", "linux", "dir is not a Linux command", linDir.exitCode !== 0, linDir.stderr));
   const linId = sh("linux", "id");
-  checks.push(check("l-id", "linux", "id is uid=1000(keel)", linId.stdout.includes("uid=1000(keel)"), linId.stdout));
+  checks.push(check("l-id", "linux", "id is uid=1000(fleet)", linId.stdout.includes("uid=1000(fleet)"), linId.stdout));
 
   const winVer = sh("windows", "ver");
   checks.push(
@@ -149,9 +149,9 @@ export function runLabSuite(): { passed: number; failed: number; checks: LabChec
     ),
   );
   const winWho = sh("windows", "whoami");
-  checks.push(check("w-who", "windows", "whoami is keel\\operator", winWho.stdout.includes("keel") && winWho.stdout.includes("\\"), winWho.stdout));
+  checks.push(check("w-who", "windows", "whoami is fleet\\operator", winWho.stdout.includes("fleet") && winWho.stdout.includes("\\"), winWho.stdout));
   const winPwd = sh("windows", "pwd");
-  checks.push(check("w-pwd", "windows", "home is C:\\Users\\keel", winPwd.stdout.includes("C:\\Users\\keel"), winPwd.stdout));
+  checks.push(check("w-pwd", "windows", "home is C:\\Users\\fleet", winPwd.stdout.includes("C:\\Users\\fleet"), winPwd.stdout));
   const winSw = sh("windows", "sw_vers");
   checks.push(
     check("w-no-swvers", "windows", "sw_vers is not recognized", winSw.exitCode !== 0 && winSw.stderr.toLowerCase().includes("not recognized"), winSw.stderr),
@@ -232,7 +232,7 @@ export function runLabSuite(): { passed: number; failed: number; checks: LabChec
       linPingMacLan.stderr,
     ),
   );
-  const macHub = sh("darwin", "ping -c 1 hub.keel");
+  const macHub = sh("darwin", "ping -c 1 hub.fleet");
   checks.push(
     check(
       "n-mac-hub",
@@ -246,19 +246,19 @@ export function runLabSuite(): { passed: number; failed: number; checks: LabChec
   checks.push(
     check("n-linux-wan", "net", "Linux can ping 8.8.8.8", linDns.exitCode === 0 && linDns.stdout.includes("8.8.8.8"), linDns.stdout),
   );
-  const winHub = sh("windows", "ping -n 1 hub.keel");
+  const winHub = sh("windows", "ping -n 1 hub.fleet");
   checks.push(
     check(
       "n-win-hub",
       "net",
-      "Windows reaches hub.keel via internet",
+      "Windows reaches hub.fleet via internet",
       winHub.exitCode === 0 && winHub.stdout.includes("0% loss") && winHub.stdout.includes(HUB.publicIp),
       winHub.stdout,
     ),
   );
   const winWan = sh("windows", "ping -n 1 8.8.8.8");
   checks.push(check("n-win-wan", "net", "Windows can ping 8.8.8.8", winWan.exitCode === 0, winWan.stdout));
-  const unknown = sh("linux", "ping -c 1 no-such-host.keel");
+  const unknown = sh("linux", "ping -c 1 no-such-host.fleet");
   checks.push(check("n-unknown", "net", "unknown host fails", unknown.exitCode !== 0, unknown.stderr));
   const overlayGone = sh("linux", "ping -c 1 100.64.0.1");
   checks.push(
@@ -314,7 +314,7 @@ export function runLabSuite(): { passed: number; failed: number; checks: LabChec
   );
   const winRun = dispatchRun({ device: device("windows"), online: true, command: "ver" });
   checks.push(
-    check("h-run-win", "hub", "worker run on Windows returns ver via hub", winRun.status === "ok" && winRun.stdout.includes("10.0.26100") && winRun.events[0]!.envelope.body.cwd === "C:\\Users\\keel", winRun.stdout),
+    check("h-run-win", "hub", "worker run on Windows returns ver via hub", winRun.status === "ok" && winRun.stdout.includes("10.0.26100") && winRun.events[0]!.envelope.body.cwd === "C:\\Users\\fleet", winRun.stdout),
   );
   const linRun = dispatchRun({ device: device("linux"), online: true, command: "cat /etc/os-release" });
   checks.push(
@@ -334,7 +334,7 @@ export function runLabSuite(): { passed: number; failed: number; checks: LabChec
   );
   const cwdMac = dispatchRun({ device: device("darwin"), online: true, command: "pwd" });
   checks.push(
-    check("h-cwd-mac", "hub", "Mac run cwd is /Users/keel", String(cwdMac.events[0]!.envelope.body.cwd) === "/Users/keel", String(cwdMac.events[0]!.envelope.body.cwd)),
+    check("h-cwd-mac", "hub", "Mac run cwd is /Users/fleet", String(cwdMac.events[0]!.envelope.body.cwd) === "/Users/fleet", String(cwdMac.events[0]!.envelope.body.cwd)),
   );
 
   const paneStart = dispatchPaneStart({ device: device("linux"), online: true, command: "sleep 30", now: 0 });

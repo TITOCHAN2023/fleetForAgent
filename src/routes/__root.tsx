@@ -7,7 +7,7 @@ import { AppErrorComponent } from "@/lib/error-component";
 import { Toaster } from "sonner";
 import appCss from "../styles.css?url";
 
-const APP_NAME = "KEEL";
+const APP_NAME = "Fleet";
 
 export const Route = createRootRoute({
   head: () => ({

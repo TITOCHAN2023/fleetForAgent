@@ -11,8 +11,8 @@ dist
 .DS_Store
 screenshots
 artifacts
-packages/keel-agent/dist
-packages/keel-worker/.dev.vars
+packages/fleet-agent/dist
+packages/fleet-worker/.dev.vars
 coverage
 .grok/
 AGENTS.md

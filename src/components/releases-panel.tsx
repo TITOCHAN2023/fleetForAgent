@@ -12,10 +12,10 @@ const BUILDS: {
   hint: MessageKey;
   icon: typeof Monitor;
 }[] = [
-  { id: "win", os: "rel.win", file: "KeelAgent-windows-amd64.exe", hint: "rel.winHint", icon: Monitor },
-  { id: "mac-arm", os: "rel.macArm", file: "KeelAgent-macos-arm64.dmg", hint: "rel.macArmHint", icon: Apple },
-  { id: "mac-intel", os: "rel.macIntel", file: "KeelAgent-macos-amd64.dmg", hint: "rel.macIntelHint", icon: Apple },
-  { id: "linux", os: "rel.linux", file: "keel-agent-linux-amd64.tar.gz", hint: "rel.linuxHint", icon: Server },
+  { id: "win", os: "rel.win", file: "FleetAgent-windows-amd64.exe", hint: "rel.winHint", icon: Monitor },
+  { id: "mac-arm", os: "rel.macArm", file: "FleetAgent-macos-arm64.dmg", hint: "rel.macArmHint", icon: Apple },
+  { id: "mac-intel", os: "rel.macIntel", file: "FleetAgent-macos-amd64.dmg", hint: "rel.macIntelHint", icon: Apple },
+  { id: "linux", os: "rel.linux", file: "fleet-agent-linux-amd64.tar.gz", hint: "rel.linuxHint", icon: Server },
 ];
 
 export function ReleasesPanel() {

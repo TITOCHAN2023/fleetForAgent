@@ -1,6 +1,6 @@
 import { messages, type Locale, type MessageKey } from "./messages";
 
-const KEY = "keel-locale";
+const KEY = "fleet-locale";
 const listeners = new Set<() => void>();
 let current: Locale = "en";
 

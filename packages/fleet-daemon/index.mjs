@@ -1,21 +1,21 @@
 #!/usr/bin/env node
 /**
- * KEEL device daemon — run on each Mac / Windows / Linux box.
+ * Fleet device daemon — run on each Mac / Windows / Linux box.
  * Connects OUT over WSS. Never opens an inbound port.
  *
- *   KEEL_URL=wss://keel.example.com/v1/device \
- *   KEEL_DEVICE_ID=mac-mini-home \
- *   KEEL_TOKEN=dt_... \
+ *   FLEET_URL=wss://fleet.example.com/v1/device \
+ *   FLEET_DEVICE_ID=mac-mini-home \
+ *   FLEET_TOKEN=dt_... \
  *   node index.mjs
  */
 import { spawn } from "node:child_process";
 import os from "node:os";
 
-const url = process.env.KEEL_URL;
-const deviceId = process.env.KEEL_DEVICE_ID;
-const token = process.env.KEEL_TOKEN;
+const url = process.env.FLEET_URL;
+const deviceId = process.env.FLEET_DEVICE_ID;
+const token = process.env.FLEET_TOKEN;
 if (!url || !deviceId || !token) {
-  console.error("Need KEEL_URL, KEEL_DEVICE_ID, KEEL_TOKEN");
+  console.error("Need FLEET_URL, FLEET_DEVICE_ID, FLEET_TOKEN");
   process.exit(1);
 }
 

@@ -111,55 +111,13 @@ function mapDevice(row: DeviceRow): DeviceDto {
   };
 }
 
-const SEED: Array<Omit<DeviceDto, "id" | "lastSeen" | "selected" | "status" | "caps" | "podId" | "egress"> & { caps: string }> = [
-  {
-    slug: "mac-mini-home",
-    name: "Mac mini",
-    os: "darwin",
-    arch: "arm64",
-    locationTag: "home",
-    caps: "shell",
-  },
-  {
-    slug: "linux-colo-1",
-    name: "机房 Linux",
-    os: "linux",
-    arch: "x86_64",
-    locationTag: "colo",
-    caps: "shell",
-  },
-  {
-    slug: "win-cloud-gpu",
-    name: "云上 Windows",
-    os: "windows",
-    arch: "x86_64",
-    locationTag: "cloud",
-    caps: "shell",
-  },
-];
-
-async function ensureFleet(userId: string) {
+async function dropDemoSeeds(userId: string) {
   const sql = await getSql();
-  const existing = await sql<{ n: number }>`select count(*)::int as n from devices where user_id = ${userId}`;
-  if ((existing[0]?.n ?? 0) > 0) return;
-
-  let firstId: string | null = null;
-  for (const d of SEED) {
-    const id = crypto.randomUUID();
-    if (!firstId) firstId = id;
-    await sql`
-      insert into devices (id, user_id, slug, name, os, arch, location_tag, status, caps)
-      values (${id}, ${userId}, ${d.slug}, ${d.name}, ${d.os}, ${d.arch}, ${d.locationTag}, ${"online"}, ${d.caps})
-      on conflict do nothing
-    `;
-  }
-  if (firstId) {
-    await sql`
-      insert into hub_sessions (user_id, selected_device_id, selected_at)
-      values (${userId}, ${firstId}, now())
-      on conflict (user_id) do nothing
-    `;
-  }
+  await sql`
+    delete from devices
+    where user_id = ${userId}
+      and slug in ('mac-mini-home', 'linux-colo-1', 'win-cloud-gpu')
+  `;
 }
 
 async function recordEvent(
@@ -188,7 +146,7 @@ async function recordEvent(
 export const listDevices = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
-    await ensureFleet(context.userId);
+    await dropDemoSeeds(context.userId);
     const sql = await getSql();
     await sql`
       update devices set last_seen = now()
@@ -500,7 +458,6 @@ export const addDevice = createServerFn({ method: "POST" })
   .validator((input: { name: string; os: OsKind; locationTag: string; arch?: string }) => input)
   .handler(async ({ context, data }) => {
     const sql = await getSql();
-    await ensureFleet(context.userId);
     const count = await sql<{ n: number }>`select count(*)::int as n from devices where user_id = ${context.userId}`;
     assertCanAddDevice(count[0]?.n ?? 0);
     const slug = makeDeviceSlug(data.name);

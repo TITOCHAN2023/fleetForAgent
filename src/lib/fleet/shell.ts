@@ -40,9 +40,9 @@ function nodeOf(d: ShellDevice): NetNode {
 }
 
 function home(d: ShellDevice) {
-  if (d.os === "windows") return "C:\\Users\\keel";
-  if (d.os === "darwin") return "/Users/keel";
-  return "/home/keel";
+  if (d.os === "windows") return "C:\\Users\\fleet";
+  if (d.os === "darwin") return "/Users/fleet";
+  return "/home/fleet";
 }
 
 function notFound(d: ShellDevice, bin: string): ShellResult {
@@ -208,7 +208,7 @@ function listing(d: ShellDevice) {
   if (d.os === "windows") {
     return [
       " Volume in drive C has no label.",
-      " Volume Serial Number is KEEL-WIN1",
+      " Volume Serial Number is FLEET-WIN1",
       "",
       ` Directory of ${home(d)}`,
       "",
@@ -228,7 +228,7 @@ function listing(d: ShellDevice) {
 
 function notes(d: ShellDevice) {
   const n = nodeOf(d);
-  return `keel node ${n.hostname}\npod=${n.podId} os=${d.os} egress=internet-only no-intranet-ip`;
+  return `fleet node ${n.hostname}\npod=${n.podId} os=${d.os} egress=internet-only no-intranet-ip`;
 }
 
 export function runSimulated(device: ShellDevice, raw: string): ShellResult {
@@ -246,19 +246,19 @@ export function runSimulated(device: ShellDevice, raw: string): ShellResult {
     return {
       exitCode: 126,
       stdout: "",
-      stderr: "keel: refused by device policy (destructive commands are blocked in v1)",
+      stderr: "fleet: refused by device policy (destructive commands are blocked in v1)",
     };
   }
 
-  if (bin === "help" || bin === "keel") {
+  if (bin === "help" || bin === "fleet") {
     return {
       exitCode: 0,
       stdout:
         device.os === "windows"
-          ? "KEEL Windows shell. Try: ver, hostname, whoami, dir, ipconfig, ping hub.keel, ping 8.8.8.8"
+          ? "Fleet Windows shell. Try: ver, hostname, whoami, dir, ipconfig, ping hub.fleet, ping 8.8.8.8"
           : device.os === "darwin"
-            ? "KEEL macOS shell. Try: uname -a, sw_vers, ifconfig, ping -c 1 hub.keel, ping -c 1 8.8.8.8"
-            : "KEEL Linux shell. Try: uname -a, cat /etc/os-release, ip addr, ping -c 1 hub.keel, ping -c 1 linux-colo-1",
+            ? "Fleet macOS shell. Try: uname -a, sw_vers, ifconfig, ping -c 1 hub.fleet, ping -c 1 8.8.8.8"
+            : "Fleet Linux shell. Try: uname -a, cat /etc/os-release, ip addr, ping -c 1 hub.fleet, ping -c 1 linux-colo-1",
       stderr: "",
     };
   }
@@ -266,11 +266,11 @@ export function runSimulated(device: ShellDevice, raw: string): ShellResult {
   if (bin === "echo") {
     if (device.os === "windows") {
       if (joined === "%USERPROFILE%") return { exitCode: 0, stdout: home(device), stderr: "" };
-      if (joined === "%USERNAME%") return { exitCode: 0, stdout: "keel", stderr: "" };
+      if (joined === "%USERNAME%") return { exitCode: 0, stdout: "fleet", stderr: "" };
       if (joined === "%OS%") return { exitCode: 0, stdout: "Windows_NT", stderr: "" };
     } else {
       if (joined === "$HOME") return { exitCode: 0, stdout: home(device), stderr: "" };
-      if (joined === "$USER") return { exitCode: 0, stdout: "keel", stderr: "" };
+      if (joined === "$USER") return { exitCode: 0, stdout: "fleet", stderr: "" };
     }
     return { exitCode: 0, stdout: joined, stderr: "" };
   }
@@ -280,7 +280,7 @@ export function runSimulated(device: ShellDevice, raw: string): ShellResult {
   if (bin === "whoami" || command === "id -un") {
     return {
       exitCode: 0,
-      stdout: device.os === "windows" ? "keel\\operator" : "keel",
+      stdout: device.os === "windows" ? "fleet\\operator" : "fleet",
       stderr: "",
     };
   }
@@ -350,7 +350,7 @@ export function runSimulated(device: ShellDevice, raw: string): ShellResult {
       return noFile(device, args[0] ?? "");
     }
     if (bin === "id") {
-      return { exitCode: 0, stdout: "uid=501(keel) gid=20(staff) groups=20(staff),12(everyone)", stderr: "" };
+      return { exitCode: 0, stdout: "uid=501(fleet) gid=20(staff) groups=20(staff),12(everyone)", stderr: "" };
     }
     if (bin === "arch") return { exitCode: 0, stdout: "arm64", stderr: "" };
     if (bin === "uptime") {
@@ -414,7 +414,7 @@ export function runSimulated(device: ShellDevice, raw: string): ShellResult {
       };
     }
     if (bin === "id") {
-      return { exitCode: 0, stdout: "uid=1000(keel) gid=1000(keel) groups=1000(keel),27(sudo)", stderr: "" };
+      return { exitCode: 0, stdout: "uid=1000(fleet) gid=1000(fleet) groups=1000(fleet),27(sudo)", stderr: "" };
     }
     if (bin === "arch") return { exitCode: 0, stdout: "x86_64", stderr: "" };
     if (bin === "uptime") {

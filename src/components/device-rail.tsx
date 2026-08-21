@@ -53,6 +53,11 @@ export function DeviceRail({
         </span>
       </div>
       <ul className="flex gap-2 overflow-x-auto pb-1 md:max-h-[calc(100svh-14rem)] md:flex-col md:overflow-y-auto">
+        {devices.length === 0 && (
+          <li className="rounded-lg border border-dashed border-border bg-surface px-3 py-4 text-sm text-muted">
+            {t("fleet.empty")}
+          </li>
+        )}
         {devices.map((d) => (
           <li key={d.id} className="min-w-56 flex-1 md:min-w-0 md:flex-none">
             <button

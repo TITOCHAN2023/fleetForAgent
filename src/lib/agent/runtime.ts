@@ -214,15 +214,15 @@ export class AgentRuntime {
     }
     if (this.permit === "off") {
       this.log("warn", `refused (off): ${command}`);
-      return this.finish(corr, "refused", 126, "", "keel: permit=off — 本机不允许执行", [runEnv]);
+      return this.finish(corr, "refused", 126, "", "fleet: permit=off — 本机不允许执行", [runEnv]);
     }
     if (DESTRUCTIVE.test(command)) {
       this.log("error", `blocked destructive: ${command}`);
-      return this.finish(corr, "refused", 126, "", "keel: refused by device policy", [runEnv]);
+      return this.finish(corr, "refused", 126, "", "fleet: refused by device policy", [runEnv]);
     }
     if (this.permit === "ask") {
       if (this.pending) {
-        return this.finish(corr, "refused", 1, "", "keel: another command is waiting for consent", [runEnv]);
+        return this.finish(corr, "refused", 1, "", "fleet: another command is waiting for consent", [runEnv]);
       }
       this.pending = { corr, command, requestedAt: this.now() };
       this.log("warn", `waiting consent: ${command}`);
@@ -249,7 +249,7 @@ export class AgentRuntime {
     if (this.now() - p.requestedAt > this.askTimeoutMs) {
       this.pending = null;
       this.log("warn", "consent timed out");
-      return this.finish(p.corr, "refused", 1, "", "keel: consent timed out", []);
+      return this.finish(p.corr, "refused", 1, "", "fleet: consent timed out", []);
     }
     this.pending = null;
     this.log("info", `approved: ${p.command}`);
@@ -263,7 +263,7 @@ export class AgentRuntime {
     }
     this.pending = null;
     this.log("warn", `denied: ${p.command}`);
-    return this.finish(p.corr, "refused", 1, "", "keel: denied at the machine", []);
+    return this.finish(p.corr, "refused", 1, "", "fleet: denied at the machine", []);
   }
 
   tick(): RunOutcome | null {
@@ -272,7 +272,7 @@ export class AgentRuntime {
     if (this.now() - p.requestedAt <= this.askTimeoutMs) return null;
     this.pending = null;
     this.log("warn", "consent timed out");
-    return this.finish(p.corr, "refused", 1, "", "keel: consent timed out", []);
+    return this.finish(p.corr, "refused", 1, "", "fleet: consent timed out", []);
   }
 
   private refusePending(reason: string) {

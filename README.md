@@ -20,7 +20,7 @@ http://127.0.0.1:8080
 ## Deploy the Worker
 
 ```bash
-cd packages/keel-worker
+cd packages/fleet-worker
 npm install
 npx wrangler login
 npx wrangler deploy
@@ -33,8 +33,8 @@ Paste the `*.workers.dev` host into each agent.
 
 | Path | What |
 |---|---|
-| `packages/keel-worker/` | Cloudflare Worker + Durable Objects (the relay) |
-| `packages/keel-agent/` | Go agent (Windows exe, macOS dmg, Linux tar.gz) |
+| `packages/fleet-worker/` | Cloudflare Worker + Durable Objects (the relay) |
+| `packages/fleet-agent/` | Go agent (Windows exe, macOS dmg, Linux tar.gz) |
 | `src/` | Optional web console |
 | `docs/DEPLOY.md` | Deploy tutorial (中文) |
 | `migrations/` | Auth + fleet schema (PGLite locally, Postgres in prod) |

@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	agentVersion = "0.2.3"
+	agentVersion = "0.2.4"
 )
 
 //go:embed ui/index.html
@@ -288,7 +288,7 @@ func (a *Agent) connect(hub string) error {
 	headers := map[string][]string{
 		"X-Fleet-Proto": {"1"},
 		"X-Device-Id":   {a.deviceID},
-		"X-Device-Name": {hostname()},
+		"X-Device-Name": {deviceName()},
 		"X-Device-Os":   {osKind()},
 	}
 	tok := a.hubToken
@@ -319,8 +319,8 @@ func (a *Agent) connect(hub string) error {
 	hello := Envelope{V: 1, Type: "hello", ID: fmt.Sprintf("%d", time.Now().UnixNano()), T: time.Now().UnixMilli(), Body: map[string]any{
 		"os":        osKind(),
 		"arch":      runtime.GOARCH,
-		"hostname":  hostname(),
-		"caps":      []string{"shell", "pane"},
+		"hostname":  deviceName(),
+		"caps":      agentCaps(),
 		"agent_ver": agentVersion,
 		"permit":    string(a.permit),
 		"egress":    "internet",
@@ -384,6 +384,22 @@ func hostname() string {
 		return "fleet-agent"
 	}
 	return h
+}
+
+// deviceName is X-Device-Name / hello hostname. FLEET_NAME overrides so a test
+// agent is not listed as a second copy of the machine hostname.
+func deviceName() string {
+	if v := strings.TrimSpace(os.Getenv("FLEET_NAME")); v != "" {
+		return v
+	}
+	return hostname()
+}
+
+func agentCaps() []string {
+	if runtime.GOOS == "windows" {
+		return []string{"shell", "pane"}
+	}
+	return []string{"shell", "pane", "live_shell"}
 }
 
 func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {

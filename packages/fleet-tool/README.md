@@ -35,4 +35,4 @@ Existing tools stay. `device_id` is still on every mutating/read schema; it is o
 - Last-used is **not** written to `hub_sessions`, disk, or `~/.fleet`. The web console may keep using `hub_sessions`; MCP does not.
 - Targeted responses echo the resolved `device_id`.
 - `corr` is bound to the device that started the job. `get_result` / `wait` / `read_screen` refuse a different `device_id`.
-- Last `cwd` is also process memory only. Each `run` is still a fresh `/bin/sh -c` on the agent; fleet-tool wraps the command (`cd` to last cwd if set, then a `__FLEET_META__` trailer with `pwd` + exit). The trailer is stripped from stdout. Finished `run` / `get_result` / `wait` and `get_current_computer` echo `cwd`. Paths are POSIX single-quoted (`shQuote`). No env-file or live bash.
+- The agent (0.2.4+) keeps one live POSIX shell, so `cd` / `export` survive across `run`s. fleet-tool does **not** wrap commands with `__FLEET_META__` (that fought the live shell). `wrapSessionCommand` remains as a unit-tested helper only.

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { test } from "node:test";
 import {
   CWD_MARK,
+  FLEET_VERSION,
   MISSING_DEVICE_MESSAGE,
   WAIT_DEFAULT_MS,
   WAIT_MAX_MS,
@@ -18,19 +18,8 @@ import {
   wrapSessionCommand,
 } from "./operator.mjs";
 
-function assertWrappedCommand(sent, userCommand) {
-  assert.equal(typeof sent, "string");
-  assert.ok(sent.includes(userCommand), `wrap should contain ${JSON.stringify(userCommand)}: ${sent}`);
-  assert.ok(sent.includes(CWD_MARK), "wrap should contain CWD_MARK");
-}
-
-function shExec(script) {
-  try {
-    const stdout = execFileSync("/bin/sh", ["-c", script], { encoding: "utf8" });
-    return { stdout, status: 0 };
-  } catch (err) {
-    return { stdout: err.stdout != null ? String(err.stdout) : "", status: err.status ?? 1 };
-  }
+function assertSentCommand(sent, userCommand) {
+  assert.equal(sent, userCommand);
 }
 
 function mockRpc(handlers) {
@@ -127,7 +116,7 @@ test("run wait_ms omitted or 0 is immediate corr and does not poll get_result", 
     ["/v1/run"],
   );
   assert.equal(calls[0].body.device_id, "mac-1");
-  assertWrappedCommand(calls[0].body.command, "uname");
+  assertSentCommand(calls[0].body.command, "uname");
   assert.equal("wait_ms" in calls[0].body, false);
 
   const { rpc: rpc0, calls: calls0 } = mockRpc({
@@ -274,7 +263,7 @@ test("set_computer and get_current_computer are process memory only", async () =
   assert.equal(run.device_id, "mac-1");
   const sent = calls.find((c) => c.path === "/v1/run").body;
   assert.equal(sent.device_id, "mac-1");
-  assertWrappedCommand(sent.command, "uname");
+  assertSentCommand(sent.command, "uname");
 });
 
 test("FLEET_DEVICE_ID is a start default and is not written back", async () => {
@@ -411,35 +400,18 @@ test("stripSessionMeta removes the trailer and does not leak the marker", () => 
   assert.equal(plain.cwd, null);
 });
 
-test("cd /tmp then pwd is /tmp; marker does not leak into stdout", async () => {
-  let lastScript = { script: "", stdout: "", status: 0 };
+test("run sends the raw command — no __FLEET_META__ wrap", async () => {
   const { rpc, calls } = mockRpc({
-    "/v1/run": (body) => {
-      const ran = shExec(body.command);
-      lastScript = { script: body.command, ...ran };
-      return { corr: `c-${calls.length}`, status: "running" };
-    },
-    "/v1/get_result": () => ({
-      status: "done",
-      corr: "c",
-      ok: lastScript.status === 0,
-      exit_code: lastScript.status,
-      stdout: lastScript.stdout,
-    }),
+    "/v1/run": () => ({ corr: "c-raw", status: "running" }),
   });
   const op = createOperator({ rpc });
-  const cd = await op.callTool("run", { device_id: "mac-1", command: "cd /tmp", wait_ms: 2000 });
-  assertWrappedCommand(calls[0].body.command, "cd /tmp");
-  assert.equal(cd.cwd, "/tmp");
-  assert.equal(cd.stdout.includes(CWD_MARK), false);
-  assert.equal((await op.callTool("get_current_computer")).cwd, "/tmp");
+  await op.callTool("run", { device_id: "mac-1", command: "cd /tmp" });
+  await op.callTool("run", { device_id: "mac-1", command: "pwd" });
+  const sent = calls.filter((c) => c.path === "/v1/run").map((c) => c.body.command);
+  assert.deepEqual(sent, ["cd /tmp", "pwd"]);
+  assert.ok(sent.every((c) => !String(c).includes(CWD_MARK)));
+});
 
-  const pwd = await op.callTool("run", { device_id: "mac-1", command: "pwd", wait_ms: 2000 });
-  const second = calls.filter((c) => c.path === "/v1/run")[1].body.command;
-  assertWrappedCommand(second, "pwd");
-  assert.ok(second.includes(`cd ${shQuote("/tmp")}`));
-  assert.equal(pwd.stdout.trim(), "/tmp");
-  assert.equal(pwd.cwd, "/tmp");
-  assert.equal(pwd.stdout.includes(CWD_MARK), false);
-  assert.equal((await op.callTool("get_result", { corr: "c-1" })).cwd, "/tmp");
+test("MCP version is 0.2.4", () => {
+  assert.equal(FLEET_VERSION, "0.2.4");
 });

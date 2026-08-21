@@ -9,7 +9,7 @@ import (
 const defaultSettingsAddr = "127.0.0.1:17890"
 
 // settingsAddr is the local UI/API listen address.
-// FLEET_SETTINGS_ADDR overrides it so a test agent can sit beside 0.2.3 on 17890.
+// FLEET_SETTINGS_ADDR overrides it so a test agent can sit beside the stable 17890 instance.
 func settingsAddr() string {
 	v := strings.TrimSpace(os.Getenv("FLEET_SETTINGS_ADDR"))
 	if v == "" {

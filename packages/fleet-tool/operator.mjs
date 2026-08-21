@@ -3,6 +3,8 @@
  * Do not write hub_sessions, ~/.fleet, or a workspace file.
  */
 
+export const FLEET_VERSION = "0.2.4";
+
 /** MCP-call wait budget only. Not a kill timeout. Hosts cancel tools at ~60s. */
 export const WAIT_DEFAULT_MS = 0;
 export const WAIT_MAX_MS = 30_000;
@@ -283,8 +285,7 @@ export function createOperator({
       if (!command) throw new Error("command required");
       const deviceId = resolveDevice(args);
       const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? WAIT_DEFAULT_MS);
-      const wrapped = wrapSessionCommand(command, lastCwd);
-      const started = await rpc("/v1/run", { device_id: deviceId, command: wrapped });
+      const started = await rpc("/v1/run", { device_id: deviceId, command });
       const corr = started?.corr;
       rememberCorr(corr, deviceId);
       const out = withDevice({ ...started, corr, status: started?.status ?? "running" }, deviceId);

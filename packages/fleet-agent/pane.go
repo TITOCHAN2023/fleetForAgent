@@ -89,9 +89,13 @@ type pane struct {
 }
 
 type supervisor struct {
-	mu    sync.Mutex
-	panes map[string]*pane
-	order []string
+	mu      sync.Mutex
+	panes   map[string]*pane
+	order   []string
+	live    *liveShell
+	pending *liveJob
+	queue   []*liveJob
+	pumping bool
 }
 
 func newSupervisor() *supervisor {
@@ -99,13 +103,15 @@ func newSupervisor() *supervisor {
 }
 
 func (s *supervisor) spawn(corr, command string) (*pane, error) {
-	ctx := context.Background()
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/C", command)
-	} else {
-		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", command)
+	if runtime.GOOS != "windows" {
+		return s.enqueueLive(corr, command)
 	}
+	return s.spawnOneshot(corr, command)
+}
+
+func (s *supervisor) spawnOneshot(corr, command string) (*pane, error) {
+	ctx := context.Background()
+	cmd := exec.CommandContext(ctx, "cmd", "/C", command)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -233,9 +239,13 @@ func (p *pane) resultText() (stdout, stderr string) {
 func (p *pane) typeKeys(keys string) error {
 	p.mu.Lock()
 	w := p.stdin
+	oneshot := p.cmd != nil
 	alive := p.running
 	p.mu.Unlock()
-	if !alive || w == nil {
+	if w == nil {
+		return io.ErrClosedPipe
+	}
+	if oneshot && !alive {
 		return io.ErrClosedPipe
 	}
 	_, err := io.WriteString(w, keys)
@@ -245,13 +255,21 @@ func (p *pane) typeKeys(keys string) error {
 func (s *supervisor) get(id string) *pane {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var p *pane
 	if id == "" {
 		if len(s.order) == 0 {
 			return nil
 		}
-		return s.panes[s.order[len(s.order)-1]]
+		p = s.panes[s.order[len(s.order)-1]]
+	} else {
+		p = s.panes[id]
 	}
-	return s.panes[id]
+	if p != nil && s.live != nil && s.live.stdin != nil {
+		p.mu.Lock()
+		p.stdin = s.live.stdin
+		p.mu.Unlock()
+	}
+	return p
 }
 
 func (s *supervisor) list() []map[string]any {

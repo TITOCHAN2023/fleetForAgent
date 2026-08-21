@@ -10,7 +10,7 @@
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createOperator } from "./operator.mjs";
+import { createOperator, FLEET_VERSION } from "./operator.mjs";
 
 function loadDotEnv(path) {
   try {
@@ -108,7 +108,7 @@ function mcp() {
           reply(id, {
             protocolVersion: "2024-11-05",
             capabilities: { tools: {} },
-            serverInfo: { name: "fleet", version: "0.2.0" },
+            serverInfo: { name: "fleet", version: FLEET_VERSION },
           });
           continue;
         }

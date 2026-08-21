@@ -43,6 +43,58 @@ func TestParseDoneMarker(t *testing.T) {
 	if !ok || code != 7 || out != "oops\n" {
 		t.Fatalf("exit 7: ok=%v code=%d out=%q", ok, code, out)
 	}
+	echoed := "printf '" + marker + "%d\\n' $?\n" + marker + "0\n"
+	out, rest, code, ok = parseDoneMarker(echoed, marker)
+	if !ok || code != 0 {
+		t.Fatalf("echoed printf source must be skipped: ok=%v code=%d out=%q", ok, code, out)
+	}
+	if strings.Contains(out, marker+"0") {
+		t.Fatalf("marker leaked into output: %q", out)
+	}
+	if rest != "" {
+		t.Fatalf("rest=%q", rest)
+	}
+	out, _, code, ok = parseDoneMarker("bar"+marker+"0\n", marker)
+	if !ok || code != 0 || out != "bar" {
+		t.Fatalf("no-newline output: ok=%v code=%d out=%q", ok, code, out)
+	}
+}
+
+func TestExitCommandCode(t *testing.T) {
+	if _, ok := exitCommandCode("echo hi"); ok {
+		t.Fatal("echo is not exit")
+	}
+	code, ok := exitCommandCode("exit")
+	if !ok || code != 0 {
+		t.Fatalf("exit: ok=%v code=%d", ok, code)
+	}
+	code, ok = exitCommandCode("exit 3")
+	if !ok || code != 3 {
+		t.Fatalf("exit 3: ok=%v code=%d", ok, code)
+	}
+	if _, ok := exitCommandCode("exit; echo hi"); ok {
+		t.Fatal("compound exit must not short-circuit")
+	}
+}
+
+func TestHasReadyLine(t *testing.T) {
+	if hasReadyLine("printf '%s\\n' '" + shellReadyMark + "'\n") {
+		t.Fatal("echoed printf must not count as ready")
+	}
+	if !hasReadyLine("noise\n" + shellReadyMark + "\n") {
+		t.Fatal("expected exact ready line")
+	}
+}
+
+func TestStripDoneLines(t *testing.T) {
+	in := "keep\nprintf '" + doneMarkerPrefix + "abc__%d\\n' $?\nkeep2\n"
+	got := stripDoneLines(in)
+	if strings.Contains(got, doneMarkerPrefix) {
+		t.Fatalf("marker leaked: %q", got)
+	}
+	if !strings.Contains(got, "keep") || !strings.Contains(got, "keep2") {
+		t.Fatalf("stripped too much: %q", got)
+	}
 }
 
 func TestLiveShellPersistsEnvAndCwd(t *testing.T) {
@@ -73,8 +125,8 @@ func TestLiveShellPersistsEnvAndCwd(t *testing.T) {
 	if strings.TrimSpace(out) != "bar" {
 		t.Fatalf("env persist: stdout=%q stderr=%q", out, stderr)
 	}
-	if strings.Contains(out, doneMarkerPrefix) {
-		t.Fatalf("marker leaked: %q", out)
+	if strings.Contains(out, doneMarkerPrefix) || strings.Contains(stderr, doneMarkerPrefix) {
+		t.Fatalf("marker leaked: stdout=%q stderr=%q", out, stderr)
 	}
 
 	p3, err := s.spawn("c3", "cd /tmp")
@@ -162,6 +214,9 @@ func TestLiveShellStartsInHomeAndExpandsAlias(t *testing.T) {
 	if !strings.Contains(typed, "ll") || !(strings.Contains(typed, "alias") || strings.Contains(typed, "ls -ld")) {
 		t.Fatalf("type ll should find alias, stdout=%q stderr=%q", typed, stderr)
 	}
+	if strings.Contains(typed, doneMarkerPrefix) || strings.Contains(stderr, doneMarkerPrefix) {
+		t.Fatalf("marker leaked: stdout=%q stderr=%q", typed, stderr)
+	}
 
 	p4, err := s.spawn("e1", "cd /tmp")
 	if err != nil {
@@ -185,5 +240,57 @@ func TestLiveShellStartsInHomeAndExpandsAlias(t *testing.T) {
 	}
 	if got2 != want && !strings.HasPrefix(got2, want) && filepath.Clean(got2) != filepath.Clean(want) {
 		t.Fatalf("after exit pwd=%q want home %q (raw %q)", got2, want, pwd2)
+	}
+	if p5.exitCode != 0 {
+		t.Fatalf("exit command exit_code=%d want 0", p5.exitCode)
+	}
+}
+
+func TestLiveShellEchoHiHasCleanStreams(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("live shell is POSIX-only")
+	}
+	s := newSupervisor()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		if s.live != nil {
+			s.live.kill()
+		}
+		s.mu.Unlock()
+	})
+
+	p, err := s.spawn("hi1", "echo hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p)
+	out, stderr := p.resultText()
+	if strings.TrimSpace(out) != "hi" {
+		t.Fatalf("stdout=%q want hi", out)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("stderr should be empty, got %q", stderr)
+	}
+	if strings.Contains(out, doneMarkerPrefix) || strings.Contains(stderr, doneMarkerPrefix) {
+		t.Fatalf("marker leaked: stdout=%q stderr=%q", out, stderr)
+	}
+	if strings.Contains(out, "echo hi") || strings.Contains(stderr, "echo hi") {
+		t.Fatalf("typed command echoed: stdout=%q stderr=%q", out, stderr)
+	}
+
+	p2, err := s.spawn("hi2", "echo err >&2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p2)
+	out2, err2 := p2.resultText()
+	if strings.TrimSpace(out2) != "" {
+		t.Fatalf("stdout should be empty for >&2, got %q", out2)
+	}
+	if !strings.Contains(err2, "err") {
+		t.Fatalf("stderr=%q want err", err2)
+	}
+	if strings.Contains(out2, doneMarkerPrefix) || strings.Contains(err2, doneMarkerPrefix) {
+		t.Fatalf("marker leaked: stdout=%q stderr=%q", out2, err2)
 	}
 }

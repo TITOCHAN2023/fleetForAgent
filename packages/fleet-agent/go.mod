@@ -4,6 +4,7 @@ go 1.23
 
 require (
 	github.com/coder/websocket v1.8.13
+	github.com/creack/pty v1.1.24
 	github.com/energye/systray v1.0.3
 )
 

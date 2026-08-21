@@ -163,54 +163,97 @@ func newMarkerToken() string {
 }
 
 // parseDoneMarker finds printf '__MCP_DONE__{uuid}__%d\n' $? output.
-// marker is "__MCP_DONE__{uuid}__". Output before the marker is the command stdout.
+// marker is "__MCP_DONE__{uuid}__" then digits and newline. Hits followed by
+// non-digits (the echoed printf '%d' source) are skipped. The marker may sit
+// on the same line as command output (printf '%s' with no trailing newline).
 func parseDoneMarker(buf, marker string) (output, rest string, exit int, ok bool) {
 	if marker == "" {
 		return "", buf, 0, false
 	}
-	i := strings.Index(buf, marker)
-	if i < 0 {
-		return "", buf, 0, false
+	start := 0
+	for {
+		rel := strings.Index(buf[start:], marker)
+		if rel < 0 {
+			return "", buf, 0, false
+		}
+		i := start + rel
+		after := buf[i+len(marker):]
+		nl := strings.IndexByte(after, '\n')
+		if nl < 0 {
+			return "", buf, 0, false
+		}
+		codeStr := strings.TrimSpace(strings.TrimSuffix(after[:nl], "\r"))
+		code, err := strconv.Atoi(codeStr)
+		if err != nil {
+			start = i + len(marker)
+			continue
+		}
+		return strings.ReplaceAll(buf[:i], "\r", ""), after[nl+1:], code, true
 	}
-	after := buf[i+len(marker):]
-	nl := strings.IndexByte(after, '\n')
-	if nl < 0 {
-		return "", buf, 0, false
-	}
-	code, err := strconv.Atoi(strings.TrimSpace(strings.TrimSuffix(after[:nl], "\r")))
-	if err != nil {
-		code = 0
-	}
-	return buf[:i], after[nl+1:], code, true
 }
 
-func startLiveShell() (*liveShell, error) {
-	cmd := exec.Command(pickShell(), "-il")
-	if home := userHome(); home != "" {
-		cmd.Dir = home
+func stripReadyNoise(s string) string {
+	if !strings.Contains(s, shellReadyMark) {
+		return s
 	}
-	stdin, err := cmd.StdinPipe()
+	s = strings.ReplaceAll(s, shellReadyMark+"\n", "")
+	s = strings.ReplaceAll(s, shellReadyMark, "")
+	return s
+}
+
+func stripDoneLines(s string) string {
+	if !strings.Contains(s, doneMarkerPrefix) {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	keep := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.Contains(line, doneMarkerPrefix) {
+			continue
+		}
+		keep = append(keep, line)
+	}
+	return strings.Join(keep, "\n")
+}
+
+// exitCommandCode reports the code for a bare `exit` / `exit N` command.
+// Compound commands are left to the marker / process-death path.
+func exitCommandCode(command string) (int, bool) {
+	s := strings.TrimSpace(command)
+	if s == "" || strings.ContainsAny(s, ";&|") {
+		return 0, false
+	}
+	fields := strings.Fields(s)
+	if len(fields) == 0 || fields[0] != "exit" {
+		return 0, false
+	}
+	if len(fields) == 1 {
+		return 0, true
+	}
+	n, err := strconv.Atoi(fields[1])
 	if err != nil {
-		return nil, err
+		return 0, true
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
+	return n, true
+}
+
+func hasReadyLine(buf string) bool {
+	s := strings.ReplaceAll(buf, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	for _, line := range strings.Split(s, "\n") {
+		if line == shellReadyMark {
+			return true
+		}
 	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	ls := &liveShell{cmd: cmd, stdin: stdin, lastUsed: time.Now(), idleFor: shellIdleFor}
-	readyCh := make(chan struct{}, 1)
+	return false
+}
+
+func beginLiveIO(ls *liveShell, stdout, stderr io.Reader, readyCh chan struct{}) {
 	go drainLive(stdout, func(chunk string) {
 		ls.mu.Lock()
 		if !ls.ready {
 			ls.rawOut += chunk
-			if strings.Contains(ls.rawOut, shellReadyMark) {
+			if hasReadyLine(ls.rawOut) {
 				ls.ready = true
 				ls.rawOut = ""
 				ls.mu.Unlock()
@@ -238,16 +281,15 @@ func startLiveShell() (*liveShell, error) {
 			cb(chunk)
 		}
 	}, nil)
-	go func() {
-		_ = cmd.Wait()
-		ls.markExit()
-	}()
+}
+
+func waitLiveReady(ls *liveShell, stdin io.Writer, readyCh <-chan struct{}) {
 	_, _ = io.WriteString(stdin, "export PS1=\"\"\n")
 	_, _ = io.WriteString(stdin, "stty -echo 2>/dev/null || true\n")
 	// -il still needs expand_aliases on bash; setopt is the zsh equivalent.
 	_, _ = io.WriteString(stdin, "shopt -s expand_aliases 2>/dev/null || true\n")
 	_, _ = io.WriteString(stdin, "setopt aliases 2>/dev/null || true\n")
-	_, _ = io.WriteString(stdin, "printf '"+shellReadyMark+"\\n'\n")
+	_, _ = io.WriteString(stdin, "printf '%s\\n' '"+shellReadyMark+"'\n")
 	select {
 	case <-readyCh:
 	case <-time.After(shellReadyWait):
@@ -256,7 +298,6 @@ func startLiveShell() (*liveShell, error) {
 		ls.rawOut = ""
 		ls.mu.Unlock()
 	}
-	return ls, nil
 }
 
 func drainLive(r io.Reader, onChunk func(string), onEOF func()) {
@@ -455,13 +496,16 @@ func (s *supervisor) startLiveJob(job *liveJob) error {
 		s.mu.Unlock()
 		return err
 	}
-	if err := live.write(fmt.Sprintf("printf '%s%%d\\n' $?\n", job.marker)); err != nil {
-		s.mu.Lock()
-		if s.pending == job {
-			s.pending = nil
+	// `exit` closes the login shell before the marker can run; wait for onLiveExit.
+	if _, isExit := exitCommandCode(job.command); !isExit {
+		if err := live.write(fmt.Sprintf("printf '%s%%d\\n' $?\n", job.marker)); err != nil {
+			s.mu.Lock()
+			if s.pending == job {
+				s.pending = nil
+			}
+			s.mu.Unlock()
+			return err
 		}
-		s.mu.Unlock()
-		return err
 	}
 	return nil
 }
@@ -491,7 +535,7 @@ func (s *supervisor) onLiveStdout(chunk string) {
 		s.pending = nil
 	}
 	s.mu.Unlock()
-	job.pane.finishCommand(out, code)
+	job.pane.finishCommand(stripReadyNoise(out), code)
 	go s.pumpLive()
 }
 
@@ -500,6 +544,10 @@ func (s *supervisor) onLiveStderr(chunk string) {
 	job := s.pending
 	s.mu.Unlock()
 	if job == nil {
+		return
+	}
+	chunk = stripDoneLines(chunk)
+	if chunk == "" {
 		return
 	}
 	job.pane.append("stderr", chunk)
@@ -514,7 +562,11 @@ func (s *supervisor) onLiveExit() {
 	}
 	s.mu.Unlock()
 	if job != nil && job.pane.stillRunning() {
-		job.pane.finishCommand("", 1)
+		code := 1
+		if c, ok := exitCommandCode(job.command); ok {
+			code = c
+		}
+		job.pane.finishCommand("", code)
 	}
 	go s.pumpLive()
 }
@@ -536,9 +588,17 @@ func (p *pane) stillRunning() bool {
 func (p *pane) finishCommand(stdout string, code int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	stdout = stripDoneLines(stripReadyNoise(stdout))
 	p.stdout = newStreamBuf()
 	if stdout != "" {
 		p.stdout.append(stdout)
+	}
+	if p.stderr != nil {
+		cleaned := stripDoneLines(p.stderr.render())
+		p.stderr = newStreamBuf()
+		if cleaned != "" {
+			p.stderr.append(cleaned)
+		}
 	}
 	p.lines = []string{""}
 	if stdout != "" {

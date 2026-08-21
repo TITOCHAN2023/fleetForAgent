@@ -21,7 +21,7 @@ Existing tools stay. `device_id` is still on every mutating/read schema; it is o
 | `wait` | Explicit block: `{corr, device_id?, wait_ms?}`. Default `wait_ms` is the 30s cap. Long-polls `get_result`. |
 | `read_screen` / `type` | Same optional `device_id` fill. |
 | `set_computer` | Remember a device for later calls **in this MCP process only**. |
-| `get_current_computer` | Show last-used and the `FLEET_DEVICE_ID` start default. |
+| `get_current_computer` | Show last-used, last `cwd`, and the `FLEET_DEVICE_ID` start default. |
 
 `wait_ms` is an MCP-call budget only: default **0**, max **30s** (hosts cancel tools at ~60s). It never kills the remote command. `status=running` is not an error — do not re-issue `run`; poll `get_result(wait_ms=...)` or `wait(wait_ms=...)`. Do not spam `wait_ms=0`.
 
@@ -35,3 +35,4 @@ Existing tools stay. `device_id` is still on every mutating/read schema; it is o
 - Last-used is **not** written to `hub_sessions`, disk, or `~/.fleet`. The web console may keep using `hub_sessions`; MCP does not.
 - Targeted responses echo the resolved `device_id`.
 - `corr` is bound to the device that started the job. `get_result` / `wait` / `read_screen` refuse a different `device_id`.
+- Last `cwd` is also process memory only. Each `run` is still a fresh `/bin/sh -c` on the agent; fleet-tool wraps the command (`cd` to last cwd if set, then a `__FLEET_META__` trailer with `pwd` + exit). The trailer is stripped from stdout. Finished `run` / `get_result` / `wait` and `get_current_computer` echo `cwd`. Paths are POSIX single-quoted (`shQuote`). No env-file or live bash.

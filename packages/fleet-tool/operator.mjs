@@ -12,6 +12,36 @@ export const WAIT_POLL_MS = 100;
 export const MISSING_DEVICE_MESSAGE =
   "device_id required — pass device_id or call set_computer";
 
+/** Trailer on wrapped /bin/sh -c runs. Process-memory cwd only — not env persistence. */
+export const CWD_MARK = "__FLEET_META__";
+
+/** POSIX single-quote wrap. Do not interpolate the path. */
+export function shQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+export function wrapSessionCommand(command, cwd) {
+  const lines = [
+    "__fleet_ec=0",
+    `trap '__fleet_ec=$?; printf "\\n${CWD_MARK} %s %s\\n" "$__fleet_ec" "$(pwd)"; exit "$__fleet_ec"' EXIT`,
+  ];
+  if (cwd) lines.push(`cd ${shQuote(cwd)} || exit $?`);
+  lines.push(String(command));
+  return lines.join("\n");
+}
+
+export function stripSessionMeta(stdout) {
+  const text = stdout == null ? "" : String(stdout);
+  const re = new RegExp(`(?:^|\\r?\\n)${CWD_MARK} (\\d+) ([^\\r\\n]*)\\s*$`);
+  const m = text.match(re);
+  if (!m) return { stdout: text, cwd: null, exit: null };
+  const exit = Number(m[1]);
+  const cwd = m[2] || null;
+  let cleaned = text.slice(0, m.index);
+  if (cleaned.endsWith("\r")) cleaned = cleaned.slice(0, -1);
+  return { stdout: cleaned, cwd, exit: Number.isFinite(exit) ? exit : null };
+}
+
 export function clampWaitMs(ms) {
   const n = Number(ms);
   if (!Number.isFinite(n) || n <= 0) return 0;
@@ -141,7 +171,7 @@ export function buildTools() {
     },
     {
       name: "get_current_computer",
-      description: "Show this process's last-used device and FLEET_DEVICE_ID start default.",
+      description: "Show this process's last-used device, last cwd, and FLEET_DEVICE_ID start default.",
       inputSchema: { type: "object", properties: {} },
     },
   ];
@@ -156,6 +186,7 @@ export function createOperator({
   if (typeof rpc !== "function") throw new Error("rpc required");
 
   let lastUsed = null;
+  let lastCwd = null;
   const envDefault = trimId(env.FLEET_DEVICE_ID) || null;
   /** @type {Map<string, string>} */
   const corrOwner = new Map();
@@ -188,9 +219,20 @@ export function createOperator({
     throw new Error(MISSING_DEVICE_MESSAGE);
   }
 
+  function decorateResult(row, deviceId) {
+    let out = withDevice(row, deviceId);
+    if (typeof out.stdout === "string") {
+      const meta = stripSessionMeta(out.stdout);
+      out = { ...out, stdout: meta.stdout };
+      if (meta.cwd) lastCwd = meta.cwd;
+    }
+    if (isFinishedResult(out)) out = { ...out, cwd: lastCwd };
+    return out;
+  }
+
   async function peekResult(deviceId, corr) {
     const row = await rpc("/v1/get_result", { device_id: deviceId, corr });
-    return withDevice(row, deviceId);
+    return decorateResult(row, deviceId);
   }
 
   async function waitForResult(deviceId, corr, timeoutMs) {
@@ -232,6 +274,7 @@ export function createOperator({
         last_used: lastUsed,
         env_default: envDefault,
         source: cur.source,
+        cwd: lastCwd,
       };
     }
 
@@ -240,7 +283,8 @@ export function createOperator({
       if (!command) throw new Error("command required");
       const deviceId = resolveDevice(args);
       const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? WAIT_DEFAULT_MS);
-      const started = await rpc("/v1/run", { device_id: deviceId, command });
+      const wrapped = wrapSessionCommand(command, lastCwd);
+      const started = await rpc("/v1/run", { device_id: deviceId, command: wrapped });
       const corr = started?.corr;
       rememberCorr(corr, deviceId);
       const out = withDevice({ ...started, corr, status: started?.status ?? "running" }, deviceId);
@@ -291,6 +335,6 @@ export function createOperator({
     callTool,
     resolveDevice,
     currentDevice,
-    getState: () => ({ lastUsed, envDefault, corrOwner }),
+    getState: () => ({ lastUsed, lastCwd, envDefault, corrOwner }),
   };
 }

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { test } from "node:test";
 import {
+  CWD_MARK,
   MISSING_DEVICE_MESSAGE,
   WAIT_DEFAULT_MS,
   WAIT_MAX_MS,
@@ -11,7 +13,25 @@ import {
   createOperator,
   deviceMismatchMessage,
   isFinishedResult,
+  shQuote,
+  stripSessionMeta,
+  wrapSessionCommand,
 } from "./operator.mjs";
+
+function assertWrappedCommand(sent, userCommand) {
+  assert.equal(typeof sent, "string");
+  assert.ok(sent.includes(userCommand), `wrap should contain ${JSON.stringify(userCommand)}: ${sent}`);
+  assert.ok(sent.includes(CWD_MARK), "wrap should contain CWD_MARK");
+}
+
+function shExec(script) {
+  try {
+    const stdout = execFileSync("/bin/sh", ["-c", script], { encoding: "utf8" });
+    return { stdout, status: 0 };
+  } catch (err) {
+    return { stdout: err.stdout != null ? String(err.stdout) : "", status: err.status ?? 1 };
+  }
+}
 
 function mockRpc(handlers) {
   const calls = [];
@@ -106,7 +126,8 @@ test("run wait_ms omitted or 0 is immediate corr and does not poll get_result", 
     calls.map((c) => c.path),
     ["/v1/run"],
   );
-  assert.deepEqual(calls[0].body, { device_id: "mac-1", command: "uname" });
+  assert.equal(calls[0].body.device_id, "mac-1");
+  assertWrappedCommand(calls[0].body.command, "uname");
   assert.equal("wait_ms" in calls[0].body, false);
 
   const { rpc: rpc0, calls: calls0 } = mockRpc({
@@ -251,7 +272,9 @@ test("set_computer and get_current_computer are process memory only", async () =
 
   const run = await op.callTool("run", { command: "uname" });
   assert.equal(run.device_id, "mac-1");
-  assert.deepEqual(calls.find((c) => c.path === "/v1/run").body, { device_id: "mac-1", command: "uname" });
+  const sent = calls.find((c) => c.path === "/v1/run").body;
+  assert.equal(sent.device_id, "mac-1");
+  assertWrappedCommand(sent.command, "uname");
 });
 
 test("FLEET_DEVICE_ID is a start default and is not written back", async () => {
@@ -342,7 +365,7 @@ test("get_result / wait / read_screen refuse a different device than the job own
 
 test("corr owner wins over a later last-used so the job is not peeked on the wrong host", async () => {
   const { rpc, calls } = mockRpc({
-    "/v1/run": (body) => ({ corr: body.command === "one" ? "job-a" : "job-b", status: "running" }),
+    "/v1/run": (body) => ({ corr: String(body.command).includes("one") ? "job-a" : "job-b", status: "running" }),
     "/v1/get_result": (body) => ({ status: "pending", corr: body.corr, seen: body.device_id }),
   });
   const op = createOperator({ rpc });
@@ -362,5 +385,61 @@ test("list_computers does not touch last-used", async () => {
   const op = createOperator({ rpc });
   const listed = await op.callTool("list_computers", {});
   assert.equal(listed.computers[0].id, "z");
-  assert.equal((await op.callTool("get_current_computer")).device_id, null);
+  const cur = await op.callTool("get_current_computer");
+  assert.equal(cur.device_id, null);
+  assert.equal(cur.cwd, null);
+});
+
+test("shQuote is POSIX single-quote wrapping", () => {
+  assert.equal(shQuote("/tmp"), "'/tmp'");
+  assert.equal(shQuote("it's"), `'it'\\''s'`);
+  const wrapped = wrapSessionCommand("pwd", "/tmp/it's");
+  assert.ok(wrapped.includes(`cd ${shQuote("/tmp/it's")}`));
+  assert.ok(wrapped.includes("pwd"));
+  assert.ok(wrapped.includes(CWD_MARK));
+});
+
+test("stripSessionMeta removes the trailer and does not leak the marker", () => {
+  const raw = `/tmp\n\n${CWD_MARK} 0 /tmp\n`;
+  const meta = stripSessionMeta(raw);
+  assert.equal(meta.stdout, "/tmp\n");
+  assert.equal(meta.cwd, "/tmp");
+  assert.equal(meta.exit, 0);
+  assert.equal(meta.stdout.includes(CWD_MARK), false);
+  const plain = stripSessionMeta("hello");
+  assert.equal(plain.stdout, "hello");
+  assert.equal(plain.cwd, null);
+});
+
+test("cd /tmp then pwd is /tmp; marker does not leak into stdout", async () => {
+  let lastScript = { script: "", stdout: "", status: 0 };
+  const { rpc, calls } = mockRpc({
+    "/v1/run": (body) => {
+      const ran = shExec(body.command);
+      lastScript = { script: body.command, ...ran };
+      return { corr: `c-${calls.length}`, status: "running" };
+    },
+    "/v1/get_result": () => ({
+      status: "done",
+      corr: "c",
+      ok: lastScript.status === 0,
+      exit_code: lastScript.status,
+      stdout: lastScript.stdout,
+    }),
+  });
+  const op = createOperator({ rpc });
+  const cd = await op.callTool("run", { device_id: "mac-1", command: "cd /tmp", wait_ms: 2000 });
+  assertWrappedCommand(calls[0].body.command, "cd /tmp");
+  assert.equal(cd.cwd, "/tmp");
+  assert.equal(cd.stdout.includes(CWD_MARK), false);
+  assert.equal((await op.callTool("get_current_computer")).cwd, "/tmp");
+
+  const pwd = await op.callTool("run", { device_id: "mac-1", command: "pwd", wait_ms: 2000 });
+  const second = calls.filter((c) => c.path === "/v1/run")[1].body.command;
+  assertWrappedCommand(second, "pwd");
+  assert.ok(second.includes(`cd ${shQuote("/tmp")}`));
+  assert.equal(pwd.stdout.trim(), "/tmp");
+  assert.equal(pwd.cwd, "/tmp");
+  assert.equal(pwd.stdout.includes(CWD_MARK), false);
+  assert.equal((await op.callTool("get_result", { corr: "c-1" })).cwd, "/tmp");
 });

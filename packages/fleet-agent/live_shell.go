@@ -283,8 +283,8 @@ func (ls *liveShell) ingestReady(chunk string, readyCh chan struct{}) bool {
 	return true
 }
 
-func beginLiveIO(ls *liveShell, stdout, stderr io.Reader, readyCh chan struct{}) {
-	go drainLive(stdout, func(chunk string) {
+func beginLiveIO(ls *liveShell, ptyMaster io.Reader, readyCh chan struct{}) {
+	go drainLive(ptyMaster, func(chunk string) {
 		if ls.ingestReady(chunk, readyCh) {
 			return
 		}
@@ -295,17 +295,6 @@ func beginLiveIO(ls *liveShell, stdout, stderr io.Reader, readyCh chan struct{})
 			cb(chunk)
 		}
 	}, func() { ls.markExit() })
-	go drainLive(stderr, func(chunk string) {
-		if ls.ingestReady(chunk, readyCh) {
-			return
-		}
-		ls.mu.Lock()
-		cb := ls.onStderr
-		ls.mu.Unlock()
-		if cb != nil {
-			cb(chunk)
-		}
-	}, nil)
 }
 
 func liveSetupCommand() string {
@@ -501,7 +490,6 @@ func (s *supervisor) ensureLive() error {
 		return err
 	}
 	next.onStdout = func(chunk string) { s.onLiveStdout(chunk) }
-	next.onStderr = func(chunk string) { s.onLiveStderr(chunk) }
 	next.onExit = func() { s.onLiveExit() }
 	time.Sleep(50 * time.Millisecond)
 	s.mu.Lock()
@@ -561,16 +549,12 @@ func (s *supervisor) startLiveJob(job *liveJob) error {
 }
 
 func (s *supervisor) onLiveStdout(chunk string) {
-	s.feedLive("stdout", chunk)
+	s.feedLive(chunk)
 }
 
-func (s *supervisor) onLiveStderr(chunk string) {
-	s.feedLive("stderr", chunk)
-}
-
-// feedLive records a chunk and completes the job when PS1 reappears.
-// bash/zsh write the prompt to stderr, so both streams must be scanned.
-func (s *supervisor) feedLive(which, chunk string) {
+// feedLive records PTY output (stdout+stderr on one pts) and completes
+// when PS1 reappears. MCP error stays empty for command output.
+func (s *supervisor) feedLive(chunk string) {
 	s.mu.Lock()
 	job := s.pending
 	live := s.live
@@ -579,34 +563,10 @@ func (s *supervisor) feedLive(which, chunk string) {
 		return
 	}
 	live.mu.Lock()
-	if job.finishing {
-		if which != "stderr" {
-			live.rawOut += chunk
-		} else {
-			live.rawErr += chunk
-		}
-		live.mu.Unlock()
-		return
-	}
-	if which == "stderr" {
-		live.rawErr += chunk
-	} else {
-		live.rawOut += chunk
-	}
+	live.rawOut += chunk
 	out, rest, code, ok := parsePrompt(live.rawOut)
-	stderrBefore := live.rawErr
-	fromStderr := false
 	if ok {
 		live.rawOut = rest
-	} else if eout, erest, ecode, eok := parsePrompt(live.rawErr); eok {
-		ok = true
-		fromStderr = true
-		code = ecode
-		out = live.rawOut
-		stderrBefore = eout
-		live.rawErr = erest
-	}
-	if ok {
 		job.finishing = true
 		live.lastUsed = time.Now()
 	}
@@ -614,22 +574,9 @@ func (s *supervisor) feedLive(which, chunk string) {
 	if !ok {
 		cleaned := stripCompletionText(chunk)
 		if cleaned != "" {
-			job.pane.append(which, cleaned)
+			job.pane.append("stdout", cleaned)
 		}
 		return
-	}
-	if fromStderr {
-		// Prompt is on stderr; stdout may still be in the PTY read queue.
-		time.Sleep(25 * time.Millisecond)
-		live.mu.Lock()
-		out = live.rawOut
-		if o2, r2, _, ook := parsePrompt(out); ook {
-			out = o2
-			live.rawOut = r2
-		} else {
-			live.rawOut = ""
-		}
-		live.mu.Unlock()
 	}
 	s.mu.Lock()
 	if s.pending == job {
@@ -640,9 +587,6 @@ func (s *supervisor) feedLive(which, chunk string) {
 	job.pane.finishCommand(out, code)
 	job.pane.mu.Lock()
 	job.pane.stderr = newStreamBuf()
-	if cleaned := stripEchoedCommand(stripCompletionText(stderrBefore), job.command); cleaned != "" {
-		job.pane.stderr.append(cleaned)
-	}
 	job.pane.mu.Unlock()
 	if _, isExit := exitCommandCode(job.command); isExit && live.alive() {
 		live.kill()

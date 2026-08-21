@@ -109,6 +109,23 @@ func TestHasReadyLine(t *testing.T) {
 	}
 }
 
+func TestLiveShellEnvDropsNoColor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("live shell is POSIX-only")
+	}
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("FORCE_COLOR", "0")
+	t.Setenv("TERM", "dumb")
+	for _, e := range liveShellEnv() {
+		if strings.HasPrefix(e, "NO_COLOR=") || strings.HasPrefix(e, "FORCE_COLOR=") {
+			t.Fatalf("launcher color env leaked: %q", e)
+		}
+		if e == "TERM=dumb" {
+			t.Fatal("TERM=dumb must not win")
+		}
+	}
+}
+
 func TestLiveSetupHasNoStty(t *testing.T) {
 	if strings.Contains(liveSetupCommand(), "stty") {
 		t.Fatal("setup must not inject stty (SIGTTOU stopped job)")
@@ -317,11 +334,11 @@ func TestLiveShellEchoHiHasCleanStreams(t *testing.T) {
 	}
 	waitPaneDone(t, p2)
 	out2, err2 := p2.resultText()
-	if strings.TrimSpace(out2) != "" {
-		t.Fatalf("stdout should be empty for >&2, got %q", out2)
+	if !strings.Contains(out2, "err") {
+		t.Fatalf("command stderr belongs on the PTY (stdout), got %q", out2)
 	}
-	if !strings.Contains(err2, "err") {
-		t.Fatalf("stderr=%q want err", err2)
+	if strings.TrimSpace(err2) != "" {
+		t.Fatalf("live-shell MCP error should stay empty, got %q", err2)
 	}
 	assertNoCompletion(t, out2, err2)
 }
@@ -377,7 +394,9 @@ func TestLiveShellTTYAndTerm(t *testing.T) {
 		s.mu.Unlock()
 	})
 
-	p, err := s.spawn("tty1", `tty; printf 'TERM=%s\n' "$TERM"`)
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("FORCE_COLOR", "0")
+	p, err := s.spawn("tty1", `tty; printf 'TERM=%s\n' "$TERM"; [ -t 2 ] && echo stderr_tty; printf 'NO_COLOR=%s\n' "${NO_COLOR-}"`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,17 +411,23 @@ func TestLiveShellTTYAndTerm(t *testing.T) {
 	if !strings.Contains(out, "TERM=xterm-256color") {
 		t.Fatalf("TERM=%q want xterm-256color (inherited dumb must not win)", out)
 	}
+	if !strings.Contains(out, "stderr_tty") {
+		t.Fatalf("stderr should be a tty, got %q", out)
+	}
+	if strings.Contains(out, "NO_COLOR=1") {
+		t.Fatalf("NO_COLOR must not be injected, got %q", out)
+	}
 	assertNoCompletion(t, out, stderr)
 
 	if _, err := exec.LookPath("python3"); err == nil {
-		p2, err := s.spawn("tty2", `python3 -c 'import sys; print(int(sys.stdin.isatty()), int(sys.stdout.isatty()))'`)
+		p2, err := s.spawn("tty2", `python3 -c 'import sys; print(int(sys.stdin.isatty()), int(sys.stdout.isatty()), int(sys.stderr.isatty()))'`)
 		if err != nil {
 			t.Fatal(err)
 		}
 		waitPaneDone(t, p2)
 		py, _ := p2.resultText()
-		if !strings.Contains(py, "1 1") {
-			t.Fatalf("python isatty want 1 1, got %q", py)
+		if !strings.Contains(py, "1 1 1") {
+			t.Fatalf("python isatty want 1 1 1, got %q", py)
 		}
 	}
 }

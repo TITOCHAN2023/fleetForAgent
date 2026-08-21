@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fleet</title>
+    <meta name="description" content="Fleet hub: list machines, pick one, run. Devices connect out only." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+    <style>
+      :root {
+        --bg: #090b0d; --surface: #111418; --elevated: #181c21; --fg: #e8eaed;
+        --muted: #8b929c; --subtle: #5c6370; --border: #23282f; --accent: #d4d8de;
+        --ok: #8fbf9f; --warn: #c4b08a; --bad: #d48a80;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--fg);
+        font: 15px/1.5 "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+      button, input { font: inherit; }
+      a { color: inherit; text-decoration: none; }
+      .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+      #app { min-height: 100svh; }
+      .split { display: grid; min-height: 100svh; }
+      @media (min-width: 768px) { .split { grid-template-columns: 1fr 1fr; } }
+      .pane-l { display: flex; flex-direction: column; justify-content: space-between;
+        border-bottom: 1px solid var(--border); padding: 40px 40px; }
+      @media (min-width: 768px) { .pane-l { border-bottom: 0; border-right: 1px solid var(--border); padding: 56px 40px; } }
+      .pane-r { display: flex; flex-direction: column; justify-content: center; padding: 40px 48px; }
+      .brand { font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted); }
+      h1 { font-size: 48px; font-weight: 500; letter-spacing: -0.03em; line-height: 1.1; margin: 24px 0 0; max-width: 9ch; }
+      @media (max-width: 767px) { h1 { font-size: 36px; } }
+      .lead { margin-top: 24px; max-width: 28em; color: var(--muted); font-size: 14px; }
+      .meta { margin-top: 48px; display: grid; gap: 16px; font-size: 12px; color: var(--subtle); }
+      .meta dd { margin: 4px 0 0; color: var(--muted); }
+      h2 { font-size: 18px; font-weight: 500; margin: 0; }
+      .sub { margin-top: 8px; font-size: 14px; color: var(--muted); }
+      .stack { margin-top: 32px; display: flex; flex-direction: column; gap: 12px; max-width: 24rem; }
+      .field { display: grid; gap: 6px; }
+      .field span { font-size: 12px; color: var(--subtle); }
+      input { height: 44px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border);
+        background: var(--elevated); color: var(--fg); }
+      .btn { height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid var(--border);
+        background: var(--elevated); color: var(--fg); cursor: pointer; display: inline-flex;
+        align-items: center; justify-content: center; gap: 8px; }
+      .btn:hover { background: var(--surface); }
+      .btn.primary { background: var(--accent); color: var(--bg); border: 0; }
+      .btn.primary:hover { opacity: 0.9; }
+      .btn.ghost { background: transparent; border: 0; color: var(--muted); height: auto; padding: 8px; }
+      .btn.ghost:hover { color: var(--fg); }
+      .err { color: var(--bad); font-size: 13px; min-height: 1.2em; }
+      .top { display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+        border-bottom: 1px solid var(--border); padding: 12px 24px; }
+      .tabs { display: flex; flex: 1; flex-wrap: wrap; gap: 4px; }
+      .tab { border: 0; background: transparent; color: var(--muted); padding: 8px 12px;
+        border-radius: 4px; cursor: pointer; font-size: 14px; }
+      .tab.on { background: var(--elevated); color: var(--fg); }
+      .who { font-size: 14px; color: var(--muted); max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .page { max-width: 1400px; margin: 0 auto; padding: 24px; display: grid; gap: 16px; }
+      .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px; }
+      .card h3 { font-size: 16px; font-weight: 500; margin: 0; }
+      .muted { color: var(--muted); font-size: 14px; }
+      .subtle { color: var(--subtle); font-size: 12px; }
+      .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      code, pre { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; }
+      code.box, pre { background: var(--elevated); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
+      pre { overflow: auto; }
+      .dl { display: grid; gap: 12px; }
+      @media (min-width: 800px) { .dl { grid-template-columns: 1fr 1fr; } }
+      .machine { border: 1px solid var(--border); border-radius: 12px; padding: 16px; background: var(--elevated); }
+      .dot { width: 8px; height: 8px; border-radius: 99px; background: var(--subtle); display: inline-block; }
+      .dot.on { background: var(--ok); }
+      .lang { display: flex; gap: 4px; }
+      .lang button { height: 32px; padding: 0 10px; font-size: 12px; }
+      .warn { color: var(--warn); font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script>
+      const T = {
+        zh: {
+          hero1: "任何 agent，", hero2: "先看清单，", hero3: "再选一台。",
+          body: "家里 NAT、机房内网、云上 VPC，设备只连出。中枢只做清单、选中、转发。",
+          proto: "v1 协议", hub: "中枢", hubImpl: "这个网站就是中枢",
+          enter: "进入舰队", enterBody: "用 Google 或 X 登录后签发 Hub token。Mac / Windows / Linux 同一套接法。",
+          continueG: "使用 Google 继续", continueX: "使用 X 继续",
+
+          signOut: "退出", settings: "设置", downloads: "下载", fleet: "舰队",
+          hubTitle: "中枢钥匙", hubBody: "把本站地址和 Hub token 填进每台电脑的 Agent，以及操作端 tool。",
+          url: "中枢地址（本站）", token: "Hub token", none: "还没有 token",
+          generate: "生成 token", reset: "重置 token",
+          resetHint: "旧钥匙立刻作废。每台 Agent 和每个 tool 都要重填。",
+          copy: "复制", secretOnce: "只显示一次，现在就复制走。",
+          toolHint: "FLEET_URL 用本站，FLEET_TOKEN 用这把钥匙。",
+          empty: "还没有机器。装 Agent，填本站地址和 token，连上后会出现在这里。",
+          online: "在线", offline: "离线",
+          relTitle: "安装本机小组件",
+          relBody: "装在每台要被统筹的电脑上。打开后只出网连这个网站。",
+          win: "Windows", macArm: "macOS Apple 芯片", macIntel: "macOS Intel", linux: "Linux",
+        },
+        en: {
+          hero1: "Any agent.", hero2: "List first,", hero3: "then pick one.",
+          body: "Home NAT, colo, cloud VPC — devices only connect out. The hub lists, selects, and forwards.",
+          proto: "v1 protocol", hub: "Hub", hubImpl: "This website is the hub",
+          enter: "Enter the fleet", enterBody: "Sign in with Google or X, then mint a Hub token. macOS, Windows, and Linux join the same way.",
+          continueG: "Continue with Google", continueX: "Continue with X",
+
+          signOut: "Sign out", settings: "Settings", downloads: "Downloads", fleet: "Fleet",
+          hubTitle: "Hub access", hubBody: "Paste this origin and Hub token into every agent, and into the operator tool.",
+          url: "Hub address (this site)", token: "Hub token", none: "No token yet",
+          generate: "Generate token", reset: "Reset token",
+          resetHint: "Old tokens die immediately. Re-paste on every agent and tool.",
+          copy: "Copy", secretOnce: "Shown once. Copy it now.",
+          toolHint: "FLEET_URL is this origin. FLEET_TOKEN is this key.",
+          empty: "No machines yet. Install an agent, paste this origin and token, then it shows up here.",
+          online: "online", offline: "offline",
+          relTitle: "Install the local agent",
+          relBody: "Install on every machine you want in the fleet. It only dials out to this site.",
+          win: "Windows", macArm: "macOS Apple silicon", macIntel: "macOS Intel", linux: "Linux",
+        },
+      };
+      const GH = "https://github.com/TITOCHAN2023/fleetForAgent/releases/latest/download";
+      const state = {
+        locale: localStorage.getItem("fleet-locale") === "en" ? "en" : "zh",
+        user: null,
+        tab: "settings",
+        err: "",
+        secret: "",
+        meta: null,
+        computers: [],
+      };
+      const t = (k) => T[state.locale][k];
+      const $ = (s) => document.querySelector(s);
+      function googleMark() {
+        return `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1Z"/><path fill="currentColor" opacity=".7" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23Z"/></svg>`;
+      }
+      function xMark() {
+        return `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.744l7.727-8.835L1.254 2.25H8.08l4.253 5.622L18.244 2.25Zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>`;
+      }
+
+      async function api(path, opt = {}) {
+        const res = await fetch(path, {
+          credentials: "include",
+          headers: { "content-type": "application/json", ...(opt.headers || {}) },
+          ...opt,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        return data;
+      }
+
+      async function boot() {
+        try { state.user = await api("/v1/me"); } catch { state.user = null; }
+        if (state.user) {
+          try { state.meta = await api("/v1/hub_token"); } catch { state.meta = null; }
+          try { const j = await api("/v1/list_computers", { method: "POST", body: "{}" }); state.computers = j.computers || []; } catch { state.computers = []; }
+        }
+        render();
+      }
+
+      function render() {
+        document.documentElement.lang = state.locale === "zh" ? "zh-CN" : "en";
+        document.getElementById("app").innerHTML = state.user ? appView() : loginView();
+        bind();
+      }
+
+      function langBar() {
+        return `<div class="lang">
+          <button type="button" class="btn" data-loc="en">EN</button>
+          <button type="button" class="btn" data-loc="zh">中文</button>
+        </div>`;
+      }
+
+      function loginView() {
+        return `<main class="split">
+          <section class="pane-l">
+            <div>
+              <div class="row" style="justify-content:space-between">
+                <span class="brand mono">Fleet</span>${langBar()}
+              </div>
+              <h1>${t("hero1")}<br>${t("hero2")}<br>${t("hero3")}</h1>
+              <p class="lead">${t("body")}</p>
+            </div>
+            <dl class="meta mono">
+              <div><dt>${t("proto")}</dt><dd>WSS hello / run / result</dd></div>
+              <div><dt>${t("hub")}</dt><dd>${t("hubImpl")}</dd></div>
+            </dl>
+          </section>
+          <section class="pane-r">
+            <h2>${t("enter")}</h2>
+            <p class="sub">${t("enterBody")}</p>
+            <div class="stack">
+              <p class="err">${state.err}</p>
+              <a class="btn" href="/v1/auth/google">${googleMark()}${t("continueG")}</a>
+              <a class="btn" href="/v1/auth/x">${xMark()}${t("continueX")}</a>
+            </div>
+          </section>
+        </main>`;
+      }
+
+      function appView() {
+        const tabs = [["settings", t("settings")], ["downloads", t("downloads")], ["fleet", t("fleet")]];
+        return `<div>
+          <header class="top">
+            <span class="brand mono">Fleet</span>
+            <nav class="tabs">${tabs.map(([id, label]) => `<button class="tab${state.tab===id?" on":""}" data-tab="${id}">${label}</button>`).join("")}</nav>
+            ${langBar()}
+            <span class="who">${state.user.email}</span>
+            <button class="btn ghost" id="out">${t("signOut")}</button>
+          </header>
+          <div class="page">${state.tab === "downloads" ? downloadsView() : state.tab === "fleet" ? fleetView() : settingsView()}</div>
+        </div>`;
+      }
+
+      function settingsView() {
+        const origin = location.origin;
+        const shown = state.secret
+          ? `<p class="warn">${t("secretOnce")}</p><div class="row"><code class="box" style="flex:1;word-break:break-all">${state.secret}</code><button class="btn" data-copy="${state.secret}">${t("copy")}</button></div>`
+          : `<p class="mono muted">${state.meta?.hasToken ? (state.meta.prefix + "…") : t("none")}</p>`;
+        return `<section class="card">
+          <h3>${t("hubTitle")}</h3>
+          <p class="muted" style="margin-top:8px">${t("hubBody")}</p>
+          <div style="margin-top:16px;display:grid;gap:12px">
+            <div>
+              <div class="subtle">${t("url")}</div>
+              <div class="row" style="margin-top:6px"><code class="box" style="flex:1">${origin}</code><button class="btn" data-copy="${origin}">${t("copy")}</button></div>
+            </div>
+            <div>
+              <div class="subtle">${t("token")}</div>
+              <div style="margin-top:6px">${shown}</div>
+            </div>
+          </div>
+          <div class="row" style="margin-top:16px">
+            <button class="btn primary" id="mint">${state.meta?.hasToken ? t("reset") : t("generate")}</button>
+            ${state.meta?.hasToken ? `<span class="subtle">${t("resetHint")}</span>` : ""}
+          </div>
+          <p class="muted" style="margin-top:16px">${t("toolHint")}</p>
+          <pre style="margin-top:8px">FLEET_URL=${origin}
+FLEET_TOKEN=${state.secret || "flt_…"}
+node packages/fleet-tool/index.mjs list</pre>
+        </section>`;
+      }
+
+      function downloadsView() {
+        const items = [
+          [t("macArm"), "FleetAgent-macos-arm64.dmg"],
+          [t("macIntel"), "FleetAgent-macos-amd64.dmg"],
+          [t("win"), "FleetAgent-windows-amd64.exe"],
+          [t("linux"), "fleet-agent-linux-amd64.tar.gz"],
+        ];
+        return `<section class="card">
+          <h3>${t("relTitle")}</h3>
+          <p class="muted" style="margin-top:8px">${t("relBody")}</p>
+        </section>
+        <div class="dl">${items.map(([name, file]) => `<article class="card"><h3>${name}</h3><p class="subtle mono" style="margin-top:8px">${file}</p><a class="btn" style="margin-top:12px" href="${GH}/${file}">Download</a></article>`).join("")}</div>`;
+      }
+
+      function fleetView() {
+        if (!state.computers.length) return `<section class="card"><h3>${t("fleet")}</h3><p class="muted" style="margin-top:8px">${t("empty")}</p></section>`;
+        return `<section class="card"><h3>${t("fleet")}</h3>
+          <div style="margin-top:16px;display:grid;gap:10px">${state.computers.map((c) => `
+            <div class="machine row" style="justify-content:space-between">
+              <div><strong>${c.name || c.id}</strong><div class="subtle mono">${c.id} · ${c.os || ""}</div></div>
+              <span class="muted"><span class="dot${c.online ? " on" : ""}"></span> ${c.online ? t("online") : t("offline")}</span>
+            </div>`).join("")}</div>
+        </section>`;
+      }
+
+      function bind() {
+        document.querySelectorAll("[data-loc]").forEach((b) => b.onclick = () => {
+          state.locale = b.dataset.loc; localStorage.setItem("fleet-locale", state.locale); render();
+        });
+        document.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => { state.tab = b.dataset.tab; render(); });
+        const out = $("#out");
+        if (out) out.onclick = async () => { try { await api("/v1/logout", { method: "POST", body: "{}" }); } catch {} state.user = null; state.secret = ""; render(); };
+        const mint = $("#mint");
+        if (mint) mint.onclick = async () => {
+          const out = await api("/v1/hub_token", { method: "POST", body: "{}" });
+          state.secret = out.token;
+          state.meta = { hasToken: true, prefix: out.prefix };
+          render();
+        };
+        document.querySelectorAll("[data-copy]").forEach((b) => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy));
+      }
+
+      boot();
+    </script>
+  </body>
+</html>

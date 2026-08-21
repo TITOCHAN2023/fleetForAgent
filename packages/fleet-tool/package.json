@@ -1,0 +1,8 @@
+{
+  "name": "fleet-tool",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "fleet-tool": "./index.mjs"
+  }
+}

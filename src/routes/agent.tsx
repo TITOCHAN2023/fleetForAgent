@@ -9,7 +9,7 @@ export const Route = createFileRoute("/agent")({ component: AgentPage });
 function AgentPage() {
   const { t } = useI18n();
   const [host, setHost] = useState("");
-  useEffect(() => setHost(window.location.host), []);
+  useEffect(() => setHost(window.location.origin), []);
 
   return (
     <main className="bg-bg text-fg min-h-svh">

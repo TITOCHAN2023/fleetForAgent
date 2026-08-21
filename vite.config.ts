@@ -42,6 +42,52 @@ function pgliteBootstrapPlugin(): Plugin {
  * and returns the 302 / completion HTML. Deployed apps do not use the popup
  * (full-page OAuth redirect), so `apply: "serve"` is enough.
  */
+/**
+ * Device WebSocket on the website origin: WSS /v1/device.
+ * HTTP /v1/* is the TanStack route src/routes/v1/$.ts.
+ * Only consume this path so Vite HMR upgrades still work.
+ */
+function fleetHubPlugin(): Plugin {
+  return {
+    name: "fleet-hub-v1",
+    apply: "serve",
+    configureServer(server) {
+      const attach = () => {
+        const httpServer = server.httpServer;
+        if (!httpServer || (httpServer as { __fleetHub?: boolean }).__fleetHub) return;
+        (httpServer as { __fleetHub?: boolean }).__fleetHub = true;
+        httpServer.on("upgrade", (req, socket, head) => {
+          const pathOnly = (req.url ?? "").split("?", 1)[0] ?? "";
+          if (pathOnly !== "/v1/device") return;
+          void (async () => {
+            try {
+              const mod = (await server.ssrLoadModule("/src/lib/fleet/v1.server.ts")) as {
+                handleHubUpgrade: (
+                  req: typeof req,
+                  socket: typeof socket,
+                  head: typeof head,
+                ) => Promise<boolean>;
+              };
+              await mod.handleHubUpgrade(req, socket, head);
+            } catch (err) {
+              console.error("[fleet-hub] upgrade failed:", err);
+              socket.destroy();
+            }
+          })();
+        });
+      };
+      attach();
+      if (!server.httpServer) {
+        const timer = setInterval(() => {
+          if (!server.httpServer) return;
+          clearInterval(timer);
+          attach();
+        }, 20);
+      }
+    },
+  };
+}
+
 function authPopupPlugin(): Plugin {
   return {
     name: "app-builder:auth-popup",
@@ -142,6 +188,7 @@ export default defineConfig(({ command, isPreview }) => ({
     pgliteBootstrapPlugin(),
     // Before tanstackStart so /auth/popup never falls through to the SPA.
     authPopupPlugin(),
+    fleetHubPlugin(),
     // PWA head + ?install=1 tutorial page; runs before Start/Nitro.
     grokPwaPlugin(),
     tailwindcss(),

@@ -103,7 +103,7 @@ export function AgentSettings({ defaultHub = "" }: { defaultHub?: string }) {
             <Input
               value={hub}
               onChange={(e) => setHub(e.target.value)}
-              placeholder="fleet.example.workers.dev"
+              placeholder="hub.example.com"
               aria-label={t("agent.domain")}
             />
             {snap.conn === "online" ? (

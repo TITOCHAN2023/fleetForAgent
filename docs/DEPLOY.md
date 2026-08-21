@@ -1,18 +1,22 @@
 # 部署 FleetForAgent
 
-没有 VPS。机器只出网，Cloudflare Worker 做中转。家宽 NAT、机房、云主机都可以加入。机器之间没有内网 IP。
+网站就是中枢。同一台 Node 上多个账号，SQL 按 `user_id` 隔离。机器只出网。
 
 ```
-[Mac mini / Windows / Linux]
-        只出网 WSS
+新用户 → 登录网站 → 生成 Hub token
+电脑装 Agent → 填 本站 origin + token
+tool / Cursor → FLEET_URL=本站  FLEET_TOKEN=同一把
+```
+
+```
+[Mac / Windows / Linux Agent]
+        只出网 WSS /v1/device
             │
             ▼
-   Cloudflare Worker  (fleet-hub)
-   Durable Object / 设备
+   本站  (TanStack Start · /v1/*)
             ▲
-            │  HTTPS
-   [你 / Cursor / 其它 Agent]
-   list_computers → 选一台 → run
+            │  HTTPS + Bearer flt_…
+   [fleet-tool / Cursor]
 ```
 
 安装包在 GitHub Release，不在仓库里：
@@ -21,7 +25,24 @@ https://github.com/TITOCHAN2023/fleetForAgent/releases/latest
 
 ---
 
-## 1. 部署 Worker
+## 0. 新用户（默认路径）
+
+1. 打开网站，登录。
+2. 设置页生成 Hub token（只显示一次明文；可随时重置，旧钥匙立刻作废）。
+3. 每台电脑装 Agent，中枢地址填**这个网站的 origin**（例如 `http://127.0.0.1:8080`），再贴 token。
+4. 操作端：
+
+```bash
+FLEET_URL=http://127.0.0.1:8080 FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
+```
+
+下面 A/B 是可选的独立中枢实现，不是新用户要填的地址。
+
+## 1. 可选：独立中枢（Worker 或单独 Node 进程）
+
+协议一样。只有你故意把中枢和网站拆开时才用。
+
+### A. Cloudflare Worker
 
 需要：Cloudflare 账号、Node 18+。
 
@@ -39,7 +60,7 @@ npx wrangler deploy
 https://fleet-hub.<你的账号>.workers.dev
 ```
 
-这就是 Agent 里填的 **Worker 域名**。也可以绑自己的域名（Cloudflare Dashboard → Workers → Triggers → Custom Domain）。
+这就是 Agent 里填的 **中枢地址**。也可以绑自己的域名（Cloudflare Dashboard → Workers → Triggers → Custom Domain）。
 
 ### 令牌（建议生产打开）
 
@@ -64,6 +85,33 @@ npx wrangler dev --port 8787
 
 Agent 填 `http://127.0.0.1:8787`（会转成 `ws://…/v1/device`）。
 
+### B. 普通部署（VPS / 本机 Node）
+
+不需要 Cloudflare。一台 Node 18+ 机器：
+
+```bash
+cd packages/fleet-hub
+npm install
+HUB_TOKEN=change-me PORT=8787 HOST=0.0.0.0 npm start
+```
+
+本机 Agent 填 `http://127.0.0.1:8787`。放到公网时前面加 Caddy / nginx 做 HTTPS，Agent 填 `hub.example.com`。
+
+控制面路径和 Worker 完全一样：`/v1/health`、`/v1/list_computers`、`/v1/run`、`/v1/get_result`、`/v1/read_screen`、`/v1/type`。设备仍是 `WSS /v1/device`。
+
+`HUB_TOKEN` 空着则开放，只适合打通。生产必须设。
+
+systemd 示例：
+
+```
+[Service]
+WorkingDirectory=/opt/fleet/packages/fleet-hub
+Environment=PORT=8787
+Environment=HUB_TOKEN=change-me
+ExecStart=/usr/bin/node index.mjs
+Restart=always
+```
+
 ---
 
 ## 2. 每台电脑装 Agent
@@ -73,7 +121,7 @@ Agent 填 `http://127.0.0.1:8787`（会转成 `ws://…/v1/device`）。
 | 系统 | 文件 |
 |---|---|
 | Windows | `FleetAgent-windows-amd64.exe` |
-| macOS Apple 芯片 | `FleetAgent-macos-arm64.dmg`（打不开用旁边的 zip） |
+| macOS Apple 芯片 | `FleetAgent-macos-arm64.dmg`（真磁盘映像；不要用 zip 改后缀） |
 | macOS Intel | `FleetAgent-macos-amd64.dmg` |
 | Linux | `fleet-agent-linux-amd64.tar.gz` |
 
@@ -82,15 +130,15 @@ Agent 填 `http://127.0.0.1:8787`（会转成 `ws://…/v1/device`）。
 1. 打开安装包（Windows 双击 exe；Mac 拖到应用程序；Linux 解压跑 `./fleet-agent`）。
 2. 浏览器会开 `http://127.0.0.1:17890` 设置页。
 3. 打开「允许在这台电脑上运行」。
-4. 填 Worker 域名（不要带路径，例如 `fleet-hub.xxx.workers.dev`）。
-5. 如果 Worker 设了 `HUB_TOKEN`，填同一个 token。
-6. 点连接，状态变成「已连接 Worker」。
+4. 填中枢地址（不要带路径）：Worker 用 `fleet-hub.xxx.workers.dev`，普通部署用 `hub.example.com` 或 `http://127.0.0.1:8787`。
+5. 如果中枢设了 `HUB_TOKEN`，填同一个 token。
+6. 点连接，状态变成「已连接中枢」。
 7. 选权限：
    - **停用**：什么都不跑
    - **需当面同意**：电脑前的人要点同意
    - **自动执行**：直接跑（危险命令仍拦截）
 
-设备只主动连 Worker，**不用开端口、不用公网 IP、不用 VPN**。
+设备只主动连中枢，**设备侧不用开端口、不用公网 IP、不用 VPN**。普通部署那台 Node 机器当然要能被连上（80/443 或你选的端口）。
 
 自己重打安装包：
 
@@ -103,16 +151,18 @@ gh release create v0.x.0 public/dl/FleetAgent-* public/dl/fleet-agent-linux-amd6
 
 ## 3. 列机器、选一台、执行
 
+Worker 和 Node 中枢走同一套路径。把 `$HUB` 换成 `https://fleet-hub.<account>.workers.dev` 或 `https://hub.example.com`。
+
 健康检查：
 
 ```bash
-curl https://fleet-hub.<account>.workers.dev/v1/health
+curl $HUB/v1/health
 ```
 
 列设备（不返回 IP）：
 
 ```bash
-curl -X POST https://fleet-hub.<account>.workers.dev/v1/list_computers \
+curl -X POST $HUB/v1/list_computers \
   -H "authorization: Bearer $HUB_TOKEN" \
   -H "content-type: application/json" \
   -d '{}'
@@ -121,7 +171,7 @@ curl -X POST https://fleet-hub.<account>.workers.dev/v1/list_computers \
 跑一条命令：
 
 ```bash
-curl -X POST https://fleet-hub.<account>.workers.dev/v1/run \
+curl -X POST $HUB/v1/run \
   -H "authorization: Bearer $HUB_TOKEN" \
   -H "content-type: application/json" \
   -d '{"device_id":"<id>","command":"uname -a"}'
@@ -130,7 +180,7 @@ curl -X POST https://fleet-hub.<account>.workers.dev/v1/run \
 返回 `{ "corr": "...", "status": "running" }`。再取结果：
 
 ```bash
-curl -X POST https://fleet-hub.<account>.workers.dev/v1/get_result \
+curl -X POST $HUB/v1/get_result \
   -H "authorization: Bearer $HUB_TOKEN" \
   -H "content-type: application/json" \
   -d '{"device_id":"<id>","corr":"<corr>"}'
@@ -140,11 +190,11 @@ curl -X POST https://fleet-hub.<account>.workers.dev/v1/get_result \
 
 ### 异步任务怎么避免卡顿（学 tmux hub）
 
-任务活在**设备本地的 pane**里，不活在 Worker 请求上。
+任务活在**设备本地的 pane**里，不活在中枢请求上。
 
 | 不要 | 要 |
 |---|---|
-| 把 stdout 字节流接到 Worker | 本机 ring buffer，像 tmux 的 pane 历史 |
+| 把 stdout 字节流接到中枢 | 本机 ring buffer，像 tmux 的 pane 历史 |
 | `pipe-pane` 一直推 | `capture-pane` 式快照 |
 | HTTP 等到 `sleep 30` 结束 | 立刻 `accepted`，之后 `read_screen` / `get_result` |
 | 每次输出一条 WS | 4Hz latest-wins，中间帧丢掉 |
@@ -181,7 +231,7 @@ npm install
 npm run build
 ```
 
-可以放到任意 Node 主机，或接 Neon + 你常用的前端托管。控制台和 Worker 是分开的：Worker 管设备中转，网站管登录和 UI。
+可以放到任意 Node 主机，或接 Neon + 你常用的前端托管。控制台和中枢是分开的：中枢（Worker 或 `packages/fleet-hub`）管设备中转，网站管登录和 UI。
 
 ---
 
@@ -189,20 +239,22 @@ npm run build
 
 - 设备只出站。家用路由不用做端口映射。
 - Token 走 `Authorization` 头，不要写进 URL。
-- 本机三级权限在设备上执行，Worker 改不了。
+- 本机三级权限在设备上执行，中枢改不了。
 - 危险命令（`rm -rf`、`format`、关机等）Agent 直接拒。
-- 生产必须 `wrangler secret put HUB_TOKEN`。
+- 生产必须设 `HUB_TOKEN`（Worker：`wrangler secret put HUB_TOKEN`；Node：环境变量）。
 - 机器之间 ping 不通是预期：没有内网 overlay。
 
 ---
 
 ## 常见问题
 
-**连不上 Worker**  
-域名不要带 `https://` 也行，Agent 会补。确认 `npx wrangler deploy` 成功，本机能 `curl /v1/health`。
+**连不上中枢**  
+域名不要带 `https://` 也行，Agent 会补。本机能 `curl /v1/health`。Worker 确认 `npx wrangler deploy` 成功；普通部署确认 Node 进程在听、反代把 WebSocket 升上去了。
 
-**Mac 提示未签名**  
-系统设置 → 隐私与安全性 → 仍要打开。或用 zip 里的 `.app`。
+**Mac 提示未签名 / 无法打开**  
+先确认下的是 **真 dmg**（`file` 不能是 `Zip archive`）。假 dmg 是打包脚本的历史坑，见 [PACKAGING.md](PACKAGING.md)。
+
+真映像仍可能被 Gatekeeper 拦（未公证）：系统设置 → 隐私与安全性 → 仍要打开；或右键 `.app` → 打开；或 `xattr -cr "/Applications/Fleet Agent.app"`。zip 备用：解压出 `.app` 再拖进应用程序，不要把 zip 改成 `.dmg`。
 
 **Windows SmartScreen**  
 更多信息 → 仍要运行。这是未签名 exe 的正常提示。
@@ -211,4 +263,4 @@ npm run build
 Agent 要先显示已连接。刷新几秒后再 POST。
 
 **想换域名**  
-Workers 绑 Custom Domain 后，所有 Agent 改填新域名再点连接。
+Worker：绑 Custom Domain 后所有 Agent 改填新域名再点连接。普通部署：改反代域名，Agent 同样改填。

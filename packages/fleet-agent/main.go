@@ -163,7 +163,7 @@ func (a *Agent) load() {
 func normalizeHub(raw string) (wss string, err error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
-		return "", fmt.Errorf("Enter the Worker domain")
+		return "", fmt.Errorf("Enter the hub address")
 	}
 	if !strings.Contains(s, "://") {
 		s = "https://" + s

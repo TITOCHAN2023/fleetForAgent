@@ -58,7 +58,7 @@ export function LoginLanding() {
             </div>
             <div>
               <dt>{t("login.hub")}</dt>
-              <dd className="mt-1 text-muted">Cloudflare Worker + Durable Object</dd>
+              <dd className="mt-1 text-muted">{t("login.hubImpl")}</dd>
             </div>
           </dl>
         </section>

@@ -35,7 +35,7 @@ const DESTRUCTIVE = /rm\s+-rf|del\s+\/f|format\s+c:|shutdown|reboot|mkfs|diskpar
 
 export function normalizeHub(raw: string): NormalizedHub {
   const input = raw.trim();
-  if (!input) return { ok: false, error: "Enter the Worker domain" };
+  if (!input) return { ok: false, error: "Enter the hub address" };
   let url: URL;
   try {
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(input)) {

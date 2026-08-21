@@ -6,6 +6,17 @@ compatibility_date = "2026-04-07"
 #   npx wrangler secret put HUB_TOKEN
 # [vars] must not hold the token.
 
+[[routes]]
+pattern = "fleet.ginfo.cc"
+custom_domain = true
+
+# Site UI is static assets. Hub wire stays on /v1/*.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = true
+
 [[durable_objects.bindings]]
 name = "DEVICE"
 class_name = "DeviceDO"

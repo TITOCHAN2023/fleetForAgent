@@ -8,10 +8,17 @@
  * Auth: set secret HUB_TOKEN (wrangler secret put HUB_TOKEN). Empty = open (dev only).
  */
 
+import { handleOAuth } from "./oauth";
+
 export interface Env {
   DEVICE: DurableObjectNamespace;
   FLEET: DurableObjectNamespace;
   HUB_TOKEN?: string;
+  ASSETS?: Fetcher;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  X_CLIENT_ID?: string;
+  X_CLIENT_SECRET?: string;
 }
 
 type Envelope = {
@@ -30,6 +37,19 @@ type DeviceRow = {
   online: boolean;
   lastSeen: number;
   agentVer?: string;
+  userId?: string;
+};
+
+type Actor = { id: string; email?: string; super?: boolean };
+
+type UserRow = {
+  id: string;
+  email: string;
+  salt: string;
+  pass: string;
+  tokenHash?: string;
+  tokenPrefix?: string;
+  tokenAt?: number;
 };
 
 const CORS: Record<string, string> = {
@@ -41,28 +61,67 @@ const CORS: Record<string, string> = {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    const hub = url.pathname === "/v1" || url.pathname.startsWith("/v1/");
+
+    if (!hub) {
+      if (!env.ASSETS) return new Response("site missing", { status: 500 });
+      return env.ASSETS.fetch(request);
+    }
+
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
 
-    const url = new URL(request.url);
-
-    if (url.pathname === "/" || url.pathname === "/v1/health") {
+    if (url.pathname === "/v1/health") {
       return json({ name: "fleet-hub", v: 1, ok: true });
     }
 
-    if (url.pathname === "/v1/device") {
-      if (!authorized(request, env)) return json({ error: "unauthorized" }, 401);
-      const deviceId = deviceIdFrom(request);
-      if (!deviceId) return json({ error: "x-device-id required" }, 400);
-      const stub = env.DEVICE.get(env.DEVICE.idFromName(deviceId));
-      return stub.fetch(request);
-    }
-
-    if (!authorized(request, env)) return json({ error: "unauthorized" }, 401);
+    const oauth = await handleOAuth(request, env);
+    if (oauth) return oauth;
 
     const fleet = env.FLEET.get(env.FLEET.idFromName("fleet"));
 
+    if ((url.pathname === "/v1/register" || url.pathname === "/v1/login") && request.method === "POST") {
+      return json({ error: "email login disabled" }, 404);
+    }
+    if (url.pathname === "/v1/logout" && request.method === "POST") {
+      await fleet.fetch(
+        new Request("https://fleet/logout", { method: "POST", headers: { cookie: request.headers.get("cookie") ?? "" } }),
+      );
+      return withCookies(json({ ok: true }), 'fleet_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax');
+    }
+    if (url.pathname === "/v1/me" && request.method === "GET") {
+      const actor = await resolveActor(request, env, fleet);
+      if (!actor || actor.super) return json({ error: "unauthorized" }, 401);
+      return json({ id: actor.id, email: actor.email });
+    }
+    if (url.pathname === "/v1/hub_token" && request.method === "GET") {
+      const actor = await resolveActor(request, env, fleet);
+      if (!actor || actor.super) return json({ error: "unauthorized" }, 401);
+      return fleet.fetch(new Request(`https://fleet/token-meta?user=${encodeURIComponent(actor.id)}`));
+    }
+    if (url.pathname === "/v1/hub_token" && request.method === "POST") {
+      const actor = await resolveActor(request, env, fleet);
+      if (!actor || actor.super) return json({ error: "unauthorized" }, 401);
+      return fleet.fetch(new Request(`https://fleet/token-issue?user=${encodeURIComponent(actor.id)}`, { method: "POST" }));
+    }
+
+    if (url.pathname === "/v1/device") {
+      const actor = await resolveActor(request, env, fleet);
+      if (!actor) return json({ error: "unauthorized" }, 401);
+      const deviceId = deviceIdFrom(request);
+      if (!deviceId) return json({ error: "x-device-id required" }, 400);
+      const headers = new Headers(request.headers);
+      headers.set("x-fleet-user", actor.id);
+      const stub = env.DEVICE.get(env.DEVICE.idFromName(deviceId));
+      return stub.fetch(new Request(request, { headers }));
+    }
+
+    const actor = await resolveActor(request, env, fleet);
+    if (!actor) return json({ error: "unauthorized" }, 401);
+
     if (url.pathname === "/v1/list_computers" && request.method === "POST") {
-      return fleet.fetch(new Request("https://fleet/list", { method: "GET" }));
+      const q = actor.super ? "" : `?user=${encodeURIComponent(actor.id)}`;
+      return fleet.fetch(new Request(`https://fleet/list${q}`));
     }
 
     if (url.pathname === "/v1/select_computer" && request.method === "POST") {
@@ -76,6 +135,7 @@ export default {
       if (!body.device_id || !body.command) {
         return json({ error: "device_id and command required" }, 400);
       }
+      if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
       const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
       return stub.fetch(
         new Request("https://device/run", {
@@ -89,6 +149,7 @@ export default {
     if (url.pathname === "/v1/type" && request.method === "POST") {
       const body = (await request.json()) as { device_id?: string; keys?: string; corr?: string };
       if (!body.device_id || body.keys == null) return json({ error: "device_id and keys required" }, 400);
+      if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
       const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
       return stub.fetch(
         new Request("https://device/type", {
@@ -102,6 +163,7 @@ export default {
     if (url.pathname === "/v1/read_screen" && request.method === "POST") {
       const body = (await request.json()) as { device_id?: string; corr?: string };
       if (!body.device_id) return json({ error: "device_id required" }, 400);
+      if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
       const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
       const q = body.corr ? `?corr=${encodeURIComponent(body.corr)}` : "";
       return stub.fetch(new Request(`https://device/screen${q}`));
@@ -110,6 +172,7 @@ export default {
     if (url.pathname === "/v1/list_panes" && request.method === "POST") {
       const body = (await request.json()) as { device_id?: string };
       if (!body.device_id) return json({ error: "device_id required" }, 400);
+      if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
       const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
       return stub.fetch(new Request("https://device/panes", { method: "POST" }));
     }
@@ -117,6 +180,7 @@ export default {
     if (url.pathname === "/v1/get_result" && request.method === "POST") {
       const body = (await request.json()) as { device_id?: string; corr?: string };
       if (!body.device_id || !body.corr) return json({ error: "device_id and corr required" }, 400);
+      if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
       const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
       return stub.fetch(new Request(`https://device/result?corr=${encodeURIComponent(body.corr)}`));
     }
@@ -137,22 +201,180 @@ export class FleetDO implements DurableObject {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/list") {
-      const computers = await this.list();
+      const user = url.searchParams.get("user");
+      const computers = await this.list(user);
       return json({ computers });
+    }
+    if (url.pathname === "/device") {
+      const id = url.searchParams.get("id") ?? "";
+      const row = await this.ctx.storage.get<DeviceRow>(`d:${id}`);
+      return json(row ?? {});
     }
     if (url.pathname === "/upsert" && request.method === "POST") {
       const row = (await request.json()) as DeviceRow;
-      await this.ctx.storage.put(`d:${row.id}`, row);
+      const prev = await this.ctx.storage.get<DeviceRow>(`d:${row.id}`);
+      if (prev?.userId && row.userId && prev.userId !== row.userId && row.userId !== "*") {
+        return json({ error: "taken" }, 409);
+      }
+      await this.ctx.storage.put(`d:${row.id}`, { ...prev, ...row });
       return json({ ok: true });
+    }
+    if (url.pathname === "/oauth" && request.method === "POST") {
+      const body = (await request.json()) as { email?: string; provider?: string };
+      return this.oauthUser(body.email ?? "", body.provider ?? "oauth");
+    }
+    if (url.pathname === "/oauth-pending" && request.method === "POST") {
+      const body = (await request.json()) as { state?: string; provider?: "google" | "x"; verifier?: string; exp?: number };
+      if (!body.state || !body.provider) return json({ error: "bad pending" }, 400);
+      await this.ctx.storage.put(`oauth:${body.state}`, {
+        provider: body.provider,
+        verifier: body.verifier,
+        exp: body.exp ?? Date.now() + 600_000,
+      });
+      return json({ ok: true });
+    }
+    if (url.pathname === "/oauth-pending" && request.method === "GET") {
+      const state = url.searchParams.get("state") ?? "";
+      const row = await this.ctx.storage.get<{ provider: "google" | "x"; verifier?: string; exp: number }>(
+        `oauth:${state}`,
+      );
+      if (state) await this.ctx.storage.delete(`oauth:${state}`);
+      if (!row) return json({ error: "missing" }, 404);
+      return json(row);
+    }
+    if ((url.pathname === "/register" || url.pathname === "/login") && request.method === "POST") {
+      return json({ error: "email login disabled" }, 404);
+    }
+    if (url.pathname === "/logout" && request.method === "POST") {
+      const sid = cookie(request, "fleet_session");
+      if (sid) await this.ctx.storage.delete(`sess:${sid}`);
+      return json({ ok: true });
+    }
+    if (url.pathname === "/resolve") {
+      return json((await this.resolve(request)) ?? {});
+    }
+    if (url.pathname === "/token-meta") {
+      const userId = url.searchParams.get("user") ?? "";
+      const user = await this.userById(userId);
+      if (!user) return json({ error: "unauthorized" }, 401);
+      return json({
+        hasToken: Boolean(user.tokenHash),
+        prefix: user.tokenPrefix ?? "",
+        createdAt: user.tokenAt ?? 0,
+      });
+    }
+    if (url.pathname === "/token-issue" && request.method === "POST") {
+      const userId = url.searchParams.get("user") ?? "";
+      const user = await this.userById(userId);
+      if (!user) return json({ error: "unauthorized" }, 401);
+      if (user.tokenHash) await this.ctx.storage.delete(`tok:${user.tokenHash}`);
+      const minted = await mintHubToken();
+      user.tokenHash = minted.hash;
+      user.tokenPrefix = minted.prefix;
+      user.tokenAt = Date.now();
+      await this.ctx.storage.put(`u:${user.email}`, user);
+      await this.ctx.storage.put(`id:${user.id}`, user.email);
+      await this.ctx.storage.put(`tok:${minted.hash}`, user.id);
+      return json({ token: minted.raw, prefix: minted.prefix });
     }
     return json({ error: "not found" }, 404);
   }
 
-  async list(): Promise<DeviceRow[]> {
+  async list(userId: string | null): Promise<DeviceRow[]> {
     const map = await this.ctx.storage.list<DeviceRow>({ prefix: "d:" });
-    const rows = [...map.values()];
+    let rows = [...map.values()];
+    if (userId) rows = rows.filter((r) => r.userId === userId);
     rows.sort((a, b) => Number(b.online) - Number(a.online) || b.lastSeen - a.lastSeen);
-    return rows;
+    return rows.map(({ id, name, os, online, lastSeen, agentVer }) => ({
+      id,
+      name,
+      os,
+      online,
+      lastSeen,
+      agentVer,
+    }));
+  }
+
+  async resolve(request: Request): Promise<Actor | null> {
+    const sid = cookie(request, "fleet_session");
+    if (sid) {
+      const userId = await this.ctx.storage.get<string>(`sess:${sid}`);
+      if (userId) {
+        const email = await this.ctx.storage.get<string>(`id:${userId}`);
+        const user = email ? await this.ctx.storage.get<UserRow>(`u:${email}`) : null;
+        if (user) return { id: user.id, email: user.email };
+      }
+    }
+    const tok = bearer(request);
+    if (tok.startsWith("flt_")) {
+      const hash = await sha256hex(tok);
+      const userId = await this.ctx.storage.get<string>(`tok:${hash}`);
+      if (userId) {
+        const email = await this.ctx.storage.get<string>(`id:${userId}`);
+        return { id: userId, email: email ?? undefined };
+      }
+    }
+    return null;
+  }
+
+  async userById(userId: string): Promise<UserRow | null> {
+    const email = await this.ctx.storage.get<string>(`id:${userId}`);
+    if (!email) return null;
+    return (await this.ctx.storage.get<UserRow>(`u:${email}`)) ?? null;
+  }
+
+  async register(email: string, password: string): Promise<Response> {
+    email = email.trim().toLowerCase();
+    if (!email.includes("@") || password.length < 8) {
+      return json({ error: "email and password (8+) required" }, 400);
+    }
+    if (await this.ctx.storage.get(`u:${email}`)) return json({ error: "exists" }, 409);
+    const salt = crypto.randomUUID().replace(/-/g, "");
+    const user: UserRow = {
+      id: crypto.randomUUID(),
+      email,
+      salt,
+      pass: await pbkdf2(password, salt),
+    };
+    await this.ctx.storage.put(`u:${email}`, user);
+    await this.ctx.storage.put(`id:${user.id}`, email);
+    return this.issueSession(user);
+  }
+
+  async oauthUser(email: string, provider: string): Promise<Response> {
+    email = email.trim().toLowerCase();
+    if (!email.includes("@")) return json({ error: "email required" }, 400);
+    let user = await this.ctx.storage.get<UserRow>(`u:${email}`);
+    if (!user) {
+      user = {
+        id: crypto.randomUUID(),
+        email,
+        salt: provider,
+        pass: `oauth:${provider}`,
+      };
+      await this.ctx.storage.put(`u:${email}`, user);
+      await this.ctx.storage.put(`id:${user.id}`, email);
+    }
+    return this.issueSession(user);
+  }
+
+  async login(email: string, password: string): Promise<Response> {
+    email = email.trim().toLowerCase();
+    const user = await this.ctx.storage.get<UserRow>(`u:${email}`);
+    if (!user || (await pbkdf2(password, user.salt)) !== user.pass) {
+      return json({ error: "invalid" }, 401);
+    }
+    return this.issueSession(user);
+  }
+
+  async issueSession(user: UserRow): Promise<Response> {
+    const sid = crypto.randomUUID() + crypto.randomUUID();
+    await this.ctx.storage.put(`sess:${sid}`, user.id);
+    const res = json({ id: user.id, email: user.email });
+    return withCookies(
+      res,
+      `fleet_session=${sid}; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Lax`,
+    );
   }
 }
 
@@ -180,12 +402,14 @@ export class DeviceDO implements DurableObject {
         deviceId: id,
         name: request.headers.get("x-device-name") ?? id,
         os: request.headers.get("x-device-os") ?? "linux",
+        userId: request.headers.get("x-fleet-user") ?? undefined,
       });
       pair[1].send(JSON.stringify(envelope("hello_ok", { heartbeat_s: 25 })));
       await this.mark(id, {
         name: request.headers.get("x-device-name") ?? id,
         os: request.headers.get("x-device-os") ?? "linux",
         online: true,
+        userId: request.headers.get("x-fleet-user") ?? undefined,
       });
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
@@ -248,7 +472,12 @@ export class DeviceDO implements DurableObject {
       ws.close(1003, "bad proto");
       return;
     }
-    const att = (ws.deserializeAttachment() ?? {}) as { deviceId?: string; name?: string; os?: string };
+    const att = (ws.deserializeAttachment() ?? {}) as {
+      deviceId?: string;
+      name?: string;
+      os?: string;
+      userId?: string;
+    };
 
     if (parsed.type === "hello") {
       const os = String(parsed.body.os ?? att.os ?? "linux");
@@ -258,6 +487,7 @@ export class DeviceDO implements DurableObject {
         os,
         online: true,
         agentVer: String(parsed.body.agent_ver ?? ""),
+        userId: att.userId,
       });
       return;
     }
@@ -288,9 +518,19 @@ export class DeviceDO implements DurableObject {
   }
 
   async webSocketClose(ws: WebSocket) {
-    const att = (ws.deserializeAttachment() ?? {}) as { deviceId?: string; name?: string; os?: string };
+    const att = (ws.deserializeAttachment() ?? {}) as {
+      deviceId?: string;
+      name?: string;
+      os?: string;
+      userId?: string;
+    };
     if (att.deviceId) {
-      await this.mark(att.deviceId, { name: att.name ?? att.deviceId, os: att.os ?? "linux", online: false });
+      await this.mark(att.deviceId, {
+        name: att.name ?? att.deviceId,
+        os: att.os ?? "linux",
+        online: false,
+        userId: att.userId,
+      });
     }
   }
 
@@ -300,7 +540,7 @@ export class DeviceDO implements DurableObject {
 
   private async mark(
     id: string,
-    extra: { name: string; os: string; online: boolean; agentVer?: string },
+    extra: { name: string; os: string; online: boolean; agentVer?: string; userId?: string },
   ) {
     const row: DeviceRow = {
       id,
@@ -309,6 +549,7 @@ export class DeviceDO implements DurableObject {
       online: extra.online,
       lastSeen: Date.now(),
       agentVer: extra.agentVer,
+      userId: extra.userId,
     };
     await this.fleet().fetch(
       new Request("https://fleet/upsert", {
@@ -320,10 +561,60 @@ export class DeviceDO implements DurableObject {
   }
 }
 
-function authorized(request: Request, env: Env): boolean {
+async function resolveActor(
+  request: Request,
+  env: Env,
+  fleet: DurableObjectStub,
+): Promise<Actor | null> {
   const need = env.HUB_TOKEN?.trim();
-  if (!need) return true;
-  return bearer(request) === need;
+  if (need && bearer(request) === need) return { id: "*", super: true };
+  const res = await fleet.fetch(new Request("https://fleet/resolve", { headers: request.headers }));
+  const data = (await res.json()) as Actor;
+  return data.id ? data : null;
+}
+
+async function owns(fleet: DurableObjectStub, actor: Actor, deviceId: string): Promise<boolean> {
+  if (actor.super) return true;
+  const res = await fleet.fetch(new Request(`https://fleet/device?id=${encodeURIComponent(deviceId)}`));
+  const row = (await res.json()) as DeviceRow;
+  return Boolean(row.id && row.userId === actor.id);
+}
+
+function withCookies(res: Response, setCookie?: string): Response {
+  const headers = new Headers(res.headers);
+  if (setCookie) headers.append("set-cookie", setCookie);
+  return new Response(res.body, { status: res.status, headers });
+}
+
+function cookie(request: Request, name: string): string | null {
+  const raw = request.headers.get("cookie") ?? "";
+  for (const part of raw.split(";")) {
+    const [k, ...rest] = part.trim().split("=");
+    if (k === name) return rest.join("=") || null;
+  }
+  return null;
+}
+
+async function sha256hex(raw: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function pbkdf2(password: string, salt: string): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, [
+    "deriveBits",
+  ]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", hash: "SHA-256", salt: new TextEncoder().encode(salt), iterations: 100_000 },
+    key,
+    256,
+  );
+  return [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function mintHubToken() {
+  const raw = "flt_" + [...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return { raw, hash: await sha256hex(raw), prefix: raw.slice(0, 12) };
 }
 
 function bearer(request: Request) {

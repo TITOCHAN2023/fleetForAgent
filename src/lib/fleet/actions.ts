@@ -2,10 +2,10 @@ import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { getSql } from "@/lib/db";
 import { makeEnvelope, type OsKind } from "./protocol";
-import { type ShellDevice } from "./shell";
-import { dispatchHello, dispatchRun } from "./hub";
+import { dispatchHello } from "./hub";
 import { resolveNode } from "./world";
 import { assertCanAddDevice, makeDeviceSlug } from "./cap";
+import { isOnline, sendToDevice } from "./live";
 
 export type DeviceDto = {
   id: string;
@@ -111,6 +111,10 @@ function mapDevice(row: DeviceRow): DeviceDto {
   };
 }
 
+function withLiveStatus(dto: DeviceDto): DeviceDto {
+  return { ...dto, status: isOnline(dto.id) ? "online" : "offline" };
+}
+
 async function dropDemoSeeds(userId: string) {
   const sql = await getSql();
   await sql`
@@ -148,10 +152,6 @@ export const listDevices = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     await dropDemoSeeds(context.userId);
     const sql = await getSql();
-    await sql`
-      update devices set last_seen = now()
-      where user_id = ${context.userId} and status = 'online'
-    `;
     const rows = await sql<DeviceRow>`
       select d.id, d.slug, d.name, d.os, d.arch, d.location_tag, d.status, d.caps, d.last_seen,
              s.selected_device_id
@@ -160,7 +160,7 @@ export const listDevices = createServerFn({ method: "GET" })
       where d.user_id = ${context.userId}
       order by d.created_at asc
     `;
-    return rows.map(mapDevice);
+    return rows.map((row) => withLiveStatus(mapDevice(row)));
   });
 
 export const selectDevice = createServerFn({ method: "POST" })
@@ -269,33 +269,23 @@ export const runCommand = createServerFn({ method: "POST" })
       };
     }
 
-    const shellDevice: ShellDevice = {
-      name: device.name,
-      slug: device.slug,
-      os: device.os as OsKind,
-      arch: device.arch,
-      locationTag: device.location_tag,
-    };
-    const dispatched = dispatchRun({
-      device: shellDevice,
-      online: device.status === "online",
-      command,
-    });
-    for (const ev of dispatched.events) {
-      await recordEvent(context.userId, device.id, ev.direction, ev.envelope);
+    const corr = crypto.randomUUID();
+    const runEnv = makeEnvelope("run", { command, mode: "pane" }, corr);
+    const ok = sendToDevice(context.userId, device.id, runEnv);
+    await recordEvent(context.userId, device.id, "down", runEnv);
+    if (!ok) {
+      return {
+        id: corr,
+        status: "offline" as const,
+        exitCode: 1,
+        stdout: "",
+        stderr: `${device.name} is offline`,
+        deviceId: device.id,
+      };
     }
     await sql`
-      insert into commands (id, user_id, device_id, command, exit_code, stdout, stderr, status)
-      values (
-        ${dispatched.corr},
-        ${context.userId},
-        ${device.id},
-        ${command},
-        ${dispatched.exitCode},
-        ${dispatched.stdout},
-        ${dispatched.stderr},
-        ${dispatched.status}
-      )
+      insert into commands (id, user_id, device_id, command, status)
+      values (${corr}, ${context.userId}, ${device.id}, ${command}, ${"running"})
     `;
     await sql`
       delete from commands
@@ -306,11 +296,11 @@ export const runCommand = createServerFn({ method: "POST" })
         )
     `;
     return {
-      id: dispatched.corr,
-      status: dispatched.status,
-      exitCode: dispatched.exitCode,
-      stdout: dispatched.stdout,
-      stderr: dispatched.stderr,
+      id: corr,
+      status: "running" as const,
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
       deviceId: device.id,
     };
   });

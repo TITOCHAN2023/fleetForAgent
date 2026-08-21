@@ -15,7 +15,7 @@ export function LabPanel() {
     linux: "Linux",
     windows: "Windows",
     net: t("lab.pods"),
-    hub: "Worker",
+    hub: t("login.hub"),
   };
 
   return (

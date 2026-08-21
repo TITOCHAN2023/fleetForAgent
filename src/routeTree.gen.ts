@@ -15,6 +15,7 @@ import { Route as LabRouteImport } from './routes/lab'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ReleasesRouteImport } from './routes/releases'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as V1SplatRouteImport } from './routes/v1/$'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -46,6 +47,11 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const V1SplatRoute = V1SplatRouteImport.update({
+  id: '/v1/$',
+  path: '/v1/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -54,6 +60,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/releases': typeof ReleasesRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/v1/$': typeof V1SplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -62,6 +69,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/releases': typeof ReleasesRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/v1/$': typeof V1SplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -71,12 +79,13 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/releases': typeof ReleasesRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/v1/$': typeof V1SplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/agent' | '/lab' | '/login' | '/releases' | '/api/auth/$'
+  fullPaths: '/' | '/agent' | '/lab' | '/login' | '/releases' | '/api/auth/$' | '/v1/$'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/agent' | '/lab' | '/login' | '/releases' | '/api/auth/$'
+  to: '/' | '/agent' | '/lab' | '/login' | '/releases' | '/api/auth/$' | '/v1/$'
   id:
     | '__root__'
     | '/'
@@ -85,6 +94,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/releases'
     | '/api/auth/$'
+    | '/v1/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -94,6 +104,7 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   ReleasesRoute: typeof ReleasesRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  V1SplatRoute: typeof V1SplatRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -140,6 +151,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/v1/$': {
+      id: '/v1/$'
+      path: '/v1/$'
+      fullPath: '/v1/$'
+      preLoaderRoute: typeof V1SplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -150,6 +168,7 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   ReleasesRoute: ReleasesRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
+  V1SplatRoute: V1SplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

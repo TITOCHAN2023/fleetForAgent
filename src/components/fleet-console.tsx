@@ -23,6 +23,7 @@ import { ConsolePanel } from "@/components/console-panel";
 import { ProtocolPanel } from "@/components/protocol-panel";
 import { LabPanel } from "@/components/lab-panel";
 import { AgentSettings } from "@/components/agent-settings";
+import { HubAccess } from "@/components/hub-access";
 import { ReleasesPanel } from "@/components/releases-panel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -178,7 +179,12 @@ export function FleetConsole() {
           </div>
         )}
         {tab === "lab" && <LabPanel />}
-        {tab === "agent" && <AgentSettings />}
+        {tab === "agent" && (
+          <div className="grid gap-4">
+            <HubAccess />
+            <AgentSettings defaultHub={typeof window !== "undefined" ? window.location.origin : ""} />
+          </div>
+        )}
         {tab === "releases" && <ReleasesPanel />}
         {tab === "join" && (
           <JoinView
@@ -319,6 +325,7 @@ function ToolsView({
   selected: DeviceDto | undefined;
 }) {
   const { t } = useI18n();
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
   const payload = devices.map((d) => ({
     id: d.slug,
     name: d.name,
@@ -333,6 +340,11 @@ function ToolsView({
       <section className="rounded-xl border border-border bg-surface p-5">
         <h2 className="text-base font-medium">{t("tools.title")}</h2>
         <p className="mt-2 text-sm text-muted">{t("tools.body")}</p>
+        <pre className="mt-4 overflow-auto rounded-md bg-elevated p-4 font-mono text-xs text-muted">
+{`FLEET_URL=${origin || "https://your.site"}
+FLEET_TOKEN=flt_…          # generate under Settings
+node packages/fleet-tool/index.mjs list`}
+        </pre>
         <ol className="mt-5 space-y-3">
           {TOOLS.map((tool) => (
             <li key={tool.name} className="rounded-md border border-border bg-elevated px-3 py-3">

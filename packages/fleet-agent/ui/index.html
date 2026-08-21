@@ -44,13 +44,13 @@
             <button type="button" id="zh">中文</button>
           </div>
         </div>
-        <p id="t-body">Enter the Worker domain and dial out. No inbound port.</p>
+        <p id="t-body">Enter the hub address and dial out. No inbound port.</p>
         <div class="row" style="margin-top:16px">
           <span id="t-allow">Allow this computer to run</span>
           <button id="enabled">On</button>
         </div>
         <div class="row" style="margin-top:12px">
-          <input id="hub" placeholder="fleet-hub.example.workers.dev" />
+          <input id="hub" placeholder="hub.example.com" />
           <button id="connect" class="primary">Connect</button>
         </div>
         <div class="row" style="margin-top:8px">
@@ -80,11 +80,11 @@
     <script>
       const I18N = {
         en: {
-          body: "Enter the Worker domain and dial out. No inbound port.",
+          body: "Enter the hub address and dial out. Worker domain or any host. No inbound port.",
           allow: "Allow this computer to run",
           on: "On", offsw: "Off",
           connect: "Connect",
-          offline: "Offline", connecting: "Connecting", online: "Connected to Worker", error: "Connect failed",
+          offline: "Offline", connecting: "Connecting", online: "Connected to hub", error: "Connect failed",
           permit: "Run policy",
           off: "<b>Off</b><br><span class='muted'>Refuse every command</span>",
           ask: "<b>Ask at the machine</b><br><span class='muted'>Someone here must tap Allow</span>",
@@ -92,11 +92,11 @@
           consent: "Needs approval here", approve: "Allow", deny: "Deny", logs: "Logs",
         },
         zh: {
-          body: "填写 Worker 域名，连出去。不开放入站端口。",
+          body: "填写中枢地址，连出去。Worker 域名或任意主机都行。不开放入站端口。",
           allow: "允许在这台电脑上运行",
           on: "已开", offsw: "打开",
           connect: "连接",
-          offline: "未连接", connecting: "连接中", online: "已连接 Worker", error: "连接失败",
+          offline: "未连接", connecting: "连接中", online: "已连接中枢", error: "连接失败",
           permit: "执行权限",
           off: "<b>停用</b><br><span class='muted'>什么命令都不执行</span>",
           ask: "<b>需当面同意</b><br><span class='muted'>有人在电脑前点同意才跑</span>",

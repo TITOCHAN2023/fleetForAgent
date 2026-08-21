@@ -569,6 +569,33 @@ func TestReplayAfterFinishPolicy(t *testing.T) {
 	}
 }
 
+func TestKeepCommandStdoutPolicy(t *testing.T) {
+	if !keepCommandStdout(true, false, false, false, false, "hi") {
+		t.Fatal("echo hi must keep stdout")
+	}
+	if !keepCommandStdout(true, false, false, false, true, "got=typed_ok") {
+		t.Fatal("type-into-read must keep stdout")
+	}
+	if !keepCommandStdout(true, false, false, false, false, "\x1b[31mred-line\x1b[0m") {
+		t.Fatal("color CSI short command must keep stdout")
+	}
+	if !keepCommandStdout(true, false, false, true, false, "\x1b[cDA_OK\n") {
+		t.Fatal("short DA probe must keep stdout")
+	}
+	if keepCommandStdout(true, false, false, true, true, "\x1b[H====BOX====") {
+		t.Fatal("typed DA TUI must not return the raw PTY dump")
+	}
+	if keepCommandStdout(true, false, false, false, true, "\x1b[H====BOX====") {
+		t.Fatal("typed CSI TUI must not return the raw PTY dump")
+	}
+	if keepCommandStdout(true, false, true, false, false, "TUI-BOX") {
+		t.Fatal("alt-screen TUI must not return the raw PTY dump")
+	}
+	if keepCommandStdout(false, true, false, false, false, "soup") {
+		t.Fatal("child-quiet finish must not return the raw PTY dump")
+	}
+}
+
 func TestLiveShellAnswersDAQuery(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("live shell is POSIX-only")
@@ -795,6 +822,47 @@ func TestLiveShellReadScreenEmptyAfterDAPrimaryBox(t *testing.T) {
 	}
 }
 
+func TestLiveShellResultStdoutEmptyAfterTypedDATUI(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("live shell is POSIX-only")
+	}
+	s := newSupervisor()
+	t.Cleanup(func() {
+		s.mu.Lock()
+		if s.live != nil {
+			s.live.kill()
+		}
+		s.mu.Unlock()
+	})
+	p, err := s.spawn("ida2", "printf '\\033[c\\033[H\\033[2J====BOX====\\n| tui |\\nMCP warning\\n'; sleep 30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitScreenHas(t, s, p, "====BOX====")
+	waitPaneTypable(t, p)
+	if err := p.typeInput("", "ctrl+c"); err != nil {
+		t.Fatal(err)
+	}
+	waitPaneDone(t, p)
+	text, running, _, _, _, _ := s.paneSnapshot(p)
+	if running {
+		t.Fatal("typed DA TUI corr still running")
+	}
+	if strings.Contains(text, "====BOX====") || strings.Contains(text, "MCP warning") || strings.Contains(text, promptPrefix) {
+		t.Fatalf("after-finish read_screen should be empty, got %q", text)
+	}
+	out, stderr := p.resultText()
+	for _, chunk := range []string{out, stderr} {
+		if strings.Contains(chunk, "====BOX====") || strings.Contains(chunk, "| tui |") || strings.Contains(chunk, "MCP warning") {
+			t.Fatalf("get_result must not return TUI chrome: stdout=%q stderr=%q", out, stderr)
+		}
+		if strings.Contains(chunk, "\x1b[") {
+			t.Fatalf("get_result must not return CSI soup: stdout=%q stderr=%q", out, stderr)
+		}
+	}
+	assertNoCompletion(t, out, stderr)
+}
+
 func TestLiveShellReadScreenEmptyAfterTypedChild(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("live shell is POSIX-only")
@@ -827,6 +895,10 @@ func TestLiveShellReadScreenEmptyAfterTypedChild(t *testing.T) {
 	if strings.Contains(text, promptPrefix) {
 		t.Fatalf("read_screen leaked completion marker: %q", text)
 	}
+	out, stderr := p.resultText()
+	if strings.Contains(out, "====BOX====") || strings.Contains(out, "| tui |") || strings.Contains(out, "\x1b[") {
+		t.Fatalf("get_result must not return TUI chrome: stdout=%q stderr=%q", out, stderr)
+	}
 
 	p2, err := s.spawn("itui2", "pwd")
 	if err != nil {
@@ -837,7 +909,7 @@ func TestLiveShellReadScreenEmptyAfterTypedChild(t *testing.T) {
 	if strings.Contains(text2, "====BOX====") || strings.Contains(text2, "| tui |") {
 		t.Fatalf("pwd painted on leftover TUI: %q", text2)
 	}
-	out, _ := p2.resultText()
+	out, _ = p2.resultText()
 	want := strings.TrimSpace(out)
 	if want == "" || !strings.Contains(text2, want) {
 		t.Fatalf("read_screen after pwd=%q want to contain %q", text2, want)

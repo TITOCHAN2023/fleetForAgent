@@ -192,6 +192,19 @@ func replayAfterFinish(ps1 bool, force, usedAlt, answered, typed bool) bool {
 	return ps1 && !force && !usedAlt && !answered && !typed
 }
 
+// keepCommandStdout is the get_result.stdout policy. Short commands
+// keep the PTY prefix (`hi`, `got=ok`, color CSI). Interactive TUIs
+// use the human frame (blank after reset) instead of the raw dump.
+func keepCommandStdout(ps1 bool, force, usedAlt, answered, typed bool, out string) bool {
+	if usedAlt || force {
+		return false
+	}
+	if typed && (answered || strings.Contains(out, "\x1b")) {
+		return false
+	}
+	return true
+}
+
 func stripANSI(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -730,6 +743,12 @@ func (s *supervisor) tryFinishLive(job *liveJob, live *liveShell, force bool) bo
 		live.screen.resetPrimary()
 		if replayAfterFinish(ok, force, usedAlt, answered, typed) {
 			live.screen.replay([]byte(replay))
+		}
+	}
+	if !keepCommandStdout(ok, force, usedAlt, answered, typed, out) {
+		out = ""
+		if live.screen != nil {
+			out, _, _ = live.screen.grid()
 		}
 	}
 	job.pane.finishCommand(out, code)

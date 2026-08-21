@@ -652,6 +652,7 @@ func main() {
 	if len(args) > 0 && args[0] != "--daemon" && args[0] != "daemon" {
 		os.Exit(runCLI(args))
 	}
+	maybeDaemonize()
 
 	dir := fleetHome()
 	_ = os.MkdirAll(dir, 0o700)

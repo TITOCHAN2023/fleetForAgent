@@ -13,3 +13,7 @@ screenshots
 artifacts
 packages/keel-agent/dist
 coverage
+
+.grok/
+AGENTS.md
+AGENTS.project.md

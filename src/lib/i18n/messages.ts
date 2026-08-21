@@ -142,7 +142,7 @@ export const messages = {
     "join.codeToast": "Join code {code}",
 
     "tools.title": "An agent only sees these tools",
-    "tools.body": "Same four tools on Cursor, a rented agent, or Grok. No IPs. No per-OS APIs.",
+    "tools.body": "Same tools on Cursor, a rented agent, or Grok. Run is fire-and-forget; read_screen is a snapshot. No IPs.",
     "tools.list": "list_computers returns",
 
     "spec.link": "How it connects",
@@ -300,7 +300,7 @@ export const messages = {
     "join.codeToast": "接入码 {code}",
 
     "tools.title": "Agent 只看见这四个 tool",
-    "tools.body": "装到 Cursor / 租来的 agent / Grok 上的就是这一份。没有 IP，没有三套操作系统 API。",
+    "tools.body": "装到 Cursor / 租来的 agent / Grok 上的就是这一份。run 立刻返回，屏幕用快照拉，不把 stdout 灌进枢纽。",
     "tools.list": "list_computers 现在返回",
 
     "spec.link": "连法",

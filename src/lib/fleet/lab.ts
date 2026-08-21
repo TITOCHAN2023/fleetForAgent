@@ -1,4 +1,4 @@
-import { dispatchHello, dispatchRun } from "./hub";
+import { burstScreens, dispatchHello, dispatchPaneStart, dispatchRun } from "./hub";
 import { LAB_DEVICES, runSimulated, type ShellDevice } from "./shell";
 import { HUB, SEED_NODES } from "./world";
 
@@ -335,6 +335,40 @@ export function runLabSuite(): { passed: number; failed: number; checks: LabChec
   const cwdMac = dispatchRun({ device: device("darwin"), online: true, command: "pwd" });
   checks.push(
     check("h-cwd-mac", "hub", "Mac run cwd is /Users/keel", String(cwdMac.events[0]!.envelope.body.cwd) === "/Users/keel", String(cwdMac.events[0]!.envelope.body.cwd)),
+  );
+
+  const paneStart = dispatchPaneStart({ device: device("linux"), online: true, command: "sleep 30", now: 0 });
+  checks.push(
+    check(
+      "h-pane-accepted",
+      "hub",
+      "pane spawn returns accepted without waiting on the job",
+      paneStart.status === "running" &&
+        paneStart.events.some((e) => e.envelope.type === "accepted") &&
+        paneStart.stdout === "" &&
+        !paneStart.events.some((e) => e.envelope.type === "result"),
+      paneStart.events.map((e) => e.envelope.type).join(">"),
+    ),
+  );
+  const burst = burstScreens(200, 250);
+  checks.push(
+    check(
+      "h-screen-coalesce",
+      "hub",
+      "200 pane writes collapse to one latest snapshot on the wire",
+      burst.wire.length <= 2 && burst.coalescer.dropped >= 190 && burst.wire.at(-1)!.includes("#199"),
+      `wire=${burst.wire.length} dropped=${burst.coalescer.dropped}`,
+    ),
+  );
+  const helloCaps = dispatchHello(device("linux"));
+  checks.push(
+    check(
+      "h-pane-cap",
+      "hub",
+      "hello advertises pane capture, not a streaming attach",
+      JSON.stringify(helloCaps[0]!.envelope.body.caps).includes("pane"),
+      JSON.stringify(helloCaps[0]!.envelope.body.caps),
+    ),
   );
 
   const passed = checks.filter((c) => c.ok).length;

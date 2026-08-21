@@ -88,6 +88,7 @@ type Agent struct {
 	ws       *websocket.Conn
 	cancel   context.CancelFunc
 	cfgPath  string
+	panes    *supervisor
 }
 
 func (a *Agent) log(level, msg string) {
@@ -261,7 +262,7 @@ func (a *Agent) connect(hub string) error {
 		"os":        osKind(),
 		"arch":      runtime.GOARCH,
 		"hostname":  hostname(),
-		"caps":      []string{"shell"},
+		"caps":      []string{"shell", "pane"},
 		"agent_ver": "0.2.0",
 		"permit":    string(a.permit),
 		"egress":    "internet",
@@ -270,6 +271,7 @@ func (a *Agent) connect(hub string) error {
 	a.mu.Unlock()
 	_ = wsjson.Write(ctx, c, hello)
 	go a.readLoop(ctx, c)
+	go a.coalesceLoop(ctx, c)
 	return nil
 }
 
@@ -316,7 +318,25 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 			_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "pong", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: env.ID, T: time.Now().UnixMilli(), Body: map[string]any{}})
 		case "run":
 			cmd, _ := env.Body["command"].(string)
-			a.handleRun(ctx, c, env.Corr, cmd)
+			go a.handleRun(ctx, c, env.Corr, cmd)
+		case "type":
+			keys, _ := env.Body["keys"].(string)
+			id, _ := env.Body["pane_id"].(string)
+			if id == "" {
+				id, _ = env.Body["corr"].(string)
+			}
+			go a.handleType(ctx, c, env.Corr, id, keys)
+		case "read_screen":
+			id, _ := env.Body["pane_id"].(string)
+			if id == "" {
+				id, _ = env.Body["corr"].(string)
+			}
+			a.handleScreen(ctx, c, env.Corr, id)
+		case "list_panes":
+			a.mu.Lock()
+			list := a.panes.list()
+			a.mu.Unlock()
+			_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "panes", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: env.Corr, T: time.Now().UnixMilli(), Body: map[string]any{"panes": list}})
 		}
 	}
 }
@@ -347,21 +367,117 @@ func (a *Agent) handleRun(ctx context.Context, c *websocket.Conn, corr, cmd stri
 		return
 	}
 	a.mu.Unlock()
-	stdout, stderr, code := runCmd(cmd)
+	a.spawnPane(ctx, c, corr, cmd)
+}
+
+func (a *Agent) spawnPane(ctx context.Context, c *websocket.Conn, corr, cmd string) {
 	a.mu.Lock()
-	a.log("info", fmt.Sprintf("result %d: %s", code, cmd))
+	if a.panes == nil {
+		a.panes = newSupervisor()
+	}
+	sup := a.panes
 	a.mu.Unlock()
-	if stdout != "" {
-		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "chunk", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"stream": "stdout", "data": stdout}})
+	p, err := sup.spawn(corr, cmd)
+	if err != nil {
+		_ = wsjson.Write(ctx, c, resultEnv(corr, false, 1, "", err.Error()))
+		return
 	}
-	if stderr != "" {
-		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "chunk", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"stream": "stderr", "data": stderr}})
+	_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "accepted", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"pane_id": p.id, "status": "running"}})
+	a.mu.Lock()
+	a.log("info", "pane accepted "+p.id)
+	a.mu.Unlock()
+	go func() {
+		for {
+			p.mu.Lock()
+			done := !p.running
+			code := p.exitCode
+			p.mu.Unlock()
+			if done {
+				text, _, _, _ := p.snapshot()
+				_ = wsjson.Write(ctx, c, resultEnv(corr, code == 0, code, text, ""))
+				a.mu.Lock()
+				a.log("info", fmt.Sprintf("result %d: %s", code, cmd))
+				a.mu.Unlock()
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}()
+}
+
+func (a *Agent) handleType(ctx context.Context, c *websocket.Conn, corr, id, keys string) {
+	a.mu.Lock()
+	sup := a.panes
+	a.mu.Unlock()
+	if sup == nil {
+		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "typed", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"ok": false, "error": "no pane"}})
+		return
 	}
-	_ = wsjson.Write(ctx, c, resultEnv(corr, code == 0, code, stdout, stderr))
+	p := sup.get(id)
+	if p == nil {
+		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "typed", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"ok": false, "error": "pane gone"}})
+		return
+	}
+	err := p.typeKeys(keys)
+	ok := err == nil
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "typed", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"ok": ok, "error": msg}})
+}
+
+func (a *Agent) handleScreen(ctx context.Context, c *websocket.Conn, corr, id string) {
+	a.mu.Lock()
+	sup := a.panes
+	a.mu.Unlock()
+	if sup == nil {
+		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"text": "", "running": false}})
+		return
+	}
+	p := sup.get(id)
+	if p == nil {
+		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"text": "", "running": false}})
+		return
+	}
+	text, running, code, seq := p.snapshot()
+	_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{
+		"pane_id": p.id, "text": text, "running": running, "exit_code": code, "seq": seq,
+	}})
+}
+
+func (a *Agent) coalesceLoop(ctx context.Context, c *websocket.Conn) {
+	tick := time.NewTicker(screenInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			a.mu.Lock()
+			sup := a.panes
+			a.mu.Unlock()
+			if sup == nil {
+				continue
+			}
+			p := sup.takeDirty()
+			if p == nil {
+				continue
+			}
+			text, running, code, seq := p.snapshot()
+			_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: p.corr, T: time.Now().UnixMilli(), Body: map[string]any{
+				"pane_id": p.id, "text": text, "running": running, "exit_code": code, "seq": seq,
+			}})
+		}
+	}
 }
 
 func resultEnv(corr string, ok bool, code int, stdout, stderr string) Envelope {
-	return Envelope{V: 1, Type: "result", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"ok": ok, "exit_code": code, "error": stderr}}
+	return Envelope{V: 1, Type: "result", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"ok": ok, "exit_code": code, "error": stderr, "stdout": stdout}}
 }
 
 func runCmd(command string) (string, string, int) {
@@ -393,12 +509,7 @@ func (a *Agent) approve() {
 	if p == nil || ws == nil {
 		return
 	}
-	stdout, stderr, code := runCmd(p.Command)
-	ctx := context.Background()
-	if stdout != "" {
-		_ = wsjson.Write(ctx, ws, Envelope{V: 1, Type: "chunk", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: p.Corr, T: time.Now().UnixMilli(), Body: map[string]any{"stream": "stdout", "data": stdout}})
-	}
-	_ = wsjson.Write(ctx, ws, resultEnv(p.Corr, code == 0, code, stdout, stderr))
+	go a.spawnPane(context.Background(), ws, p.Corr, p.Command)
 	a.mu.Lock()
 	a.log("info", "approved: "+p.Command)
 	a.mu.Unlock()
@@ -428,7 +539,7 @@ func main() {
 	home, _ := os.UserHomeDir()
 	dir := filepath.Join(home, ".keel-agent")
 	_ = os.MkdirAll(dir, 0o700)
-	agent := &Agent{permit: PermitAsk, conn: "offline", cfgPath: filepath.Join(dir, "config.json")}
+	agent := &Agent{permit: PermitAsk, conn: "offline", cfgPath: filepath.Join(dir, "config.json"), panes: newSupervisor()}
 	agent.load()
 
 	mux := http.NewServeMux()

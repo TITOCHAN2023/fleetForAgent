@@ -138,6 +138,33 @@ curl -X POST https://keel-hub.<account>.workers.dev/v1/get_result \
 
 协议信封：`{ v:1, type, id, corr, t, body }`。设备路径只有 `WSS /v1/device`。
 
+### 异步任务怎么避免卡顿（学 tmux hub）
+
+任务活在**设备本地的 pane**里，不活在 Worker 请求上。
+
+| 不要 | 要 |
+|---|---|
+| 把 stdout 字节流接到 Worker | 本机 ring buffer，像 tmux 的 pane 历史 |
+| `pipe-pane` 一直推 | `capture-pane` 式快照 |
+| HTTP 等到 `sleep 30` 结束 | 立刻 `accepted`，之后 `read_screen` / `get_result` |
+| 每次输出一条 WS | 4Hz latest-wins，中间帧丢掉 |
+
+```bash
+# 立刻返回 { corr, status: running }
+curl -X POST $HUB/v1/run -H "authorization: Bearer $HUB_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"device_id":"<id>","command":"yes"}'
+
+# 拉屏幕快照，不 attach
+curl -X POST $HUB/v1/read_screen -d '{"device_id":"<id>"}' ...
+
+# 往 stdin 打字，不等进程
+curl -X POST $HUB/v1/type -d '{"device_id":"<id>","keys":"q\n"}' ...
+```
+
+控制面（ping / type / read_screen）不进 `Wait()`。编译打一万行也不会把枢纽打卡。
+
+
 ---
 
 ## 4. 可选：部署控制台网站

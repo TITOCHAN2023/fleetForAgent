@@ -46,12 +46,29 @@ export const TOOLS = [
   {
     name: "run",
     description:
-      "Execute a shell command on the currently selected device. Short commands return stdout; long commands return running + corr.",
+      "Start a command on the selected device. Returns accepted immediately; the job lives in a local pane. Do not wait on the hub. Use read_screen / get_result.",
     input: { command: "string" },
   },
   {
     name: "get_result",
-    description: "Fetch a previous run by corr id.",
+    description: "Fetch a previous run by corr id. Pending if the pane is still alive.",
     input: { corr: "string" },
+  },
+  {
+    name: "read_screen",
+    description:
+      "Snapshot the pane (tmux capture-pane). Does not attach, does not stream. Latest-wins on the device.",
+    input: { corr: "string?" },
+  },
+  {
+    name: "type",
+    description:
+      "Fire-and-forget keystrokes into the pane stdin. Never waits for the process.",
+    input: { keys: "string", corr: "string?" },
+  },
+  {
+    name: "list_panes",
+    description: "List live panes on the selected machine: id, command, running.",
+    input: {},
   },
 ] as const;

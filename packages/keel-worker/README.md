@@ -2,6 +2,8 @@
 
 Relay only. Machines dial **out** over WebSocket. Operators call HTTPS.
 
+Jobs do **not** run on the Worker. The device keeps a pane buffer (tmux-style snapshot). The wire is latest-wins at ~4 Hz. `POST /v1/run` returns `accepted` immediately.
+
 Full steps: [docs/DEPLOY.md](../../docs/DEPLOY.md)
 
 ```bash

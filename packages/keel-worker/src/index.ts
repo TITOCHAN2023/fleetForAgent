@@ -86,6 +86,34 @@ export default {
       );
     }
 
+    if (url.pathname === "/v1/type" && request.method === "POST") {
+      const body = (await request.json()) as { device_id?: string; keys?: string; corr?: string };
+      if (!body.device_id || body.keys == null) return json({ error: "device_id and keys required" }, 400);
+      const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+      return stub.fetch(
+        new Request("https://device/type", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ keys: body.keys, corr: body.corr }),
+        }),
+      );
+    }
+
+    if (url.pathname === "/v1/read_screen" && request.method === "POST") {
+      const body = (await request.json()) as { device_id?: string; corr?: string };
+      if (!body.device_id) return json({ error: "device_id required" }, 400);
+      const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+      const q = body.corr ? `?corr=${encodeURIComponent(body.corr)}` : "";
+      return stub.fetch(new Request(`https://device/screen${q}`));
+    }
+
+    if (url.pathname === "/v1/list_panes" && request.method === "POST") {
+      const body = (await request.json()) as { device_id?: string };
+      if (!body.device_id) return json({ error: "device_id required" }, 400);
+      const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+      return stub.fetch(new Request("https://device/panes", { method: "POST" }));
+    }
+
     if (url.pathname === "/v1/get_result" && request.method === "POST") {
       const body = (await request.json()) as { device_id?: string; corr?: string };
       if (!body.device_id || !body.corr) return json({ error: "device_id and corr required" }, 400);
@@ -167,8 +195,35 @@ export class DeviceDO implements DurableObject {
       if (sockets.length === 0) return json({ error: "offline" }, 409);
       const body = (await request.json()) as { command: string };
       const corr = crypto.randomUUID();
-      sockets[0]!.send(JSON.stringify(envelope("run", { command: body.command, timeout_ms: 25000 }, corr)));
+      sockets[0]!.send(JSON.stringify(envelope("run", { command: body.command, mode: "pane" }, corr)));
       return json({ corr, status: "running" });
+    }
+
+    if (url.pathname === "/type" && request.method === "POST") {
+      const sockets = this.ctx.getWebSockets();
+      if (sockets.length === 0) return json({ error: "offline" }, 409);
+      const body = (await request.json()) as { keys: string; corr?: string };
+      sockets[0]!.send(JSON.stringify(envelope("type", { keys: body.keys, corr: body.corr })));
+      return json({ ok: true, status: "typed" });
+    }
+
+    if (url.pathname === "/screen") {
+      const sockets = this.ctx.getWebSockets();
+      const corr = url.searchParams.get("corr") ?? "";
+      if (sockets.length) {
+        sockets[0]!.send(JSON.stringify(envelope("read_screen", { corr }, corr || undefined)));
+      }
+      const key = corr ? `screen:${corr}` : "screen:last";
+      const row = (await this.ctx.storage.get<Record<string, unknown>>(key)) ??
+        (await this.ctx.storage.get<Record<string, unknown>>("screen:last"));
+      return json({ status: row ? "ok" : "empty", screen: row ?? null });
+    }
+
+    if (url.pathname === "/panes" && request.method === "POST") {
+      const sockets = this.ctx.getWebSockets();
+      if (sockets.length === 0) return json({ panes: [] });
+      sockets[0]!.send(JSON.stringify(envelope("list_panes", {})));
+      return json({ ok: true, status: "asked" });
     }
 
     if (url.pathname === "/result") {
@@ -203,6 +258,20 @@ export class DeviceDO implements DurableObject {
         os,
         online: true,
         agentVer: String(parsed.body.agent_ver ?? ""),
+      });
+      return;
+    }
+
+    if (parsed.type === "screen") {
+      await this.ctx.storage.put("screen:last", parsed.body);
+      if (parsed.corr) await this.ctx.storage.put(`screen:${parsed.corr}`, parsed.body);
+      return;
+    }
+
+    if (parsed.type === "accepted" && parsed.corr) {
+      await this.ctx.storage.put(`res:${parsed.corr}`, {
+        status: "running",
+        pane_id: parsed.body.pane_id,
       });
       return;
     }

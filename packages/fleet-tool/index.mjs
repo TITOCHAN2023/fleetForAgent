@@ -10,6 +10,7 @@
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createOperator } from "./operator.mjs";
 
 function loadDotEnv(path) {
   try {
@@ -88,58 +89,7 @@ async function cli(args) {
 }
 
 function mcp() {
-  const tools = [
-    {
-      name: "list_computers",
-      description: "List machines in this hub account. Never returns IPs.",
-      inputSchema: { type: "object", properties: {} },
-    },
-    {
-      name: "run",
-      description: "Start a command on a device. Returns corr immediately; job lives on the device.",
-      inputSchema: {
-        type: "object",
-        required: ["device_id", "command"],
-        properties: { device_id: { type: "string" }, command: { type: "string" } },
-      },
-    },
-    {
-      name: "get_result",
-      description: "Fetch a previous run by corr.",
-      inputSchema: {
-        type: "object",
-        required: ["device_id", "corr"],
-        properties: { device_id: { type: "string" }, corr: { type: "string" } },
-      },
-    },
-    {
-      name: "read_screen",
-      description: "Snapshot the pane. Does not attach or stream.",
-      inputSchema: {
-        type: "object",
-        required: ["device_id"],
-        properties: { device_id: { type: "string" }, corr: { type: "string" } },
-      },
-    },
-    {
-      name: "type",
-      description: "Fire-and-forget keystrokes into the pane stdin.",
-      inputSchema: {
-        type: "object",
-        required: ["device_id", "keys"],
-        properties: { device_id: { type: "string" }, keys: { type: "string" }, corr: { type: "string" } },
-      },
-    },
-  ];
-
-  async function callTool(name, args) {
-    if (name === "list_computers") return rpc("/v1/list_computers", {});
-    if (name === "run") return rpc("/v1/run", args);
-    if (name === "get_result") return rpc("/v1/get_result", args);
-    if (name === "read_screen") return rpc("/v1/read_screen", args);
-    if (name === "type") return rpc("/v1/type", args);
-    throw new Error(`unknown tool ${name}`);
-  }
+  const { tools, callTool } = createOperator({ rpc, env: process.env });
 
   const rl = readline();
   void (async () => {

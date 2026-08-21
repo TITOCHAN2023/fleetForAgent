@@ -4,5 +4,8 @@
   "type": "module",
   "bin": {
     "fleet-tool": "./index.mjs"
+  },
+  "scripts": {
+    "test": "node --test operator.test.mjs"
   }
 }

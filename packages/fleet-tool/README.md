@@ -16,14 +16,14 @@ Existing tools stay. `device_id` is still on every mutating/read schema; it is o
 | Tool | Notes |
 |---|---|
 | `list_computers` | Account fleet. Never returns IPs. |
-| `run` | `command` required. Optional `device_id`, optional `wait_ms`. **Default (no `wait_ms`) is still immediate `{corr,status:"running"}`** — `POST /v1/run` is not held. |
-| `get_result` | Non-blocking peek by `corr`. |
-| `wait` | `{corr, device_id?, timeout_ms?}`. Blocks server-side (default 30s, clamped 1s–5min) by polling `get_result`. Does not kill the job. |
+| `run` | `command` required. Optional `device_id`, optional `wait_ms` (**default 0**). **Default is still immediate `{corr,status:"running"}`** — `POST /v1/run` is not held. |
+| `get_result` | Snapshot by `corr` when `wait_ms` is omitted/0. Optional `wait_ms` long-polls until done or the budget expires. |
+| `wait` | Explicit block: `{corr, device_id?, wait_ms?}`. Default `wait_ms` is the 30s cap. Long-polls `get_result`. |
 | `read_screen` / `type` | Same optional `device_id` fill. |
 | `set_computer` | Remember a device for later calls **in this MCP process only**. |
 | `get_current_computer` | Show last-used and the `FLEET_DEVICE_ID` start default. |
 
-If `wait_ms` / `timeout_ms` elapses, the tool returns `{corr,status:"running"}` plus any snapshot already on `get_result`. Use `wait` instead of looping `get_result`.
+`wait_ms` is an MCP-call budget only: default **0**, max **30s** (hosts cancel tools at ~60s). It never kills the remote command. `status=running` is not an error — do not re-issue `run`; poll `get_result(wait_ms=...)` or `wait(wait_ms=...)`. Do not spam `wait_ms=0`.
 
 ## Last-used (this process)
 

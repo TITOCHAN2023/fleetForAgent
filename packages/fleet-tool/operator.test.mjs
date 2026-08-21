@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   MISSING_DEVICE_MESSAGE,
+  WAIT_DEFAULT_MS,
   WAIT_MAX_MS,
-  WAIT_MIN_MS,
+  WAIT_POLL_MS,
   WAIT_TOOL_DEFAULT_MS,
   buildTools,
   clampWaitMs,
@@ -39,12 +40,16 @@ function clock() {
   };
 }
 
-test("clampWaitMs is 1s–5min", () => {
-  assert.equal(clampWaitMs(0), WAIT_MIN_MS);
-  assert.equal(clampWaitMs(500), WAIT_MIN_MS);
+test("clampWaitMs is 0–30s (MCP-call budget, not a kill timeout)", () => {
+  assert.equal(WAIT_DEFAULT_MS, 0);
+  assert.equal(WAIT_MAX_MS, 30_000);
+  assert.equal(clampWaitMs(0), 0);
+  assert.equal(clampWaitMs(-5), 0);
+  assert.equal(clampWaitMs(500), 500);
   assert.equal(clampWaitMs(30_000), 30_000);
-  assert.equal(clampWaitMs(10 * 60 * 1000), WAIT_MAX_MS);
-  assert.equal(clampWaitMs("nope"), WAIT_MIN_MS);
+  assert.equal(clampWaitMs(60_000), WAIT_MAX_MS);
+  assert.equal(clampWaitMs(5 * 60 * 1000), WAIT_MAX_MS);
+  assert.equal(clampWaitMs("nope"), 0);
 });
 
 test("isFinishedResult treats pending/running as not done", () => {
@@ -73,9 +78,20 @@ test("existing five tools remain; device_id stays in schemas and is optional", (
   assert.deepEqual(set.inputSchema.required, ["device_id"]);
   assert.ok(set.inputSchema.properties.device_id);
   assert.deepEqual(tools.find((x) => x.name === "run").inputSchema.required, ["command"]);
+
+  for (const n of ["run", "get_result", "wait"]) {
+    const w = tools.find((x) => x.name === n).inputSchema.properties.wait_ms;
+    assert.equal(w.maximum, WAIT_MAX_MS, n);
+    assert.equal(w.minimum, 0, n);
+    assert.match(w.description, /30000|30s/, n);
+    assert.match(w.description, /never kills/i, n);
+  }
+  assert.equal(tools.find((x) => x.name === "run").inputSchema.properties.wait_ms.default, 0);
+  assert.equal(tools.find((x) => x.name === "get_result").inputSchema.properties.wait_ms.default, 0);
+  assert.equal(tools.find((x) => x.name === "wait").inputSchema.properties.wait_ms.default, WAIT_TOOL_DEFAULT_MS);
 });
 
-test("run without wait_ms is immediate corr and does not poll get_result", async () => {
+test("run wait_ms omitted or 0 is immediate corr and does not poll get_result", async () => {
   const { rpc, calls } = mockRpc({
     "/v1/run": () => ({ corr: "c1", status: "running" }),
   });
@@ -92,6 +108,20 @@ test("run without wait_ms is immediate corr and does not poll get_result", async
   );
   assert.deepEqual(calls[0].body, { device_id: "mac-1", command: "uname" });
   assert.equal("wait_ms" in calls[0].body, false);
+
+  const { rpc: rpc0, calls: calls0 } = mockRpc({
+    "/v1/run": () => ({ corr: "c1b", status: "running" }),
+  });
+  const zero = await createOperator({ rpc: rpc0 }).callTool("run", {
+    device_id: "mac-1",
+    command: "uname",
+    wait_ms: 0,
+  });
+  assert.equal(zero.status, "running");
+  assert.deepEqual(
+    calls0.map((c) => c.path),
+    ["/v1/run"],
+  );
 });
 
 test("run wait_ms returns the full result when get_result finishes", async () => {
@@ -129,10 +159,11 @@ test("run wait_ms timeout keeps the job and returns running plus snapshot", asyn
   assert.equal(out.pane_id, "p9");
   assert.equal(calls.filter((c) => c.path === "/v1/run").length, 1);
   assert.ok(calls.some((c) => c.path === "/v1/get_result"));
-  assert.ok(time.t >= WAIT_MIN_MS);
+  assert.ok(time.t >= 1500);
+  assert.equal("isError" in out, false);
 });
 
-test("wait tool polls get_result and defaults timeout when omitted", async () => {
+test("wait tool polls get_result; omitted wait_ms uses the 30s cap", async () => {
   const time = clock();
   const { rpc, calls } = mockRpc({
     "/v1/get_result": () => ({ status: "running", corr: "c4", pane_id: "p" }),
@@ -141,12 +172,13 @@ test("wait tool polls get_result and defaults timeout when omitted", async () =>
   const out = await op.callTool("wait", { corr: "c4" });
   assert.equal(out.status, "running");
   assert.equal(out.device_id, "env-1");
-  assert.ok(time.t >= WAIT_MIN_MS);
-  assert.ok(time.t <= WAIT_TOOL_DEFAULT_MS + WAIT_MIN_MS);
+  assert.equal("isError" in out, false);
+  assert.ok(time.t >= WAIT_MAX_MS);
+  assert.ok(time.t <= WAIT_TOOL_DEFAULT_MS + WAIT_POLL_MS);
   assert.ok(calls.every((c) => c.path === "/v1/get_result"));
 });
 
-test("get_result is a single non-blocking peek", async () => {
+test("get_result wait_ms omitted is a single snapshot; wait_ms long-polls", async () => {
   const { rpc, calls } = mockRpc({
     "/v1/get_result": () => ({ status: "pending", corr: "c5" }),
   });
@@ -155,6 +187,28 @@ test("get_result is a single non-blocking peek", async () => {
   assert.equal(out.status, "pending");
   assert.equal(out.device_id, "mac-1");
   assert.equal(calls.length, 1);
+
+  const zero = await op.callTool("get_result", { device_id: "mac-1", corr: "c5", wait_ms: 0 });
+  assert.equal(zero.status, "pending");
+  assert.equal(calls.length, 2);
+
+  const time = clock();
+  let peeks = 0;
+  const { rpc: rpcW } = mockRpc({
+    "/v1/get_result": () => {
+      peeks += 1;
+      if (peeks < 3) return { status: "pending", corr: "c5b" };
+      return { status: "done", corr: "c5b", ok: true, exit_code: 0, stdout: "ok" };
+    },
+  });
+  const blocked = await createOperator({ rpc: rpcW, now: time.now, sleep: time.sleep }).callTool("get_result", {
+    device_id: "mac-1",
+    corr: "c5b",
+    wait_ms: 5000,
+  });
+  assert.equal(blocked.status, "done");
+  assert.equal(blocked.stdout, "ok");
+  assert.ok(peeks >= 3);
 });
 
 test("explicit device_id updates last-used; later calls can omit it", async () => {
@@ -279,7 +333,7 @@ test("get_result / wait / read_screen refuse a different device than the job own
       return true;
     },
   );
-  await assert.rejects(() => op.callTool("wait", { device_id: "mac-2", corr: "job-1", timeout_ms: 1000 }), /belongs to device/);
+  await assert.rejects(() => op.callTool("wait", { device_id: "mac-2", corr: "job-1", wait_ms: 1000 }), /belongs to device/);
   await assert.rejects(() => op.callTool("read_screen", { device_id: "mac-2", corr: "job-1" }), /belongs to device/);
 
   const peek = await op.callTool("get_result", { corr: "job-1" });

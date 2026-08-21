@@ -3,9 +3,10 @@
  * Do not write hub_sessions, ~/.fleet, or a workspace file.
  */
 
-export const WAIT_MIN_MS = 1000;
-export const WAIT_MAX_MS = 5 * 60 * 1000;
-export const WAIT_TOOL_DEFAULT_MS = 30_000;
+/** MCP-call wait budget only. Not a kill timeout. Hosts cancel tools at ~60s. */
+export const WAIT_DEFAULT_MS = 0;
+export const WAIT_MAX_MS = 30_000;
+export const WAIT_TOOL_DEFAULT_MS = WAIT_MAX_MS;
 export const WAIT_POLL_MS = 100;
 
 export const MISSING_DEVICE_MESSAGE =
@@ -13,8 +14,8 @@ export const MISSING_DEVICE_MESSAGE =
 
 export function clampWaitMs(ms) {
   const n = Number(ms);
-  if (!Number.isFinite(n)) return WAIT_MIN_MS;
-  return Math.min(WAIT_MAX_MS, Math.max(WAIT_MIN_MS, n));
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(WAIT_MAX_MS, n);
 }
 
 export function parseOptionalMs(value, name) {
@@ -46,7 +47,19 @@ function withDevice(row, deviceId) {
 function runningSnapshot(row, corr, deviceId) {
   const extra = row && typeof row === "object" ? { ...row } : {};
   delete extra.status;
+  delete extra.isError;
   return { ...extra, corr, status: "running", device_id: deviceId };
+}
+
+function waitMsSchema({ defaultMs, role }) {
+  return {
+    type: "number",
+    default: defaultMs,
+    minimum: 0,
+    maximum: WAIT_MAX_MS,
+    description:
+      `${role} MCP-call wait budget in milliseconds. Default ${defaultMs}. Capped at ${WAIT_MAX_MS} (30s) so the host cannot cancel with -32001 (clients ~60s). wait_ms never kills the remote command. status=running is not an error — do not re-issue run; long-poll with get_result(wait_ms) or wait(wait_ms). Do not spam wait_ms=0.`,
+  };
 }
 
 export function buildTools() {
@@ -60,40 +73,42 @@ export function buildTools() {
     {
       name: "run",
       description:
-        "Start a command on a device. Without wait_ms, returns {corr,status:\"running\"} immediately (job stays on the device). Optional wait_ms blocks this call up to that many ms (clamped 1s–5min); if still running, returns the corr handle plus any snapshot. Does not kill the job on timeout.",
+        "Start a command on a device. wait_ms default 0: returns {corr,status:\"running\"} immediately (POST /v1/run is not held). If wait_ms>0 and the job finishes in time, return the same payload get_result would. If the budget expires, return {corr,status:\"running\"} — the command continues. Never kill on wait expiry. Never re-issue run after status=running; poll get_result(wait_ms) or wait(wait_ms).",
       inputSchema: {
         type: "object",
         required: ["command"],
         properties: {
           device_id: deviceId,
           command: { type: "string" },
-          wait_ms: {
-            type: "number",
-            description: "Optional. If set, wait up to this many ms (clamped 1s–5min) before returning. Default is immediate corr — do not omit this and then poll get_result in a loop; use wait.",
-          },
+          wait_ms: waitMsSchema({ defaultMs: WAIT_DEFAULT_MS, role: "Optional." }),
         },
       },
     },
     {
       name: "get_result",
-      description: "Non-blocking peek of a previous run by corr. Use wait to block server-side.",
+      description:
+        "Peek a previous run by corr. wait_ms omitted/0 is an instant snapshot. wait_ms>0 long-polls until completion or the budget expires (max 30s). status=running is not an error and does not mean the process died. Never re-issue run after status=running; poll again with get_result(wait_ms=...) or wait(wait_ms). Do not spam wait_ms=0.",
       inputSchema: {
         type: "object",
         required: ["corr"],
-        properties: { device_id: deviceId, corr: { type: "string" } },
+        properties: {
+          device_id: deviceId,
+          corr: { type: "string" },
+          wait_ms: waitMsSchema({ defaultMs: WAIT_DEFAULT_MS, role: "Optional." }),
+        },
       },
     },
     {
       name: "wait",
       description:
-        "Block until a run finishes or timeout_ms elapses (default 30s, clamped 1s–5min). Polls get_result. Does not kill the job. Returns the full result if done, or {corr,status:\"running\"} plus any snapshot.",
+        "Explicit block: wait until a run finishes or wait_ms elapses (default 30s cap, max 30s). Long-polls get_result. wait_ms never kills the remote command. If still going: {corr,status:\"running\"} — not an error. Never re-issue run after status=running; poll with wait(wait_ms) or get_result(wait_ms). Do not spam wait_ms=0.",
       inputSchema: {
         type: "object",
         required: ["corr"],
         properties: {
           corr: { type: "string" },
           device_id: deviceId,
-          timeout_ms: { type: "number" },
+          wait_ms: waitMsSchema({ defaultMs: WAIT_TOOL_DEFAULT_MS, role: "Explicit block." }),
         },
       },
     },
@@ -180,15 +195,19 @@ export function createOperator({
 
   async function waitForResult(deviceId, corr, timeoutMs) {
     const budget = clampWaitMs(timeoutMs);
+    let snapshot = await peekResult(deviceId, corr);
+    if (isFinishedResult(snapshot) || budget <= 0) {
+      return isFinishedResult(snapshot) ? snapshot : runningSnapshot(snapshot, corr, deviceId);
+    }
     const deadline = now() + budget;
-    let snapshot = { corr, status: "running", device_id: deviceId };
     while (now() < deadline) {
-      snapshot = await peekResult(deviceId, corr);
       if (isFinishedResult(snapshot)) return snapshot;
       const left = deadline - now();
       if (left <= 0) break;
       await sleep(Math.min(WAIT_POLL_MS, left));
+      snapshot = await peekResult(deviceId, corr);
     }
+    if (isFinishedResult(snapshot)) return snapshot;
     return runningSnapshot(snapshot, corr, deviceId);
   }
 
@@ -220,12 +239,12 @@ export function createOperator({
       const command = args.command == null ? "" : String(args.command);
       if (!command) throw new Error("command required");
       const deviceId = resolveDevice(args);
-      const waitMs = parseOptionalMs(args.wait_ms, "wait_ms");
+      const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? WAIT_DEFAULT_MS);
       const started = await rpc("/v1/run", { device_id: deviceId, command });
       const corr = started?.corr;
       rememberCorr(corr, deviceId);
       const out = withDevice({ ...started, corr, status: started?.status ?? "running" }, deviceId);
-      if (waitMs == null) return out;
+      if (waitMs <= 0) return out;
       return waitForResult(deviceId, corr, waitMs);
     }
 
@@ -233,15 +252,17 @@ export function createOperator({
       const corr = trimId(args.corr);
       if (!corr) throw new Error("corr required");
       const deviceId = resolveDevice(args, { corr });
-      return peekResult(deviceId, corr);
+      const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? WAIT_DEFAULT_MS);
+      if (waitMs <= 0) return peekResult(deviceId, corr);
+      return waitForResult(deviceId, corr, waitMs);
     }
 
     if (name === "wait") {
       const corr = trimId(args.corr);
       if (!corr) throw new Error("corr required");
       const deviceId = resolveDevice(args, { corr });
-      const timeoutMs = parseOptionalMs(args.timeout_ms, "timeout_ms") ?? WAIT_TOOL_DEFAULT_MS;
-      return waitForResult(deviceId, corr, timeoutMs);
+      const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? WAIT_TOOL_DEFAULT_MS);
+      return waitForResult(deviceId, corr, waitMs);
     }
 
     if (name === "read_screen") {

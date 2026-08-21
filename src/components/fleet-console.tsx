@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { signOut } from "@/lib/auth/client";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
@@ -149,6 +150,9 @@ export function FleetConsole() {
           ))}
         </nav>
         <div className="flex items-center gap-3">
+          <Link to="/guide" className="text-sm text-muted hover:text-fg">
+            {t("header.guide")}
+          </Link>
           <LocaleSwitch />
           <span className="max-w-32 truncate text-sm text-muted">{label}</span>
           <Button variant="ghost" size="sm" onClick={() => void signOut()}>

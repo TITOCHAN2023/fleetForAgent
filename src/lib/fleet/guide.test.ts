@@ -1,0 +1,49 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { test } from "node:test";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
+
+function src(rel: string) {
+  return readFileSync(join(root, rel), "utf8");
+}
+
+function mcpToolNames(toolSrc: string): string[] {
+  const names: string[] = [];
+  const block = toolSrc.match(/function mcp\(\) \{[\s\S]*?const tools = \[([\s\S]*?)\];/);
+  assert.ok(block, "expected fleet-tool mcp() tools array");
+  for (const m of block[1].matchAll(/name:\s*"([a-z_]+)"/g)) names.push(m[1]);
+  return names;
+}
+
+test("guide advertises only the MCP tools shipped on main", () => {
+  const shipped = mcpToolNames(src("packages/fleet-tool/index.mjs"));
+  assert.deepEqual(shipped, ["list_computers", "run", "get_result", "read_screen", "type"]);
+
+  const guide = src("src/components/guide-panel.tsx");
+  for (const name of shipped) {
+    assert.match(guide, new RegExp(`name: "${name}"`));
+  }
+  assert.doesNotMatch(guide, /\bwait\b/);
+  assert.doesNotMatch(guide, /set_computer/);
+});
+
+test("guide documents real env, flags, and placeholder tokens", () => {
+  const guide = src("src/components/guide-panel.tsx") + src("src/lib/i18n/messages.ts");
+  assert.match(guide, /~\/\.fleet\/mcp\.env/);
+  assert.match(guide, /FLEET_URL=/);
+  assert.match(guide, /FLEET_TOKEN=flt_\.\.\./);
+  assert.match(guide, /fleet start --hub /);
+  assert.match(guide, /--token flt_\.\.\./);
+  assert.match(guide, /127\.0\.0\.1:17890/);
+  assert.match(guide, /packages\/fleet-tool\/index\.mjs/);
+  assert.doesNotMatch(guide, /flt_[0-9a-f]{16,}/i);
+});
+
+test("landing and console link to /guide", () => {
+  assert.match(src("src/components/login-landing.tsx"), /to="\/guide"/);
+  assert.match(src("src/components/fleet-console.tsx"), /to="\/guide"/);
+  assert.match(src("src/routes/guide.tsx"), /createFileRoute\("\/guide"\)/);
+});

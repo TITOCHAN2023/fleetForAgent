@@ -13,7 +13,7 @@
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "node --test 'scripts/**/*.test.mjs' packages/fleet-hub/index.test.mjs && npx --yes tsx --test src/lib/agent/runtime.test.ts src/lib/fleet/lab.test.ts src/lib/fleet/cap.test.ts src/lib/fleet/pane.test.ts src/lib/fleet/token.test.ts src/lib/fleet/live.test.ts src/lib/i18n/i18n.test.ts",
+    "test": "node --test 'scripts/**/*.test.mjs' packages/fleet-hub/index.test.mjs && npx --yes tsx --test src/lib/agent/runtime.test.ts src/lib/fleet/lab.test.ts src/lib/fleet/cap.test.ts src/lib/fleet/pane.test.ts src/lib/fleet/token.test.ts src/lib/fleet/live.test.ts src/lib/fleet/guide.test.ts src/lib/i18n/i18n.test.ts",
     "hub": "node packages/fleet-hub/index.mjs",
     "release:agent": "bash scripts/package-agent.sh",
     "lint": "eslint .",

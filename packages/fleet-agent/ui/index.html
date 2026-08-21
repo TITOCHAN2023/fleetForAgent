@@ -45,6 +45,8 @@
           </div>
         </div>
         <p id="t-body">Enter the hub address and dial out. No inbound port.</p>
+        <p id="t-stay" class="muted">Close this page anytime. The agent stays in the menu bar (Mac, next to the clock) or the tray (Windows, by the clock). Right-click to switch on/off and run policy. CLI: fleet status</p>
+        <p class="muted">Device <code id="deviceId">—</code></p>
         <div class="row" style="margin-top:16px">
           <span id="t-allow">Allow this computer to run</span>
           <button id="enabled">On</button>
@@ -81,6 +83,7 @@
       const I18N = {
         en: {
           body: "Enter the hub address and dial out. Worker domain or any host. No inbound port.",
+          stay: "Close this page anytime. The agent stays in the menu bar (Mac, next to the clock) or the tray (Windows, by the clock). Right-click to switch on/off and run policy. CLI (same state as this page): fleet status / start / permit. While Enabled, the machine will not idle-sleep; the screen can still lock.",
           allow: "Allow this computer to run",
           on: "On", offsw: "Off",
           connect: "Connect",
@@ -93,6 +96,7 @@
         },
         zh: {
           body: "填写中枢地址，连出去。Worker 域名或任意主机都行。不开放入站端口。",
+          stay: "设置页关掉也没关系：Mac 在顶部时钟旁边，Windows 在右下角时钟旁边。右键图标可开关本机、切换执行权限。命令行和本页是同一份状态：fleet status / start / permit。开关打开时本机不会因空闲休眠，锁屏仍可继续跑。",
           allow: "允许在这台电脑上运行",
           on: "已开", offsw: "打开",
           connect: "连接",
@@ -110,6 +114,7 @@
         const t = I18N[locale];
         document.documentElement.lang = locale === "zh" ? "zh-Hant" : "en";
         $("t-body").textContent = t.body;
+        $("t-stay").textContent = t.stay;
         $("t-allow").textContent = t.allow;
         $("connect").textContent = t.connect;
         $("t-permit").textContent = t.permit;
@@ -141,6 +146,7 @@
         if (s.hubInput) $("hub").value = s.hubInput;
         if (s.hubToken) $("token").value = s.hubToken;
         $("err").textContent = s.error || "";
+        $("deviceId").textContent = s.deviceId || "—";
         document.querySelectorAll(".level").forEach((b) => b.classList.toggle("on", b.dataset.permit === s.permit));
         if (s.pending) { $("pendingCard").style.display = "block"; $("pendingCmd").textContent = s.pending.command; }
         else $("pendingCard").style.display = "none";

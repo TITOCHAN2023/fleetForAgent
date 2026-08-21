@@ -127,13 +127,34 @@ Restart=always
 
 然后：
 
-1. 打开安装包（Windows 双击 exe；Mac 拖到应用程序；Linux 解压跑 `./fleet-agent`）。
-2. 浏览器会开 `http://127.0.0.1:17890` 设置页。
-3. 打开「允许在这台电脑上运行」。
-4. 填中枢地址（不要带路径）：Worker 用 `fleet-hub.xxx.workers.dev`，普通部署用 `hub.example.com` 或 `http://127.0.0.1:8787`。
-5. 如果中枢设了 `HUB_TOKEN`，填同一个 token。
-6. 点连接，状态变成「已连接中枢」。
-7. 选权限：
+1. 打开安装包（Windows 双击 exe；Mac 拖到应用程序）。
+2. **Mac / Windows：** 第一次会开 `http://127.0.0.1:17890` 设置页。关掉页面也没关系：Mac 在顶部时钟旁，Windows 在右下角托盘。再点一次图标会重新打开设置页；右键可开关本机、切换执行权限。
+3. **Linux：没有设置页。** 解压后用环境变量启动，状态在面板托盘里（KDE / XFCE / Cinnamon 默认有；GNOME 需要 AppIndicator 扩展）。右键切换开关和执行权限。无图形会话时当后台跑。
+
+```bash
+export FLEET_URL=https://fleet.ginfo.cc
+export FLEET_TOKEN=flt_…
+./fleet-agent
+```
+
+配置也会写进 `~/.fleet-agent/config.json`。可选 `FLEET_ENABLED=1`。
+
+三端都有命令行，和托盘/设置页共用本地 API（`127.0.0.1:17890`），不要两边各改一份配置：
+
+```bash
+fleet start --hub https://fleet.ginfo.cc --token flt_…
+fleet status
+fleet permit ask
+fleet stop          # 关掉本机开关，进程还在
+fleet quit          # 退出进程
+fleet help
+```
+
+Mac 可执行：`"/Applications/Fleet Agent.app/Contents/MacOS/FleetAgent" status`  
+或 `fleet install` 把 `fleet` 链到 PATH。Linux 包里同时有 `fleet` 和 `fleet-agent`（同一个文件）。Windows 对 `FleetAgent.exe status`；`fleet install` 拷到 `%LOCALAPPDATA%\Fleet\fleet.exe`。
+5. Mac/Windows 填中枢地址（不要带路径）再点连接；Linux 用上面的 `FLEET_URL`。状态变成「已连接」时图标是 `F•`。
+6. 开关打开时 Agent 挡住系统空闲休眠（屏幕仍可锁）。合盖不拦。Linux 用 `systemd-inhibit --what=idle:sleep`。
+7. 选权限（Mac/Windows 设置页或各平台托盘右键）：
    - **停用**：什么都不跑
    - **需当面同意**：电脑前的人要点同意
    - **自动执行**：直接跑（危险命令仍拦截）

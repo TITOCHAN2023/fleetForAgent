@@ -2,4 +2,9 @@ module github.com/TITOCHAN2023/fleetForAgent
 
 go 1.23
 
-require github.com/coder/websocket v1.8.13
+require (
+	github.com/coder/websocket v1.8.13
+	github.com/energye/systray v1.0.3
+)
+
+require github.com/godbus/dbus/v5 v5.1.0 // indirect

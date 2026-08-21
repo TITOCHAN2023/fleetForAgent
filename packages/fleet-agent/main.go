@@ -24,6 +24,12 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
+const (
+	agentVersion = "0.2.3"
+	settingsAddr = "127.0.0.1:17890"
+	settingsURL  = "http://127.0.0.1:17890"
+)
+
 //go:embed ui/index.html
 var uiHTML []byte
 
@@ -134,6 +140,7 @@ func (a *Agent) load() {
 	if err != nil {
 		a.permit = PermitAsk
 		a.deviceID = newDeviceID()
+		a.applyEnv(false)
 		a.save()
 		return
 	}
@@ -156,7 +163,36 @@ func (a *Agent) load() {
 	}
 	if a.deviceID == "" {
 		a.deviceID = newDeviceID()
-		a.save()
+	}
+	a.applyEnv(true)
+	a.save()
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func (a *Agent) applyEnv(hadCfg bool) {
+	if v := firstNonEmpty(os.Getenv("FLEET_URL"), os.Getenv("FLEET_HUB")); v != "" {
+		a.hubInput = v
+	}
+	if v := firstNonEmpty(os.Getenv("FLEET_TOKEN"), os.Getenv("FLEET_HUB_TOKEN")); v != "" {
+		a.hubToken = v
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("FLEET_ENABLED"))) {
+	case "1", "true", "yes", "on":
+		a.enabled = true
+	case "0", "false", "no", "off":
+		a.enabled = false
+	default:
+		if runtime.GOOS == "linux" && !hadCfg && strings.TrimSpace(a.hubInput) != "" {
+			a.enabled = true
+		}
 	}
 }
 
@@ -178,13 +214,37 @@ func normalizeHub(raw string) (wss string, err error) {
 
 func (a *Agent) setEnabled(on bool) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.enabled = on
+	hub := a.hubInput
 	if !on {
 		a.disconnectLocked("本机开关已关闭")
 	}
 	a.log("info", map[bool]string{true: "agent enabled", false: "agent disabled"}[on])
 	a.save()
+	a.mu.Unlock()
+	setKeepAlive(on)
+	if on && strings.TrimSpace(hub) != "" {
+		go func() { _ = a.connect(hub) }()
+	}
+	a.pushUI()
+}
+
+func (a *Agent) setPermit(p Permit) {
+	a.mu.Lock()
+	if p == PermitOff || p == PermitAsk || p == PermitAllow {
+		a.permit = p
+		a.log("info", "permit → "+string(p))
+		a.save()
+	}
+	a.mu.Unlock()
+	a.pushUI()
+}
+
+func (a *Agent) pushUI() {
+	a.mu.Lock()
+	s := a.snapshot()
+	a.mu.Unlock()
+	updateTray(s)
 }
 
 func (a *Agent) disconnectLocked(reason string) {
@@ -252,6 +312,7 @@ func (a *Agent) connect(hub string) error {
 		a.log("error", a.err)
 		a.save()
 		a.mu.Unlock()
+		a.pushUI()
 		return err
 	}
 	a.ws = c
@@ -263,16 +324,46 @@ func (a *Agent) connect(hub string) error {
 		"arch":      runtime.GOARCH,
 		"hostname":  hostname(),
 		"caps":      []string{"shell", "pane"},
-		"agent_ver": "0.2.0",
+		"agent_ver": agentVersion,
 		"permit":    string(a.permit),
 		"egress":    "internet",
 		"device_id": deviceID,
 	}}
 	a.mu.Unlock()
+	a.pushUI()
 	_ = wsjson.Write(ctx, c, hello)
 	go a.readLoop(ctx, c)
 	go a.coalesceLoop(ctx, c)
 	return nil
+}
+
+func (a *Agent) maintain() {
+	backoff := time.Second
+	for {
+		time.Sleep(500 * time.Millisecond)
+		a.mu.Lock()
+		want := a.enabled && strings.TrimSpace(a.hubInput) != "" && a.ws == nil && a.conn != "connecting"
+		hub := a.hubInput
+		a.mu.Unlock()
+		if !want {
+			backoff = time.Second
+			continue
+		}
+		time.Sleep(backoff)
+		a.mu.Lock()
+		want = a.enabled && strings.TrimSpace(a.hubInput) != "" && a.ws == nil && a.conn != "connecting"
+		hub = a.hubInput
+		a.mu.Unlock()
+		if !want {
+			continue
+		}
+		err := a.connect(hub)
+		if err != nil && backoff < 20*time.Second {
+			backoff *= 2
+			continue
+		}
+		backoff = time.Second
+	}
 }
 
 func osKind() string {
@@ -307,6 +398,7 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 			a.log("warn", "socket closed")
 		}
 		a.mu.Unlock()
+		a.pushUI()
 	}()
 	for {
 		var env Envelope
@@ -364,6 +456,8 @@ func (a *Agent) handleRun(ctx context.Context, c *websocket.Conn, corr, cmd stri
 		a.pending = &Pending{Corr: corr, Command: cmd, Requested: time.Now().UnixMilli()}
 		a.log("warn", "waiting consent: "+cmd)
 		a.mu.Unlock()
+		notifyConsent(cmd)
+		a.pushUI()
 		return
 	}
 	a.mu.Unlock()
@@ -513,6 +607,7 @@ func (a *Agent) approve() {
 	a.mu.Lock()
 	a.log("info", "approved: "+p.Command)
 	a.mu.Unlock()
+	a.pushUI()
 }
 
 func (a *Agent) deny() {
@@ -528,6 +623,7 @@ func (a *Agent) deny() {
 	a.mu.Lock()
 	a.log("warn", "denied: "+p.Command)
 	a.mu.Unlock()
+	a.pushUI()
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -536,6 +632,11 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func main() {
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] != "--daemon" && args[0] != "daemon" {
+		os.Exit(runCLI(args))
+	}
+
 	home, _ := os.UserHomeDir()
 	dir := filepath.Join(home, ".fleet-agent")
 	_ = os.MkdirAll(dir, 0o700)
@@ -569,12 +670,8 @@ func main() {
 			Permit Permit `json:"permit"`
 		}
 		_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
+		agent.setPermit(body.Permit)
 		agent.mu.Lock()
-		if body.Permit == PermitOff || body.Permit == PermitAsk || body.Permit == PermitAllow {
-			agent.permit = body.Permit
-			agent.log("info", "permit → "+string(body.Permit))
-			agent.save()
-		}
 		s := agent.snapshot()
 		agent.mu.Unlock()
 		writeJSON(w, s)
@@ -585,15 +682,17 @@ func main() {
 			Token string `json:"token"`
 		}
 		_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
-		if body.Token != "" || body.Hub != "" {
-			agent.mu.Lock()
-			if body.Token != "" {
-				agent.hubToken = body.Token
-			}
-			agent.save()
-			agent.mu.Unlock()
+		agent.mu.Lock()
+		if body.Token != "" {
+			agent.hubToken = body.Token
 		}
-		go func() { _ = agent.connect(body.Hub) }()
+		hub := body.Hub
+		if strings.TrimSpace(hub) == "" {
+			hub = agent.hubInput
+		}
+		agent.save()
+		agent.mu.Unlock()
+		go func() { _ = agent.connect(hub) }()
 		time.Sleep(80 * time.Millisecond)
 		agent.mu.Lock()
 		s := agent.snapshot()
@@ -614,18 +713,79 @@ func main() {
 		agent.mu.Unlock()
 		writeJSON(w, s)
 	})
+	mux.HandleFunc("/api/quit", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"ok": true})
+		go func() {
+			time.Sleep(80 * time.Millisecond)
+			agent.mu.Lock()
+			agent.disconnectLocked("quit")
+			agent.mu.Unlock()
+			setKeepAlive(false)
+			requestQuit()
+		}()
+	})
 
-	ln, err := net.Listen("tcp", "127.0.0.1:17890")
+	ln, err := net.Listen("tcp", settingsAddr)
 	if err != nil {
-		log.Fatal(err)
+		if runtime.GOOS == "linux" {
+			log.Println("already running")
+			return
+		}
+		log.Println("already running, opening settings")
+		openBrowser(settingsURL)
+		time.Sleep(400 * time.Millisecond)
+		return
 	}
-	url := "http://127.0.0.1:17890"
-	log.Println("settings", url)
-	openBrowser(url)
-	log.Fatal(http.Serve(ln, mux))
+	go func() {
+		log.Fatal(http.Serve(ln, mux))
+	}()
+	if runtime.GOOS == "linux" {
+		log.Println("linux tray; hub from FLEET_URL + FLEET_TOKEN or ~/.fleet-agent/config.json")
+	} else {
+		log.Println("settings", settingsURL)
+	}
+
+	startKeepAliveLoop()
+	setKeepAlive(agent.enabled)
+	if agent.enabled {
+		agent.mu.Lock()
+		agent.log("info", "holding idle-sleep while enabled (screen may lock)")
+		agent.mu.Unlock()
+	}
+	go agent.maintain()
+	agent.mu.Lock()
+	auto := agent.enabled && strings.TrimSpace(agent.hubInput) != ""
+	hub := agent.hubInput
+	first := strings.TrimSpace(agent.hubInput) == ""
+	agent.mu.Unlock()
+	if auto {
+		go func() { _ = agent.connect(hub) }()
+	}
+	if runtime.GOOS != "linux" && (first || !trayEnabled) {
+		openBrowser(settingsURL)
+	}
+	if runtime.GOOS == "linux" && first {
+		log.Println("no hub set: export FLEET_URL and FLEET_TOKEN, then restart")
+	}
+	runTray(agent)
+}
+
+func notifyConsent(cmd string) {
+	msg := clip(cmd, 80)
+	switch runtime.GOOS {
+	case "darwin":
+		q := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(msg)
+		_ = exec.Command("osascript", "-e",
+			`display notification "`+q+`" with title "Fleet Agent" subtitle "Needs approval"`).Start()
+	case "linux":
+		_ = exec.Command("notify-send", "-a", "Fleet Agent", "Needs approval", msg).Start()
+	}
 }
 
 func openBrowser(url string) {
+	if runtime.GOOS == "linux" {
+		return
+	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":

@@ -16,7 +16,7 @@
 ## 正确做法
 
 ```bash
-# .app
+# .app  （LSUIElement + NSAppSleepDisabled：菜单栏常驻，禁止 App Nap）
 codesign --force --deep --sign - "Fleet Agent.app"   # ad-hoc，至少能当 app 打开
 
 # zip（保留 +x、资源叉）
@@ -55,6 +55,8 @@ xattr -cr "/Applications/Fleet Agent.app"
 ## Release
 
 ```bash
-VERSION=0.2.1 npm run release:agent
-gh release create v0.2.1 public/dl/FleetAgent-* public/dl/fleet-agent-linux-amd64.tar.gz public/dl/checksums.txt
+VERSION=0.2.3 npm run release:agent
+gh release create v0.2.3 public/dl/FleetAgent-* public/dl/fleet-agent-linux-amd64.tar.gz public/dl/checksums.txt
+
+macOS 菜单栏需要 **CGO_ENABLED=1**（本机 clang）。Windows 托盘是 syscall，Linux 托盘是 DBus，交叉编译都保持 `CGO_ENABLED=0`。Windows 加 `-H windowsgui`。
 ```

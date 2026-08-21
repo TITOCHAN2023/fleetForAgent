@@ -10,14 +10,19 @@ mkdir -p "$OUT" "$SRC/dist"
 cd "$SRC"
 go mod tidy
 LDFLAGS="-s -w"
-VERSION="${VERSION:-0.2.1}"
+VERSION="${VERSION:-0.2.3}"
 
 build() {
   local os="$1" arch="$2" ext="$3"
   echo "building $os/$arch"
   if [ "$os" = windows ]; then
+    # Windows tray is syscall-only. Keep CGO off so we can cross-compile from a Mac.
     CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -ldflags "$LDFLAGS -H windowsgui" -o "dist/${os}-${arch}${ext}" .
+  elif [ "$os" = darwin ]; then
+    # Menu bar (systray) needs CGO on macOS.
+    CGO_ENABLED=1 GOOS="$os" GOARCH="$arch" go build -ldflags "$LDFLAGS" -o "dist/${os}-${arch}${ext}" .
   else
+    # Linux tray is DBus StatusNotifierItem (no CGO). Keep CGO off so we can cross-compile.
     CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -ldflags "$LDFLAGS" -o "dist/${os}-${arch}${ext}" .
   fi
 }
@@ -59,6 +64,8 @@ pack_macos() {
   <key>CFBundleExecutable</key><string>FleetAgent</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>LSUIElement</key><true/>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSAppSleepDisabled</key><true/>
 </dict>
 </plist>
 PLIST
@@ -102,8 +109,9 @@ pack_macos amd64
 
 mkdir -p dist/linuxpack
 cp dist/linux-amd64 dist/linuxpack/fleet-agent
-chmod +x dist/linuxpack/fleet-agent
-tar -C dist/linuxpack -czf "$OUT/fleet-agent-linux-amd64.tar.gz" fleet-agent
+cp dist/linux-amd64 dist/linuxpack/fleet
+chmod +x dist/linuxpack/fleet-agent dist/linuxpack/fleet
+tar -C dist/linuxpack -czf "$OUT/fleet-agent-linux-amd64.tar.gz" fleet-agent fleet
 
 (
   cd "$OUT"

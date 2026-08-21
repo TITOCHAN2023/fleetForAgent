@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -349,6 +350,8 @@ func TestLiveShellTTYAndTerm(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("live shell is POSIX-only")
 	}
+	// 888-test daemons inherit TERM=dumb from the launcher.
+	t.Setenv("TERM", "dumb")
 	s := newSupervisor()
 	t.Cleanup(func() {
 		s.mu.Lock()
@@ -371,7 +374,19 @@ func TestLiveShellTTYAndTerm(t *testing.T) {
 		t.Fatalf("tty path missing: %q", out)
 	}
 	if !strings.Contains(out, "TERM=xterm-256color") {
-		t.Fatalf("TERM=%q want xterm-256color", out)
+		t.Fatalf("TERM=%q want xterm-256color (inherited dumb must not win)", out)
 	}
 	assertNoCompletion(t, out, stderr)
+
+	if _, err := exec.LookPath("python3"); err == nil {
+		p2, err := s.spawn("tty2", `python3 -c 'import sys; print(int(sys.stdin.isatty()), int(sys.stdout.isatty()))'`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitPaneDone(t, p2)
+		py, _ := p2.resultText()
+		if !strings.Contains(py, "1 1") {
+			t.Fatalf("python isatty want 1 1, got %q", py)
+		}
+	}
 }

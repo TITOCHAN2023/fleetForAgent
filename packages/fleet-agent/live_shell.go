@@ -194,6 +194,24 @@ func stripTermNoise(s string) string {
 	return s
 }
 
+// stripEchoedCommand drops a line that is only the typed command (zsh/bash
+// may still echo it on stderr even after stty -echo).
+func stripEchoedCommand(s, command string) string {
+	cmd := strings.TrimSpace(strings.TrimRight(command, "\n"))
+	if cmd == "" || !strings.Contains(s, cmd) {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	keep := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == cmd {
+			continue
+		}
+		keep = append(keep, line)
+	}
+	return strings.Join(keep, "\n")
+}
+
 func stripCompletionText(s string) string {
 	s = stripTermNoise(s)
 	for {
@@ -515,6 +533,14 @@ func (s *supervisor) startLiveJob(job *liveJob) error {
 		s.mu.Unlock()
 		return err
 	}
+	if _, isExit := exitCommandCode(job.command); isExit {
+		go func() {
+			time.Sleep(1500 * time.Millisecond)
+			if job.pane.stillRunning() {
+				live.kill()
+			}
+		}()
+	}
 	return nil
 }
 
@@ -597,7 +623,7 @@ func (s *supervisor) feedLive(which, chunk string) {
 	job.pane.finishCommand(out, code)
 	job.pane.mu.Lock()
 	job.pane.stderr = newStreamBuf()
-	if cleaned := stripCompletionText(stderrBefore); cleaned != "" {
+	if cleaned := stripEchoedCommand(stripCompletionText(stderrBefore), job.command); cleaned != "" {
 		job.pane.stderr.append(cleaned)
 	}
 	job.pane.mu.Unlock()

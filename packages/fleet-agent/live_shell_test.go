@@ -109,6 +109,16 @@ func TestHasReadyLine(t *testing.T) {
 	}
 }
 
+func TestStripEchoedCommand(t *testing.T) {
+	got := stripEchoedCommand("echo hi\nreal err\n", "echo hi")
+	if strings.Contains(got, "echo hi") {
+		t.Fatalf("echoed command remained: %q", got)
+	}
+	if !strings.Contains(got, "real err") {
+		t.Fatalf("stripped too much: %q", got)
+	}
+}
+
 func TestStripCompletionText(t *testing.T) {
 	in := "keep\n" + promptPrefix + "0\nkeep2\n"
 	got := stripCompletionText(in)

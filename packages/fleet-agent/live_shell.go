@@ -311,7 +311,8 @@ func beginLiveIO(ls *liveShell, stdout, stderr io.Reader, readyCh chan struct{})
 func waitLiveReady(ls *liveShell, stdin io.Writer, readyCh <-chan struct{}) {
 	// One compound command so bash/zsh print a single completion prompt.
 	// bash: \n in PS1 is a prompt escape. zsh: PROMPT=$'...%?\n'.
-	_, _ = io.WriteString(stdin, "stty -echo 2>/dev/null || true; "+
+	_, _ = io.WriteString(stdin, "export TERM=xterm-256color; "+
+		"stty -echo 2>/dev/null || true; "+
 		"bind 'set enable-bracketed-paste off' 2>/dev/null || true; "+
 		"shopt -s expand_aliases 2>/dev/null || true; "+
 		"setopt aliases 2>/dev/null || true; "+

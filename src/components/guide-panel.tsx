@@ -168,6 +168,7 @@ export function GuidePanel() {
             <h3 className="text-sm font-medium">{t("guide.s2Linux")}</h3>
             <p className="mt-2 text-sm leading-relaxed text-muted">{t("guide.s2LinuxBody")}</p>
             <p className="mt-2 font-mono text-xs text-subtle">fleet-agent-linux-amd64.tar.gz</p>
+            <p className="font-mono text-xs text-subtle">fleet-agent-linux-arm64.tar.gz</p>
           </article>
         </div>
         <CodeBlock label="Linux env" text={LINUX_ENV} />

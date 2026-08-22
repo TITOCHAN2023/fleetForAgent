@@ -57,10 +57,12 @@ test("guide documents real env, flags, and placeholder tokens", () => {
   assert.doesNotMatch(guide, /flt_[0-9a-f]{16,}/i);
 });
 
-test("landing and console link to /guide", () => {
-  assert.match(src("src/components/login-landing.tsx"), /to="\/guide"/);
-  assert.match(src("src/components/fleet-console.tsx"), /to="\/guide"/);
+test("landing and console link to /help", () => {
+  assert.match(src("src/components/login-landing.tsx"), /to="\/help"/);
+  assert.match(src("src/components/fleet-console.tsx"), /to="\/help"/);
+  assert.match(src("src/routes/help.tsx"), /createFileRoute\("\/help"\)/);
   assert.match(src("src/routes/guide.tsx"), /createFileRoute\("\/guide"\)/);
+  assert.match(src("src/routes/guide.tsx"), /to="\/help"/);
 });
 
 test("console honors /?tab=agent for Settings", () => {

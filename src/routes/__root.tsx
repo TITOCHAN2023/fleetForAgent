@@ -15,10 +15,10 @@ export const Route = createRootRoute({
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
       { title: APP_NAME },
-      { name: "theme-color", content: "#090b0d" },
+      { name: "theme-color", content: "#f7f7f8" },
       {
         name: "description",
-        content: "Fleet hub: list machines, pick one, run. Devices connect out only.",
+        content: "One MCP tool. Windows, Linux, macOS. Try https://fleet.ginfo.cc.",
       },
     ],
     links: [
@@ -30,7 +30,12 @@ export const Route = createRootRoute({
       { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
       {
         rel: "stylesheet",
-        href: "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap",
+        href: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap",
+      },
+    ],
+    scripts: [
+      {
+        children: `(function(){try{var p=localStorage.getItem("fleet-theme")||"system";var d=window.matchMedia("(prefers-color-scheme: dark)").matches;var r=p==="system"?(d?"dark":"light"):p;document.documentElement.setAttribute("data-theme",r);document.documentElement.setAttribute("data-theme-pref",p);document.documentElement.style.colorScheme=r;}catch(e){}})();`,
       },
     ],
   }),
@@ -52,24 +57,18 @@ function RootDocument() {
     <html lang="en" className="antialiased" suppressHydrationWarning>
       <head>
         <HeadContent />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var p=localStorage.getItem("fleet-theme")||"system";var d=window.matchMedia("(prefers-color-scheme: dark)").matches;var r=p==="system"?(d?"dark":"light"):p;document.documentElement.setAttribute("data-theme",r);document.documentElement.setAttribute("data-theme-pref",p);document.documentElement.style.colorScheme=r;}catch(e){}})();`,
+          }}
+        />
       </head>
       <body className="bg-bg text-fg min-h-svh">
         <PreviewHostBridge />
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
             <Outlet />
-            <Toaster
-              theme="dark"
-              position="bottom-right"
-              toastOptions={{
-                className: "font-sans",
-                style: {
-                  background: "#181c21",
-                  border: "1px solid #23282f",
-                  color: "#e8eaed",
-                },
-              }}
-            />
+            <Toaster theme="system" position="bottom-right" className="font-sans" />
           </AuthProvider>
         </QueryClientProvider>
         <Scripts />

@@ -4,46 +4,81 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Fleet Agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <script>
+      (function () {
+        try {
+          var p = localStorage.getItem("fleet-theme") || "system";
+          var d = window.matchMedia("(prefers-color-scheme: dark)").matches;
+          var r = p === "system" ? (d ? "dark" : "light") : p;
+          document.documentElement.setAttribute("data-theme", r);
+          document.documentElement.style.colorScheme = r;
+        } catch (e) {}
+      })();
+    </script>
     <style>
-      :root { --bg:#090b0d; --surface:#111418; --elevated:#181c21; --fg:#e8eaed; --muted:#8b929c; --subtle:#5c6370; --border:#23282f; --ok:#8fbf9f; --warn:#c4b08a; --bad:#d48a80; }
+      html[data-theme="light"] {
+        color-scheme: light;
+        --bg:#f7f7f8; --surface:#fff; --elevated:#ececec; --fg:#0d0d0d; --muted:#6e6e80; --subtle:#8e8ea0;
+        --border:#e5e5e5; --accent:#0d0d0d; --accent-fg:#fff; --ok:#0f7b4c; --warn:#9a6700; --bad:#c7381a;
+        --shadow:0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.04);
+      }
+      html[data-theme="dark"] {
+        color-scheme: dark;
+        --bg:#212121; --surface:#2f2f2f; --elevated:#3a3a3a; --fg:#ececec; --muted:#b4b4b4; --subtle:#8f8f8f;
+        --border:rgba(255,255,255,.1); --accent:#ececec; --accent-fg:#212121; --ok:#3dd68c; --warn:#e2c08d; --bad:#ff8a80;
+        --shadow:0 1px 2px rgba(0,0,0,.35);
+      }
       * { box-sizing: border-box; }
-      html, body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 "Segoe UI", "IBM Plex Sans", sans-serif; }
+      html, body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
       body { padding: 24px; }
-      h1 { font-size: 16px; font-weight: 500; margin: 0; }
-      h2 { font-size: 14px; font-weight: 500; margin: 0 0 8px; }
+      h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.03em; margin: 0; }
+      h2 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
       p, .muted { color: var(--muted); }
-      .wrap { max-width: 880px; margin: 0 auto; display: grid; gap: 16px; }
-      .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px; }
+      .wrap { max-width: 640px; margin: 0 auto; display: grid; gap: 14px; }
+      .top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+      .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px; box-shadow: var(--shadow); }
       .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-      input { flex: 1; min-width: 180px; height: 44px; border-radius: 8px; border: 1px solid var(--border); background: var(--elevated); color: var(--fg); padding: 0 12px; font: inherit; }
-      button { height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--elevated); color: var(--fg); font: inherit; cursor: pointer; }
-      button.primary { background: #d4d8de; color: var(--bg); border: 0; }
+      input { flex: 1; min-width: 180px; height: 44px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); padding: 0 12px; font: inherit; }
+      button { height: 44px; padding: 0 16px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); font: inherit; cursor: pointer; }
+      button.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
       button.danger { color: var(--bad); }
-      .level { display: block; width: 100%; text-align: left; margin-top: 8px; padding: 12px 14px; }
-      .level.on { background: var(--elevated); }
-      .badge { font-size: 12px; border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; color: var(--muted); }
+      .level { display: block; width: 100%; text-align: left; margin-top: 8px; padding: 12px 14px; border-radius: 12px; }
+      .level.on { background: var(--elevated); border-color: var(--fg); }
+      .badge { font-size: 12px; border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; color: var(--muted); }
       .badge.ok { color: var(--ok); }
       .badge.bad { color: var(--bad); }
       .badge.warn { color: var(--warn); }
-      pre { background: var(--elevated); padding: 12px; border-radius: 8px; overflow: auto; font-size: 12px; }
+      pre { background: var(--elevated); padding: 12px; border-radius: 12px; overflow: auto; font-size: 12px; }
       .log { max-height: 280px; overflow: auto; font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
       .log div.warn { color: var(--warn); }
       .log div.error { color: var(--bad); }
-      .lang { margin-left: auto; display: flex; gap: 4px; }
-      .lang button { height: 32px; padding: 0 10px; font-size: 12px; }
+      .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; padding: 2px; margin-left: auto; }
+      .seg button { height: 32px; padding: 0 10px; font-size: 12px; border: 0; background: transparent; color: var(--muted); }
+      .seg button.on { background: var(--fg); color: var(--bg); }
+      .help-link { font-size: 13px; color: var(--muted); }
+      .help-link:hover { color: var(--fg); }
     </style>
   </head>
   <body>
     <div class="wrap">
-      <section class="card">
-        <div class="row">
-          <h1>Fleet Agent</h1>
-          <span id="conn" class="badge">Offline</span>
-          <div class="lang">
-            <button type="button" id="en">EN</button>
-            <button type="button" id="zh">中文</button>
-          </div>
+      <div class="top">
+        <h1>Fleet Agent</h1>
+        <span id="conn" class="badge">Offline</span>
+        <a class="help-link" href="https://fleet.ginfo.cc/help" target="_blank" rel="noreferrer" id="t-help">Help</a>
+        <div class="seg" role="group" aria-label="Theme">
+          <button type="button" data-theme-set="light" id="th-light">Light</button>
+          <button type="button" data-theme-set="dark" id="th-dark">Dark</button>
+          <button type="button" data-theme-set="system" id="th-system">System</button>
         </div>
+        <div class="seg" role="group" aria-label="Language">
+          <button type="button" id="en">EN</button>
+          <button type="button" id="zh">中文</button>
+        </div>
+      </div>
+      <section class="card">
         <p id="t-body">Enter the hub address and dial out. No inbound port.</p>
         <p id="t-stay" class="muted">Close this page anytime. The agent stays in the menu bar (Mac, next to the clock) or the tray (Windows, by the clock). Right-click to switch on/off and run policy. CLI: fleet status</p>
         <p class="muted">Device <code id="deviceId">—</code></p>
@@ -52,7 +87,7 @@
           <button id="enabled">On</button>
         </div>
         <div class="row" style="margin-top:12px">
-          <input id="hub" placeholder="hub.example.com" />
+          <input id="hub" placeholder="https://fleet.ginfo.cc" />
           <button id="connect" class="primary">Connect</button>
         </div>
         <div class="row" style="margin-top:8px">
@@ -82,11 +117,13 @@
     <script>
       const I18N = {
         en: {
-          body: "Enter the hub address and dial out. Worker domain or any host. No inbound port.",
+          body: "Enter the hub address and dial out. Use https://fleet.ginfo.cc or your own Worker. No inbound port.",
           stay: "Close this page anytime. The agent stays in the menu bar (Mac, next to the clock) or the tray (Windows, by the clock). Right-click to switch on/off and run policy. CLI (same state as this page): fleet status / start / permit. While Enabled, the machine will not idle-sleep; the screen can still lock.",
           allow: "Allow this computer to run",
           on: "On", offsw: "Off",
           connect: "Connect",
+          help: "Help",
+          themeL: "Light", themeD: "Dark", themeS: "System",
           offline: "Offline", connecting: "Connecting", online: "Connected to hub", error: "Connect failed",
           permit: "Run policy",
           off: "<b>Off</b><br><span class='muted'>Refuse every command</span>",
@@ -95,11 +132,13 @@
           consent: "Needs approval here", approve: "Allow", deny: "Deny", logs: "Logs",
         },
         zh: {
-          body: "填写中枢地址，连出去。Worker 域名或任意主机都行。不开放入站端口。",
+          body: "填写中枢地址，连出去。用 https://fleet.ginfo.cc 或你自己的 Worker。不开放入站端口。",
           stay: "设置页关掉也没关系：Mac 在顶部时钟旁边，Windows 在右下角时钟旁边。右键图标可开关本机、切换执行权限。命令行和本页是同一份状态：fleet status / start / permit。开关打开时本机不会因空闲休眠，锁屏仍可继续跑。",
           allow: "允许在这台电脑上运行",
           on: "已开", offsw: "打开",
           connect: "连接",
+          help: "帮助",
+          themeL: "浅色", themeD: "深色", themeS: "系统",
           offline: "未连接", connecting: "连接中", online: "已连接中枢", error: "连接失败",
           permit: "执行权限",
           off: "<b>停用</b><br><span class='muted'>什么命令都不执行</span>",
@@ -109,7 +148,17 @@
         }
       };
       let locale = localStorage.getItem("fleet-locale") === "zh" ? "zh" : "en";
+      let themePref = localStorage.getItem("fleet-theme") || "system";
       const $ = (id) => document.getElementById(id);
+      function applyTheme(pref) {
+        themePref = pref || themePref;
+        localStorage.setItem("fleet-theme", themePref);
+        var dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        var r = themePref === "system" ? (dark ? "dark" : "light") : themePref;
+        document.documentElement.setAttribute("data-theme", r);
+        document.documentElement.style.colorScheme = r;
+        document.querySelectorAll("[data-theme-set]").forEach((b) => b.classList.toggle("on", b.dataset.themeSet === themePref));
+      }
       function applyLang() {
         const t = I18N[locale];
         document.documentElement.lang = locale === "zh" ? "zh-Hant" : "en";
@@ -117,6 +166,10 @@
         $("t-stay").textContent = t.stay;
         $("t-allow").textContent = t.allow;
         $("connect").textContent = t.connect;
+        $("t-help").textContent = t.help;
+        $("th-light").textContent = t.themeL;
+        $("th-dark").textContent = t.themeD;
+        $("th-system").textContent = t.themeS;
         $("t-permit").textContent = t.permit;
         $("lv-off").innerHTML = t.off;
         $("lv-ask").innerHTML = t.ask;
@@ -125,9 +178,17 @@
         $("approve").textContent = t.approve;
         $("deny").textContent = t.deny;
         $("t-logs").textContent = t.logs;
+        $("en").classList.toggle("on", locale === "en");
+        $("zh").classList.toggle("on", locale === "zh");
       }
       $("en").onclick = () => { locale = "en"; localStorage.setItem("fleet-locale", "en"); applyLang(); };
       $("zh").onclick = () => { locale = "zh"; localStorage.setItem("fleet-locale", "zh"); applyLang(); };
+      document.querySelectorAll("[data-theme-set]").forEach((b) => {
+        b.onclick = () => applyTheme(b.dataset.themeSet);
+      });
+      window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+        if (themePref === "system") applyTheme("system");
+      });
       async function api(path, body) {
         const res = await fetch(path, {
           method: body ? "POST" : "GET",
@@ -162,6 +223,7 @@
       });
       $("approve").onclick = async () => render(await api("/api/approve", {}));
       $("deny").onclick = async () => render(await api("/api/deny", {}));
+      applyTheme(themePref);
       applyLang();
       async function poll() { try { render(await api("/api/state")); } catch {} }
       poll();

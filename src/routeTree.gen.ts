@@ -12,11 +12,12 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AgentRouteImport } from './routes/agent'
 import { Route as GuideRouteImport } from './routes/guide'
+import { Route as HelpRouteImport } from './routes/help'
 import { Route as LabRouteImport } from './routes/lab'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ReleasesRouteImport } from './routes/releases'
-import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as V1SplatRouteImport } from './routes/v1/$'
+import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -31,6 +32,11 @@ const AgentRoute = AgentRouteImport.update({
 const GuideRoute = GuideRouteImport.update({
   id: '/guide',
   path: '/guide',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const HelpRoute = HelpRouteImport.update({
+  id: '/help',
+  path: '/help',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LabRoute = LabRouteImport.update({
@@ -48,14 +54,14 @@ const ReleasesRoute = ReleasesRouteImport.update({
   path: '/releases',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
-  id: '/api/auth/$',
-  path: '/api/auth/$',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const V1SplatRoute = V1SplatRouteImport.update({
   id: '/v1/$',
   path: '/v1/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
+  id: '/api/auth/$',
+  path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
 
@@ -63,59 +69,82 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/agent': typeof AgentRoute
   '/guide': typeof GuideRoute
+  '/help': typeof HelpRoute
   '/lab': typeof LabRoute
   '/login': typeof LoginRoute
   '/releases': typeof ReleasesRoute
-  '/api/auth/$': typeof ApiAuthSplatRoute
   '/v1/$': typeof V1SplatRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/agent': typeof AgentRoute
   '/guide': typeof GuideRoute
+  '/help': typeof HelpRoute
   '/lab': typeof LabRoute
   '/login': typeof LoginRoute
   '/releases': typeof ReleasesRoute
-  '/api/auth/$': typeof ApiAuthSplatRoute
   '/v1/$': typeof V1SplatRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/agent': typeof AgentRoute
   '/guide': typeof GuideRoute
+  '/help': typeof HelpRoute
   '/lab': typeof LabRoute
   '/login': typeof LoginRoute
   '/releases': typeof ReleasesRoute
-  '/api/auth/$': typeof ApiAuthSplatRoute
   '/v1/$': typeof V1SplatRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/agent' | '/guide' | '/lab' | '/login' | '/releases' | '/api/auth/$' | '/v1/$'
+  fullPaths:
+    | '/'
+    | '/agent'
+    | '/guide'
+    | '/help'
+    | '/lab'
+    | '/login'
+    | '/releases'
+    | '/v1/$'
+    | '/api/auth/$'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/agent' | '/guide' | '/lab' | '/login' | '/releases' | '/api/auth/$' | '/v1/$'
+  to:
+    | '/'
+    | '/agent'
+    | '/guide'
+    | '/help'
+    | '/lab'
+    | '/login'
+    | '/releases'
+    | '/v1/$'
+    | '/api/auth/$'
   id:
     | '__root__'
     | '/'
     | '/agent'
     | '/guide'
+    | '/help'
     | '/lab'
     | '/login'
     | '/releases'
-    | '/api/auth/$'
     | '/v1/$'
+    | '/api/auth/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AgentRoute: typeof AgentRoute
   GuideRoute: typeof GuideRoute
+  HelpRoute: typeof HelpRoute
   LabRoute: typeof LabRoute
   LoginRoute: typeof LoginRoute
   ReleasesRoute: typeof ReleasesRoute
-  ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   V1SplatRoute: typeof V1SplatRoute
+  ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -141,6 +170,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof GuideRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/help': {
+      id: '/help'
+      path: '/help'
+      fullPath: '/help'
+      preLoaderRoute: typeof HelpRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/lab': {
       id: '/lab'
       path: '/lab'
@@ -162,18 +198,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ReleasesRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/auth/$': {
-      id: '/api/auth/$'
-      path: '/api/auth/$'
-      fullPath: '/api/auth/$'
-      preLoaderRoute: typeof ApiAuthSplatRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/v1/$': {
       id: '/v1/$'
       path: '/v1/$'
       fullPath: '/v1/$'
       preLoaderRoute: typeof V1SplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/auth/$': {
+      id: '/api/auth/$'
+      path: '/api/auth/$'
+      fullPath: '/api/auth/$'
+      preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -183,11 +219,12 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AgentRoute: AgentRoute,
   GuideRoute: GuideRoute,
+  HelpRoute: HelpRoute,
   LabRoute: LabRoute,
   LoginRoute: LoginRoute,
   ReleasesRoute: ReleasesRoute,
-  ApiAuthSplatRoute: ApiAuthSplatRoute,
   V1SplatRoute: V1SplatRoute,
+  ApiAuthSplatRoute: ApiAuthSplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

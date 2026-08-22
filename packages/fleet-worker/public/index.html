@@ -4,76 +4,102 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Fleet</title>
-    <meta name="description" content="Fleet hub: list machines, pick one, run. Devices connect out only." />
+    <meta name="description" content="One MCP tool. Windows, Linux, macOS. Try https://fleet.ginfo.cc." />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <script>
+      (function () {
+        try {
+          var p = localStorage.getItem("fleet-theme") || "system";
+          var d = window.matchMedia("(prefers-color-scheme: dark)").matches;
+          var r = p === "system" ? (d ? "dark" : "light") : p;
+          document.documentElement.setAttribute("data-theme", r);
+          document.documentElement.setAttribute("data-theme-pref", p);
+          document.documentElement.style.colorScheme = r;
+        } catch (e) {}
+      })();
+    </script>
     <style>
-      :root {
-        --bg: #090b0d; --surface: #111418; --elevated: #181c21; --fg: #e8eaed;
-        --muted: #8b929c; --subtle: #5c6370; --border: #23282f; --accent: #d4d8de;
-        --ok: #8fbf9f; --warn: #c4b08a; --bad: #d48a80;
+      :root { --sans: Inter, ui-sans-serif, system-ui, sans-serif; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      html[data-theme="light"] {
+        color-scheme: light;
+        --bg:#f7f7f8; --surface:#fff; --elevated:#ececec; --fg:#0d0d0d; --muted:#6e6e80; --subtle:#8e8ea0;
+        --border:#e5e5e5; --accent:#0d0d0d; --accent-fg:#fff; --ok:#0f7b4c; --warn:#9a6700; --bad:#c7381a;
+        --shadow:0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.04);
+      }
+      html[data-theme="dark"] {
+        color-scheme: dark;
+        --bg:#212121; --surface:#2f2f2f; --elevated:#3a3a3a; --fg:#ececec; --muted:#b4b4b4; --subtle:#8f8f8f;
+        --border:rgba(255,255,255,.1); --accent:#ececec; --accent-fg:#212121; --ok:#3dd68c; --warn:#e2c08d; --bad:#ff8a80;
+        --shadow:0 1px 2px rgba(0,0,0,.35);
       }
       * { box-sizing: border-box; }
-      html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--fg);
-        font: 15px/1.5 "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
-      button, input { font: inherit; }
+      html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--fg); font: 15px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+      button, input, a { font: inherit; }
       a { color: inherit; text-decoration: none; }
-      .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+      button { cursor: pointer; }
       #app { min-height: 100svh; }
-      .split { display: grid; min-height: 100svh; }
-      @media (min-width: 768px) { .split { grid-template-columns: 1fr 1fr; } }
-      .pane-l { display: flex; flex-direction: column; justify-content: space-between;
-        border-bottom: 1px solid var(--border); padding: 40px 40px; }
-      @media (min-width: 768px) { .pane-l { border-bottom: 0; border-right: 1px solid var(--border); padding: 56px 40px; } }
-      .pane-r { display: flex; flex-direction: column; justify-content: center; padding: 40px 48px; }
-      .brand { font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted); }
-      h1 { font-size: 48px; font-weight: 500; letter-spacing: -0.03em; line-height: 1.1; margin: 24px 0 0; max-width: 9ch; }
-      @media (max-width: 767px) { h1 { font-size: 36px; } }
-      .lead { margin-top: 24px; max-width: 28em; color: var(--muted); font-size: 14px; }
-      .meta { margin-top: 48px; display: grid; gap: 16px; font-size: 12px; color: var(--subtle); }
-      .meta dd { margin: 4px 0 0; color: var(--muted); }
-      h2 { font-size: 18px; font-weight: 500; margin: 0; }
-      .sub { margin-top: 8px; font-size: 14px; color: var(--muted); }
-      .stack { margin-top: 32px; display: flex; flex-direction: column; gap: 12px; max-width: 24rem; }
-      .field { display: grid; gap: 6px; }
-      .field span { font-size: 12px; color: var(--subtle); }
-      input { height: 44px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border);
-        background: var(--elevated); color: var(--fg); }
-      .btn { height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid var(--border);
-        background: var(--elevated); color: var(--fg); cursor: pointer; display: inline-flex;
-        align-items: center; justify-content: center; gap: 8px; }
-      .btn:hover { background: var(--surface); }
-      .btn.primary { background: var(--accent); color: var(--bg); border: 0; }
-      .btn.primary:hover { opacity: 0.9; }
+      .top { position: sticky; top: 0; z-index: 20; display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+        border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 80%, transparent); backdrop-filter: blur(12px);
+        padding: 12px 20px; }
+      .brand { font-weight: 600; letter-spacing: -0.03em; }
+      .spacer { flex: 1; }
+      .nav-link { font-size: 14px; color: var(--muted); }
+      .nav-link:hover { color: var(--fg); }
+      .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; padding: 2px; gap: 0; }
+      .seg button { height: 32px; padding: 0 10px; border: 0; background: transparent; color: var(--muted); border-radius: 999px; font-size: 12px; }
+      .seg button.on { background: var(--fg); color: var(--bg); }
+      .wrap { max-width: 960px; margin: 0 auto; padding: 64px 20px 80px; }
+      .kicker { font-size: 13px; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }
+      h1 { font-size: clamp(32px, 6vw, 56px); font-weight: 600; letter-spacing: -0.04em; line-height: 1.1; margin: 16px 0 0; max-width: 16ch; }
+      h2 { font-size: 22px; font-weight: 600; letter-spacing: -0.03em; margin: 0; }
+      h3 { font-size: 16px; font-weight: 600; margin: 0; }
+      .lead { margin-top: 20px; max-width: 40em; color: var(--muted); font-size: 16px; }
+      .stack { margin-top: 32px; display: flex; flex-direction: column; gap: 10px; max-width: 22rem; }
+      .btn { height: 44px; padding: 0 18px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface);
+        color: var(--fg); display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+      .btn:hover { background: var(--elevated); }
+      .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+      .btn.primary:hover { opacity: 0.9; background: var(--accent); }
       .btn.ghost { background: transparent; border: 0; color: var(--muted); height: auto; padding: 8px; }
       .btn.ghost:hover { color: var(--fg); }
-      .err { color: var(--bad); font-size: 13px; min-height: 1.2em; }
-      .top { display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
-        border-bottom: 1px solid var(--border); padding: 12px 24px; }
-      .tabs { display: flex; flex: 1; flex-wrap: wrap; gap: 4px; }
-      .tab { border: 0; background: transparent; color: var(--muted); padding: 8px 12px;
-        border-radius: 4px; cursor: pointer; font-size: 14px; }
-      .tab.on { background: var(--elevated); color: var(--fg); }
-      .who { font-size: 14px; color: var(--muted); max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .page { max-width: 1400px; margin: 0 auto; padding: 24px; display: grid; gap: 16px; }
-      .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px; }
-      .card h3 { font-size: 16px; font-weight: 500; margin: 0; }
+      .btn.danger { color: var(--bad); }
       .muted { color: var(--muted); font-size: 14px; }
       .subtle { color: var(--subtle); font-size: 12px; }
+      .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px; box-shadow: var(--shadow); }
+      .grid-2 { display: grid; gap: 12px; }
+      .grid-4 { display: grid; gap: 12px; }
+      @media (min-width: 700px) { .grid-2 { grid-template-columns: 1fr 1fr; } .grid-4 { grid-template-columns: repeat(4, 1fr); } }
+      .fan { display: grid; gap: 12px; }
+      @media (min-width: 860px) {
+        .fan { grid-template-columns: 1fr 16px 1.15fr 16px 1fr; align-items: start; }
+        .arrow { text-align: center; color: var(--subtle); padding-top: 36px; }
+      }
+      .os { display: grid; gap: 8px; }
+      .node { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 16px 18px; }
+      .node .k { font-size: 11px; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+      .page { max-width: 960px; margin: 0 auto; padding: 24px 20px 64px; display: grid; gap: 16px; }
+      .tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+      .tab { border: 0; background: transparent; color: var(--muted); padding: 8px 12px; border-radius: 999px; font-size: 14px; }
+      .tab.on { background: var(--elevated); color: var(--fg); }
+      .who { font-size: 14px; color: var(--muted); max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-      code, pre { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; }
-      code.box, pre { background: var(--elevated); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
+      code, pre { font-family: var(--mono); font-size: 12px; }
+      code.box, pre { background: var(--elevated); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; }
       pre { overflow: auto; }
-      .dl { display: grid; gap: 12px; }
-      @media (min-width: 800px) { .dl { grid-template-columns: 1fr 1fr; } }
-      .machine { border: 1px solid var(--border); border-radius: 12px; padding: 16px; background: var(--elevated); }
+      input { height: 44px; padding: 0 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); width: 100%; }
+      .err { color: var(--bad); font-size: 13px; min-height: 1.2em; }
+      .machine { border: 1px solid var(--border); border-radius: 12px; padding: 16px; background: var(--surface); }
       .dot { width: 8px; height: 8px; border-radius: 99px; background: var(--subtle); display: inline-block; }
       .dot.on { background: var(--ok); }
-      .lang { display: flex; gap: 4px; }
-      .lang button { height: 32px; padding: 0 10px; font-size: 12px; }
       .warn { color: var(--warn); font-size: 14px; }
+      .help h2 { margin-top: 32px; }
+      .help ol { color: var(--muted); padding-left: 1.2em; }
+      .help li { margin: 8px 0; }
+      .dl { display: grid; gap: 12px; }
+      @media (min-width: 800px) { .dl { grid-template-columns: 1fr 1fr; } }
     </style>
   </head>
   <body>
@@ -81,13 +107,33 @@
     <script>
       const T = {
         zh: {
-          hero1: "任何 agent，", hero2: "先看清单，", hero3: "再选一台。",
-          body: "家里 NAT、机房内网、云上 VPC，设备只连出。中枢只做清单、选中、转发。",
-          proto: "v1 协议", hub: "中枢", hubImpl: "这个网站就是中枢",
-          enter: "进入舰队", enterBody: "用 Google 或 X 登录后签发 Hub token。Mac / Windows / Linux 同一套接法。",
+          help: "帮助", downloads: "下载", signOut: "退出", settings: "设置", fleet: "机器",
+          kicker: "fleet.ginfo.cc",
+          hero: "一个工具，连上你所有电脑。随时随地。",
+          body: "Tool 导入本站 URL 和 token。Windows、Linux、macOS 上的 Agent 只出网打 WebSocket。本地部署发挥不出多端互联，最多是个命令行；这个云端中枢才是产品。",
           continueG: "使用 Google 继续", continueX: "使用 X 继续",
-
-          signOut: "退出", settings: "设置", downloads: "下载", fleet: "舰队",
+          archTitle: "命令怎么走",
+          archHint: "设备只出网，不开端口。哪种架构能跑 Agent，就能进同一支舰队。",
+          tool: "工具", toolTitle: "Cursor / Claude", toolSub: "MCP · HTTPS + token",
+          server: "服务器", serverSub: "云端中枢 · WSS /v1/device",
+          keysTitle: "四样东西。然后每台电脑都能连上。",
+          k1t: "域名 URL", k1s: "https://fleet.ginfo.cc",
+          k2t: "Hub token", k2s: "设置页生成的 flt_…",
+          k3t: "每台电脑的 Agent", k3s: "Windows / Linux / macOS",
+          k4t: "导入 Tool", k4s: "Cursor · Claude · MCP",
+          localTitle: "本地只是命令行",
+          localBody: "npm run dev 跑在 127.0.0.1，别的系统加不进来，成不了舰队。",
+          cloudTitle: "云端才是产品",
+          cloudBody: "把中枢部署上云，或直接用本站。一个账号，所有电脑。",
+          helpTitle: "怎么用",
+          helpLead: "这个网站就是中枢。登录、给每台电脑装 Agent、导入 Tool。之后任意 MCP 客户端都能操作你所有机器。",
+          s1: "1. 登录并生成 Hub token",
+          s1b: "设置页生成 token，明文只显示一次。中枢地址就是本站 origin：https://fleet.ginfo.cc。",
+          s2: "2. 每台电脑装 Agent",
+          s2b: "Windows / macOS / Linux（含 arm64）从 GitHub Releases 下载。Agent 只出网。Mac/Windows 设置页在 127.0.0.1:17890。",
+          s3: "3. 导入 Tool",
+          s3b: "把 FLEET_URL 和 FLEET_TOKEN 交给 Cursor / Claude / 任意 MCP 客户端。",
+          s4: "4. 列机器、选一台、执行",
           hubTitle: "中枢钥匙", hubBody: "把本站地址和 Hub token 填进每台电脑的 Agent，以及操作端 tool。",
           url: "中枢地址（本站）", token: "Hub token", none: "还没有 token",
           generate: "生成 token", reset: "重置 token",
@@ -96,18 +142,39 @@
           toolHint: "FLEET_URL 用本站，FLEET_TOKEN 用这把钥匙。",
           empty: "还没有机器。装 Agent，填本站地址和 token，连上后会出现在这里。",
           online: "在线", offline: "离线",
-          relTitle: "安装本机小组件",
+          relTitle: "安装本机 Agent",
           relBody: "装在每台要被统筹的电脑上。打开后只出网连这个网站。",
-          win: "Windows", macArm: "macOS Apple 芯片", macIntel: "macOS Intel", linux: "Linux",
+          win: "Windows", macArm: "macOS Apple 芯片", macIntel: "macOS Intel", linux: "Linux amd64", linuxArm: "Linux ARM64",
+          themeL: "浅色", themeD: "深色", themeS: "系统",
         },
         en: {
-          hero1: "Any agent.", hero2: "List first,", hero3: "then pick one.",
-          body: "Home NAT, colo, cloud VPC — devices only connect out. The hub lists, selects, and forwards.",
-          proto: "v1 protocol", hub: "Hub", hubImpl: "This website is the hub",
-          enter: "Enter the fleet", enterBody: "Sign in with Google or X, then mint a Hub token. macOS, Windows, and Linux join the same way.",
+          help: "Help", downloads: "Downloads", signOut: "Sign out", settings: "Settings", fleet: "Machines",
+          kicker: "fleet.ginfo.cc",
+          hero: "One tool. Every computer. Anywhere.",
+          body: "Import the MCP tool with this URL and a token. Agents on Windows, Linux, and macOS dial out over WebSocket. Localhost is only a CLI — this cloud hub is the product.",
           continueG: "Continue with Google", continueX: "Continue with X",
-
-          signOut: "Sign out", settings: "Settings", downloads: "Downloads", fleet: "Fleet",
+          archTitle: "How a command travels",
+          archHint: "Devices only dial out. No inbound ports. Any arch that can run the Agent joins the same fleet.",
+          tool: "Tool", toolTitle: "Cursor / Claude", toolSub: "MCP · HTTPS + token",
+          server: "Server", serverSub: "Cloud hub · WSS /v1/device",
+          keysTitle: "Four values. Then every machine is reachable.",
+          k1t: "Domain URL", k1s: "https://fleet.ginfo.cc",
+          k2t: "Hub token", k2s: "flt_… from Settings",
+          k3t: "Agent on each PC", k3s: "Windows / Linux / macOS",
+          k4t: "Import the tool", k4s: "Cursor · Claude · MCP",
+          localTitle: "Local is a CLI",
+          localBody: "npm run dev on 127.0.0.1 cannot join other OS. It never becomes a fleet.",
+          cloudTitle: "Cloud is the product",
+          cloudBody: "Deploy the hub, or just use this site. One account, every PC.",
+          helpTitle: "How to use Fleet",
+          helpLead: "This website is the hub. Sign in, install an Agent on each computer, import the tool. Then any MCP client can reach every machine.",
+          s1: "1. Sign in and mint a Hub token",
+          s1b: "Generate a token under Settings. Plaintext is shown once. Hub address is this origin: https://fleet.ginfo.cc.",
+          s2: "2. Install Agent on each computer",
+          s2b: "Windows / macOS / Linux (including arm64) from GitHub Releases. Agents only dial out. Mac/Windows settings: 127.0.0.1:17890.",
+          s3: "3. Import the tool",
+          s3b: "Give Cursor / Claude / any MCP client FLEET_URL and FLEET_TOKEN.",
+          s4: "4. List, pick one, run",
           hubTitle: "Hub access", hubBody: "Paste this origin and Hub token into every agent, and into the operator tool.",
           url: "Hub address (this site)", token: "Hub token", none: "No token yet",
           generate: "Generate token", reset: "Reset token",
@@ -118,12 +185,14 @@
           online: "online", offline: "offline",
           relTitle: "Install the local agent",
           relBody: "Install on every machine you want in the fleet. It only dials out to this site.",
-          win: "Windows", macArm: "macOS Apple silicon", macIntel: "macOS Intel", linux: "Linux",
+          win: "Windows", macArm: "macOS Apple silicon", macIntel: "macOS Intel", linux: "Linux amd64", linuxArm: "Linux ARM64",
+          themeL: "Light", themeD: "Dark", themeS: "System",
         },
       };
       const GH = "https://github.com/TITOCHAN2023/fleetForAgent/releases/latest/download";
       const state = {
         locale: localStorage.getItem("fleet-locale") === "en" ? "en" : "zh",
+        themePref: localStorage.getItem("fleet-theme") || "system",
         user: null,
         tab: "settings",
         err: "",
@@ -139,86 +208,177 @@
       function xMark() {
         return `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.744l7.727-8.835L1.254 2.25H8.08l4.253 5.622L18.244 2.25Zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>`;
       }
-
-      async function api(path, opt = {}) {
+      function applyTheme(pref) {
+        state.themePref = pref || state.themePref || "system";
+        localStorage.setItem("fleet-theme", state.themePref);
+        var dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        var r = state.themePref === "system" ? (dark ? "dark" : "light") : state.themePref;
+        document.documentElement.setAttribute("data-theme", r);
+        document.documentElement.setAttribute("data-theme-pref", state.themePref);
+        document.documentElement.style.colorScheme = r;
+      }
+      function isHelp() {
+        var p = (location.pathname || "").replace(/\/+$/, "") || "/";
+        return p === "/help" || location.hash === "#help";
+      }
+      function go(path) {
+        if (location.pathname !== path) history.pushState({}, "", path);
+        render();
+      }
+      async function api(path, opt) {
+        opt = opt || {};
         const res = await fetch(path, {
           credentials: "include",
           headers: { "content-type": "application/json", ...(opt.headers || {}) },
           ...opt,
         });
+        const ct = res.headers.get("content-type") || "";
+        if (!ct.includes("json")) throw new Error("not json");
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || res.statusText);
         return data;
       }
-
+      function signedIn() {
+        return !!(state.user && state.user.id);
+      }
       async function boot() {
-        try { state.user = await api("/v1/me"); } catch { state.user = null; }
-        if (state.user) {
+        applyTheme(state.themePref);
+        try {
+          const me = await api("/v1/me");
+          state.user = me && me.id ? me : null;
+        } catch { state.user = null; }
+        if (signedIn()) {
           try { state.meta = await api("/v1/hub_token"); } catch { state.meta = null; }
           try { const j = await api("/v1/list_computers", { method: "POST", body: "{}" }); state.computers = j.computers || []; } catch { state.computers = []; }
         }
         render();
       }
-
-      function render() {
-        document.documentElement.lang = state.locale === "zh" ? "zh-CN" : "en";
-        document.getElementById("app").innerHTML = state.user ? appView() : loginView();
-        bind();
-      }
-
       function langBar() {
-        return `<div class="lang">
-          <button type="button" class="btn" data-loc="en">EN</button>
-          <button type="button" class="btn" data-loc="zh">中文</button>
+        return `<div class="seg" role="group" aria-label="Language">
+          <button type="button" data-loc="en" class="${state.locale==="en"?"on":""}">EN</button>
+          <button type="button" data-loc="zh" class="${state.locale==="zh"?"on":""}">中文</button>
         </div>`;
       }
-
-      function loginView() {
-        return `<main class="split">
-          <section class="pane-l">
-            <div>
-              <div class="row" style="justify-content:space-between">
-                <span class="brand mono">Fleet</span>${langBar()}
-              </div>
-              <h1>${t("hero1")}<br>${t("hero2")}<br>${t("hero3")}</h1>
-              <p class="lead">${t("body")}</p>
-            </div>
-            <dl class="meta mono">
-              <div><dt>${t("proto")}</dt><dd>WSS hello / run / result</dd></div>
-              <div><dt>${t("hub")}</dt><dd>${t("hubImpl")}</dd></div>
-            </dl>
-          </section>
-          <section class="pane-r">
-            <h2>${t("enter")}</h2>
-            <p class="sub">${t("enterBody")}</p>
+      function themeBar() {
+        const p = state.themePref;
+        return `<div class="seg" role="group" aria-label="Theme">
+          <button type="button" data-theme-set="light" class="${p==="light"?"on":""}">${t("themeL")}</button>
+          <button type="button" data-theme-set="dark" class="${p==="dark"?"on":""}">${t("themeD")}</button>
+          <button type="button" data-theme-set="system" class="${p==="system"?"on":""}">${t("themeS")}</button>
+        </div>`;
+      }
+      function chrome(extra) {
+        return `<header class="top">
+          <a class="brand" href="/" data-go="/">Fleet</a>
+          <a class="nav-link" href="/help" data-go="/help">${t("help")}</a>
+          <span class="spacer"></span>
+          ${extra || ""}
+          ${themeBar()}
+          ${langBar()}
+        </header>`;
+      }
+      function fan() {
+        return `<div class="fan">
+          <article class="node"><div class="k">${t("tool")}</div><h3 style="margin-top:8px">${t("toolTitle")}</h3><p class="muted" style="margin:6px 0 0">${t("toolSub")}</p></article>
+          <div class="arrow">→</div>
+          <article class="node"><div class="k">${t("server")}</div><h3 style="margin-top:8px">fleet.ginfo.cc</h3><p class="muted" style="margin:6px 0 0">${t("serverSub")}</p></article>
+          <div class="arrow">→</div>
+          <div class="os">
+            <article class="node"><div class="k">Windows</div><p style="margin:6px 0 0;font-weight:500">amd64</p></article>
+            <article class="node"><div class="k">Linux</div><p style="margin:6px 0 0;font-weight:500">amd64 / arm64</p></article>
+            <article class="node"><div class="k">macOS</div><p style="margin:6px 0 0;font-weight:500">arm64 / amd64</p></article>
+          </div>
+        </div>`;
+      }
+      function keys() {
+        const items = [["k1t","k1s"],["k2t","k2s"],["k3t","k3s"],["k4t","k4s"]];
+        return `<div class="grid-4">${items.map(([a,b],i)=>`<article class="card"><p class="subtle">0${i+1}</p><h3 style="margin-top:12px">${t(a)}</h3><p class="muted" style="margin-top:6px">${t(b)}</p></article>`).join("")}</div>`;
+      }
+      function homeView() {
+        return `${chrome()}
+          <div class="wrap">
+            <p class="kicker">${t("kicker")}</p>
+            <h1>${t("hero")}</h1>
+            <p class="lead">${t("body")}</p>
             <div class="stack">
               <p class="err">${state.err}</p>
-              <a class="btn" href="/v1/auth/google">${googleMark()}${t("continueG")}</a>
-              <a class="btn" href="/v1/auth/x">${xMark()}${t("continueX")}</a>
+              <a class="btn primary" href="/v1/auth/google">${t("continueG")}</a>
+              <a class="btn" href="/v1/auth/x">${t("continueX")}</a>
+              <a class="nav-link" href="/help" data-go="/help" style="text-align:center">${t("help")} →</a>
             </div>
-          </section>
-        </main>`;
+            <h2 style="margin-top:72px">${t("archTitle")}</h2>
+            <p class="muted" style="margin:8px 0 20px;max-width:40em">${t("archHint")}</p>
+            ${fan()}
+            <h2 style="margin-top:64px">${t("keysTitle")}</h2>
+            <div style="margin-top:20px">${keys()}</div>
+            <div class="grid-2" style="margin-top:48px">
+              <article class="card"><h3>${t("localTitle")}</h3><p class="muted" style="margin-top:8px">${t("localBody")}</p></article>
+              <article class="card"><h3>${t("cloudTitle")}</h3><p class="muted" style="margin-top:8px">${t("cloudBody")}</p></article>
+            </div>
+          </div>`;
       }
-
+      function helpView(inApp) {
+        const origin = location.origin;
+        const extra = inApp ? `<nav class="tabs">
+            <button class="tab" data-tab="settings">${t("settings")}</button>
+            <button class="tab" data-tab="downloads">${t("downloads")}</button>
+            <button class="tab" data-tab="fleet">${t("fleet")}</button>
+            <button class="tab on">${t("help")}</button>
+          </nav>
+          <span class="who">${state.user ? state.user.email : ""}</span>
+          <button class="btn ghost" id="out">${t("signOut")}</button>` : "";
+        return `${chrome(extra)}
+          <div class="wrap help">
+            <p class="kicker">${t("kicker")}</p>
+            <h1>${t("helpTitle")}</h1>
+            <p class="lead">${t("helpLead")}</p>
+            <h2>${t("archTitle")}</h2>
+            <p class="muted" style="margin:8px 0 20px">${t("archHint")}</p>
+            ${fan()}
+            <h2>${t("s1")}</h2>
+            <p class="muted">${t("s1b")}</p>
+            <h2>${t("s2")}</h2>
+            <p class="muted">${t("s2b")}</p>
+            <p class="muted"><a class="nav-link" href="${GH.replace("/download","")}">GitHub Releases</a></p>
+            <h2>${t("s3")}</h2>
+            <p class="muted">${t("s3b")}</p>
+            <pre>FLEET_URL=${origin}
+FLEET_TOKEN=flt_...
+node packages/fleet-tool/index.mjs list</pre>
+            <h2>${t("s4")}</h2>
+            <p class="muted">${t("keysTitle")}</p>
+            <div style="margin-top:16px">${keys()}</div>
+            <div class="grid-2" style="margin-top:32px">
+              <article class="card"><h3>${t("localTitle")}</h3><p class="muted" style="margin-top:8px">${t("localBody")}</p></article>
+              <article class="card"><h3>${t("cloudTitle")}</h3><p class="muted" style="margin-top:8px">${t("cloudBody")}</p></article>
+            </div>
+          </div>`;
+      }
       function appView() {
-        const tabs = [["settings", t("settings")], ["downloads", t("downloads")], ["fleet", t("fleet")]];
-        return `<div>
-          <header class="top">
-            <span class="brand mono">Fleet</span>
-            <nav class="tabs">${tabs.map(([id, label]) => `<button class="tab${state.tab===id?" on":""}" data-tab="${id}">${label}</button>`).join("")}</nav>
-            ${langBar()}
+        const tabs = [["settings", t("settings")], ["downloads", t("downloads")], ["fleet", t("fleet")], ["help", t("help")]];
+        return `${chrome(`<nav class="tabs">${tabs.map(([id, label]) => `<button class="tab${state.tab===id?" on":""}" data-tab="${id}">${label}</button>`).join("")}</nav>
             <span class="who">${state.user.email}</span>
-            <button class="btn ghost" id="out">${t("signOut")}</button>
-          </header>
-          <div class="page">${state.tab === "downloads" ? downloadsView() : state.tab === "fleet" ? fleetView() : settingsView()}</div>
-        </div>`;
+            <button class="btn ghost" id="out">${t("signOut")}</button>`)}
+          <div class="page">${state.tab === "downloads" ? downloadsView() : state.tab === "fleet" ? fleetView() : state.tab === "help" ? helpInner() : settingsView()}</div>`;
       }
-
+      function helpInner() {
+        const origin = location.origin;
+        return `<section class="card"><h3>${t("helpTitle")}</h3><p class="muted" style="margin-top:8px">${t("helpLead")}</p></section>
+          ${fan()}
+          <section class="card">
+            <h3>${t("s1")}</h3><p class="muted" style="margin-top:8px">${t("s1b")}</p>
+            <h3 style="margin-top:20px">${t("s2")}</h3><p class="muted" style="margin-top:8px">${t("s2b")}</p>
+            <h3 style="margin-top:20px">${t("s3")}</h3><p class="muted" style="margin-top:8px">${t("s3b")}</p>
+            <pre style="margin-top:12px">FLEET_URL=${origin}
+FLEET_TOKEN=${state.secret || "flt_…"}
+node packages/fleet-tool/index.mjs list</pre>
+          </section>`;
+      }
       function settingsView() {
         const origin = location.origin;
         const shown = state.secret
           ? `<p class="warn">${t("secretOnce")}</p><div class="row"><code class="box" style="flex:1;word-break:break-all">${state.secret}</code><button class="btn" data-copy="${state.secret}">${t("copy")}</button></div>`
-          : `<p class="mono muted">${state.meta?.hasToken ? (state.meta.prefix + "…") : t("none")}</p>`;
+          : `<p class="muted" style="font-family:var(--mono)">${state.meta && state.meta.hasToken ? (state.meta.prefix + "…") : t("none")}</p>`;
         return `<section class="card">
           <h3>${t("hubTitle")}</h3>
           <p class="muted" style="margin-top:8px">${t("hubBody")}</p>
@@ -233,8 +393,8 @@
             </div>
           </div>
           <div class="row" style="margin-top:16px">
-            <button class="btn primary" id="mint">${state.meta?.hasToken ? t("reset") : t("generate")}</button>
-            ${state.meta?.hasToken ? `<span class="subtle">${t("resetHint")}</span>` : ""}
+            <button class="btn primary" id="mint">${state.meta && state.meta.hasToken ? t("reset") : t("generate")}</button>
+            ${state.meta && state.meta.hasToken ? `<span class="subtle">${t("resetHint")}</span>` : ""}
           </div>
           <p class="muted" style="margin-top:16px">${t("toolHint")}</p>
           <pre style="margin-top:8px">FLEET_URL=${origin}
@@ -242,39 +402,57 @@ FLEET_TOKEN=${state.secret || "flt_…"}
 node packages/fleet-tool/index.mjs list</pre>
         </section>`;
       }
-
       function downloadsView() {
         const items = [
           [t("macArm"), "FleetAgent-macos-arm64.dmg"],
           [t("macIntel"), "FleetAgent-macos-amd64.dmg"],
           [t("win"), "FleetAgent-windows-amd64.exe"],
           [t("linux"), "fleet-agent-linux-amd64.tar.gz"],
+          [t("linuxArm"), "fleet-agent-linux-arm64.tar.gz"],
         ];
         return `<section class="card">
           <h3>${t("relTitle")}</h3>
           <p class="muted" style="margin-top:8px">${t("relBody")}</p>
         </section>
-        <div class="dl">${items.map(([name, file]) => `<article class="card"><h3>${name}</h3><p class="subtle mono" style="margin-top:8px">${file}</p><a class="btn" style="margin-top:12px" href="${GH}/${file}">Download</a></article>`).join("")}</div>`;
+        <div class="dl">${items.map(([name, file]) => `<article class="card"><h3>${name}</h3><p class="subtle" style="margin-top:8px;font-family:var(--mono)">${file}</p><a class="btn" style="margin-top:12px" href="${GH}/${file}">Download</a></article>`).join("")}</div>`;
       }
-
       function fleetView() {
         if (!state.computers.length) return `<section class="card"><h3>${t("fleet")}</h3><p class="muted" style="margin-top:8px">${t("empty")}</p></section>`;
         return `<section class="card"><h3>${t("fleet")}</h3>
           <div style="margin-top:16px;display:grid;gap:10px">${state.computers.map((c) => `
             <div class="machine row" style="justify-content:space-between">
-              <div><strong>${c.name || c.id}</strong><div class="subtle mono">${c.id} · ${c.os || ""}</div></div>
+              <div><strong>${c.name || c.id}</strong><div class="subtle" style="font-family:var(--mono)">${c.id} · ${c.os || ""}</div></div>
               <span class="muted"><span class="dot${c.online ? " on" : ""}"></span> ${c.online ? t("online") : t("offline")}</span>
             </div>`).join("")}</div>
         </section>`;
       }
-
+      function render() {
+        document.documentElement.lang = state.locale === "zh" ? "zh-CN" : "en";
+        var root = document.getElementById("app");
+        if (isHelp()) root.innerHTML = helpView(signedIn());
+        else if (signedIn()) root.innerHTML = appView();
+        else root.innerHTML = homeView();
+        bind();
+      }
       function bind() {
         document.querySelectorAll("[data-loc]").forEach((b) => b.onclick = () => {
           state.locale = b.dataset.loc; localStorage.setItem("fleet-locale", state.locale); render();
         });
-        document.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => { state.tab = b.dataset.tab; render(); });
+        document.querySelectorAll("[data-theme-set]").forEach((b) => b.onclick = () => {
+          applyTheme(b.dataset.themeSet); render();
+        });
+        document.querySelectorAll("[data-go]").forEach((b) => b.onclick = (e) => {
+          e.preventDefault();
+          if (b.dataset.go === "/help") go("/help");
+          else go("/");
+        });
+        document.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => {
+          if (b.dataset.tab === "help") { state.tab = "help"; go("/help"); return; }
+          if (isHelp()) history.pushState({}, "", "/");
+          state.tab = b.dataset.tab; render();
+        });
         const out = $("#out");
-        if (out) out.onclick = async () => { try { await api("/v1/logout", { method: "POST", body: "{}" }); } catch {} state.user = null; state.secret = ""; render(); };
+        if (out) out.onclick = async () => { try { await api("/v1/logout", { method: "POST", body: "{}" }); } catch {} state.user = null; state.secret = ""; go("/"); };
         const mint = $("#mint");
         if (mint) mint.onclick = async () => {
           const out = await api("/v1/hub_token", { method: "POST", body: "{}" });
@@ -284,7 +462,10 @@ node packages/fleet-tool/index.mjs list</pre>
         };
         document.querySelectorAll("[data-copy]").forEach((b) => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy));
       }
-
+      window.addEventListener("popstate", render);
+      window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+        if (state.themePref === "system") { applyTheme("system"); render(); }
+      });
       boot();
     </script>
   </body>

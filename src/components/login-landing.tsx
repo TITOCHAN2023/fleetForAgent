@@ -1,115 +1,75 @@
 import { GROK_PROVIDERS, authEnabled, signIn } from "@/lib/auth/client";
 import { Button } from "@/components/ui/button";
 import { Link } from "@tanstack/react-router";
-import { LocaleSwitch } from "@/components/locale-switch";
+import { ArchFan } from "@/components/arch-fan";
+import { SiteHeader } from "@/components/site-header";
 import { useI18n } from "@/lib/i18n/use-i18n";
-
-function GoogleMark() {
-  return (
-    <svg viewBox="0 0 24 24" className="size-4" aria-hidden>
-      <path
-        fill="currentColor"
-        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1Z"
-      />
-      <path
-        fill="currentColor"
-        className="opacity-70"
-        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23Z"
-      />
-    </svg>
-  );
-}
-
-function XMark() {
-  return (
-    <svg viewBox="0 0 24 24" className="size-4" aria-hidden>
-      <path
-        fill="currentColor"
-        d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.744l7.727-8.835L1.254 2.25H8.08l4.253 5.622L18.244 2.25Zm-1.161 17.52h1.833L7.084 4.126H5.117z"
-      />
-    </svg>
-  );
-}
 
 export function LoginLanding() {
   const { t } = useI18n();
+  const keys = [
+    { t: t("home.k1t"), s: t("home.k1s") },
+    { t: t("home.k2t"), s: t("home.k2s") },
+    { t: t("home.k3t"), s: t("home.k3s") },
+    { t: t("home.k4t"), s: t("home.k4s") },
+  ];
   return (
-    <main className="bg-bg text-fg min-h-svh">
-      <div className="mx-auto grid min-h-svh max-w-5xl md:grid-cols-2">
-        <section className="flex flex-col justify-between border-b border-border px-6 py-10 md:border-r md:border-b-0 md:px-10 md:py-14">
-          <div>
-            <div className="flex items-center justify-between gap-3">
-              <p className="font-mono text-xs tracking-[0.22em] text-muted uppercase">Fleet</p>
-              <LocaleSwitch />
-            </div>
-            <h1 className="mt-6 max-w-sm text-4xl font-medium tracking-tight text-fg md:text-5xl">
-              {t("login.hero1")}
-              <br />
-              {t("login.hero2")}
-              <br />
-              {t("login.hero3")}
-            </h1>
-            <p className="mt-6 max-w-sm text-sm leading-relaxed text-muted">{t("login.body")}</p>
-            <p className="mt-4">
-              <a
-                href="https://fleet.ginfo.cc"
-                className="text-sm font-medium text-fg underline underline-offset-4 hover:opacity-80"
+    <main className="min-h-svh bg-bg text-fg">
+      <SiteHeader />
+      <div className="mx-auto max-w-5xl px-5 py-16 md:py-24">
+        <p className="text-sm font-medium tracking-[0.18em] text-muted uppercase">{t("home.kicker")}</p>
+        <h1 className="mt-4 max-w-3xl text-4xl font-semibold tracking-tight md:text-6xl">{t("home.hero")}</h1>
+        <p className="mt-5 max-w-2xl text-base leading-relaxed text-muted">{t("home.sub")}</p>
+        <div className="mt-8 flex max-w-md flex-col gap-3">
+          {authEnabled ? (
+            GROK_PROVIDERS.map((p) => (
+              <Button
+                key={p.providerId}
+                type="button"
+                variant="default"
+                onClick={() => signIn(p.providerId, { callbackURL: "/" })}
               >
-                {t("login.try")}
-              </a>
-            </p>
-            <p className="mt-3">
-              <Link to="/guide" className="text-sm text-muted underline underline-offset-4 hover:text-fg">
-                {t("login.guide")}
-              </Link>
-            </p>
-          </div>
-          <dl className="mt-12 grid gap-4 font-mono text-xs text-subtle">
-            <div>
-              <dt>{t("login.proto")}</dt>
-              <dd className="mt-1 text-muted">WSS hello / run / chunk / result</dd>
-            </div>
-            <div>
-              <dt>{t("login.hub")}</dt>
-              <dd className="mt-1 text-muted">{t("login.hubImpl")}</dd>
-            </div>
-          </dl>
-        </section>
-
-        <section className="flex flex-col justify-center px-6 py-10 md:px-12">
-          <h2 className="text-lg font-medium">{t("login.enter")}</h2>
-          <p className="mt-2 text-sm text-muted">{t("login.enterBody")}</p>
-          <div className="mt-8 flex max-w-sm flex-col gap-3">
-            {authEnabled ? (
-              GROK_PROVIDERS.map((p) => (
-                <Button
-                  key={p.providerId}
-                  type="button"
-                  variant="secondary"
-                  onClick={() => signIn(p.providerId, { callbackURL: "/" })}
-                >
-                  {p.providerId.includes("google") ? <GoogleMark /> : <XMark />}
-                  {t("login.continue", { label: p.label })}
-                </Button>
-              ))
-            ) : (
-              <p className="text-sm text-muted">{t("login.authOff")}</p>
-            )}
-            <Link to="/guide" className="mt-2 text-center text-sm text-muted hover:text-fg">
-              {t("login.guide")}
-            </Link>
-            <Link to="/lab" className="text-center text-sm text-muted hover:text-fg">
-              {t("login.lab")}
-            </Link>
-            <Link to="/releases" className="text-center text-sm text-muted hover:text-fg">
-              {t("login.dl")}
-            </Link>
-            <Link to="/agent" className="text-center text-sm text-muted hover:text-fg">
-              {t("login.settings")}
-            </Link>
-          </div>
-        </section>
+                {t("login.continue", { label: p.label })}
+              </Button>
+            ))
+          ) : (
+            <p className="text-sm text-muted">{t("login.authOff")}</p>
+          )}
+          <Link to="/help" className="text-center text-sm text-muted underline underline-offset-4 hover:text-fg">
+            {t("nav.help")}
+          </Link>
+        </div>
       </div>
+
+      <section className="mx-auto max-w-5xl px-5 pb-16">
+        <h2 className="text-xl font-semibold tracking-tight">{t("home.archTitle")}</h2>
+        <p className="mt-2 mb-6 max-w-2xl text-sm text-muted">{t("home.archHint")}</p>
+        <ArchFan />
+      </section>
+
+      <section className="mx-auto max-w-5xl px-5 pb-16">
+        <h2 className="text-xl font-semibold tracking-tight">{t("home.keysTitle")}</h2>
+        <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {keys.map((k, i) => (
+            <article key={k.t} className="rounded-2xl border border-border bg-surface p-5">
+              <p className="text-xs font-medium text-muted">0{i + 1}</p>
+              <h3 className="mt-3 text-base font-semibold">{k.t}</h3>
+              <p className="mt-1 text-sm text-muted">{k.s}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="mx-auto grid max-w-5xl gap-3 px-5 pb-20 md:grid-cols-2">
+        <article className="rounded-2xl border border-border bg-surface p-6">
+          <h3 className="text-lg font-semibold">{t("home.localTitle")}</h3>
+          <p className="mt-2 text-sm leading-relaxed text-muted">{t("home.localBody")}</p>
+        </article>
+        <article className="rounded-2xl border border-border bg-surface p-6">
+          <h3 className="text-lg font-semibold">{t("home.cloudTitle")}</h3>
+          <p className="mt-2 text-sm leading-relaxed text-muted">{t("home.cloudBody")}</p>
+        </article>
+      </section>
     </main>
   );
 }

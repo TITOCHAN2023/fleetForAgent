@@ -8,13 +8,13 @@ export function LocaleSwitch() {
     document.documentElement.lang = locale === "zh" ? "zh-Hant" : "en";
   }, [locale]);
   return (
-    <div className="inline-flex rounded-sm border border-border p-0.5" role="group" aria-label="Language">
+    <div className="inline-flex rounded-full border border-border p-0.5" role="group" aria-label="Language">
       <button
         type="button"
         onClick={() => setLocale("en")}
         className={cn(
-          "h-8 min-w-9 px-2 text-xs",
-          locale === "en" ? "bg-elevated text-fg" : "text-muted hover:text-fg",
+          "h-8 min-w-9 rounded-full px-2 text-xs",
+          locale === "en" ? "bg-fg text-bg" : "text-muted hover:text-fg",
         )}
       >
         {t("lang.en")}
@@ -23,8 +23,8 @@ export function LocaleSwitch() {
         type="button"
         onClick={() => setLocale("zh")}
         className={cn(
-          "h-8 min-w-9 px-2 text-xs",
-          locale === "zh" ? "bg-elevated text-fg" : "text-muted hover:text-fg",
+          "h-8 min-w-9 rounded-full px-2 text-xs",
+          locale === "zh" ? "bg-fg text-bg" : "text-muted hover:text-fg",
         )}
       >
         {t("lang.zh")}

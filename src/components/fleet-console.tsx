@@ -30,6 +30,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { LocaleSwitch } from "@/components/locale-switch";
+import { ThemeSwitch } from "@/components/theme-switch";
 import { useI18n } from "@/lib/i18n/use-i18n";
 import type { MessageKey } from "@/lib/i18n/messages";
 import { cn } from "@/lib/utils";
@@ -154,9 +155,10 @@ export function FleetConsole({ initialTab }: { initialTab?: string } = {}) {
           ))}
         </nav>
         <div className="flex items-center gap-3">
-          <Link to="/guide" className="text-sm text-muted hover:text-fg">
+          <Link to="/help" className="text-sm text-muted hover:text-fg">
             {t("header.guide")}
           </Link>
+          <ThemeSwitch />
           <LocaleSwitch />
           <span className="max-w-32 truncate text-sm text-muted">{label}</span>
           <Button variant="ghost" size="sm" onClick={() => void signOut()}>

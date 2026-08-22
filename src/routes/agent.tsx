@@ -17,6 +17,9 @@ function AgentPage() {
         <span className="font-mono text-xs tracking-[0.22em] uppercase">Fleet agent</span>
         <nav className="flex items-center gap-4 text-sm text-muted">
           <LocaleSwitch />
+          <Link to="/guide" className="hover:text-fg">
+            {t("nav.guide")}
+          </Link>
           <Link to="/releases" className="hover:text-fg">
             {t("nav.downloads")}
           </Link>

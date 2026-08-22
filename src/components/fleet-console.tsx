@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { signOut } from "@/lib/auth/client";
 import { useCurrentUser } from "@/lib/auth/use-current-user";
@@ -46,11 +47,15 @@ const TABS: { id: Tab; label: MessageKey }[] = [
   { id: "spec", label: "tab.spec" },
 ];
 
-export function FleetConsole() {
+function isTab(value: string | undefined): value is Tab {
+  return TABS.some((item) => item.id === value);
+}
+
+export function FleetConsole({ initialTab }: { initialTab?: string } = {}) {
   const { t } = useI18n();
   const user = useCurrentUser();
   const qc = useQueryClient();
-  const [tab, setTab] = useState<Tab>("console");
+  const [tab, setTab] = useState<Tab>(() => (isTab(initialTab) ? initialTab : "console"));
   const [running, setRunning] = useState(false);
 
   const devicesQ = useQuery({
@@ -149,6 +154,9 @@ export function FleetConsole() {
           ))}
         </nav>
         <div className="flex items-center gap-3">
+          <Link to="/guide" className="text-sm text-muted hover:text-fg">
+            {t("header.guide")}
+          </Link>
           <LocaleSwitch />
           <span className="max-w-32 truncate text-sm text-muted">{label}</span>
           <Button variant="ghost" size="sm" onClick={() => void signOut()}>

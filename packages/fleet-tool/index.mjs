@@ -4,13 +4,14 @@
  *
  *   FLEET_URL=https://your.app FLEET_TOKEN=flt_... node index.mjs list
  *   FLEET_URL=... FLEET_TOKEN=... node index.mjs run <device_id> 'uname -a'
+ *   node index.mjs --dev list
  *
- * No extra args → MCP stdio (Cursor / other agents).
+ * No extra args → MCP stdio (Cursor / other agents). `--dev` sets FLEET_DEV=1.
  */
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createOperator, FLEET_VERSION, formatMcpText, isFleetDev, measureHubFetch } from "./operator.mjs";
+import { applyCliDevFlag, createOperator, FLEET_VERSION, formatMcpText, isFleetDev, measureHubFetch } from "./operator.mjs";
 
 function loadDotEnv(path) {
   try {
@@ -34,7 +35,7 @@ loadDotEnv(join(homedir(), ".fleet", "mcp.env"));
 const url = (process.env.FLEET_URL || "").replace(/\/$/, "");
 const token = process.env.FLEET_TOKEN || "";
 
-const argv = process.argv.slice(2);
+const argv = applyCliDevFlag(process.argv.slice(2), process.env);
 if (argv.length) {
   if (!url || !token) {
     console.error("Need FLEET_URL and FLEET_TOKEN (env or ~/.fleet/mcp.env)");

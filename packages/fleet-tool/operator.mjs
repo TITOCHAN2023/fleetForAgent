@@ -3,7 +3,7 @@
  * Do not write hub_sessions, ~/.fleet, or a workspace file.
  */
 
-export const FLEET_VERSION = "0.2.7";
+export const FLEET_VERSION = "0.2.8";
 
 /** MCP-call wait budget only. Not a kill timeout. Hosts cancel tools at ~60s. */
 export const WAIT_MAX_MS = 30_000;
@@ -77,6 +77,18 @@ function nonemptyText(value) {
 export function isFleetDev(env = {}) {
   const v = String(env.FLEET_DEV ?? "").trim().toLowerCase();
   return v === "1" || v === "true" || v === "yes";
+}
+
+/** Strip `--dev` and set FLEET_DEV=1. Same env the MCP clients use. */
+export function applyCliDevFlag(args, env = process.env) {
+  const out = [];
+  let dev = false;
+  for (const a of args) {
+    if (a === "--dev") dev = true;
+    else out.push(a);
+  }
+  if (dev) env.FLEET_DEV = "1";
+  return out;
 }
 
 function numOrZero(n) {
@@ -284,7 +296,7 @@ export function buildTools() {
     {
       name: "run",
       description:
-        "Start a command on a device and wait for the result (default wait_ms 30000). If it finishes in time, return the same payload get_result would. Explicit wait_ms=0 is the fire-and-forget ticket: immediate {corr,status:\"running\"} (TUIs / long jobs). POST /v1/run is never held. If the budget expires, return {corr,status:\"running\"} — the command continues. Never kill on wait expiry. Never re-issue run after status=running; poll get_result(wait_ms) or wait(wait_ms).",
+        "Start a command on a device and wait for the result (default wait_ms 30000). If it finishes in time, return the same payload get_result would. Explicit wait_ms=0 is the fire-and-forget ticket: immediate {corr,status:\"running\"} (TUIs / long jobs). POST /v1/run is held only when this client sends wait_ms>0; omitted/old clients still get an immediate ticket. If the budget expires, return {corr,status:\"running\"} — the command continues. Never kill on wait expiry. Never re-issue run after status=running; poll get_result(wait_ms) or wait(wait_ms).",
       inputSchema: {
         type: "object",
         required: ["command"],
@@ -489,18 +501,21 @@ export function createOperator({
     return out;
   }
 
-  async function peekResult(deviceId, corr, trace) {
-    const row = await callRpc(trace, "/v1/get_result", { device_id: deviceId, corr });
+  async function peekResult(deviceId, corr, trace, waitMs = 0) {
+    const body = { device_id: deviceId, corr };
+    if (waitMs > 0) body.wait_ms = waitMs;
+    const row = await callRpc(trace, "/v1/get_result", body);
     return decorateResult(row, deviceId);
   }
 
   async function waitForResult(deviceId, corr, timeoutMs, trace) {
     const budget = clampWaitMs(timeoutMs);
-    let snapshot = await peekResult(deviceId, corr, trace);
+    const startedAt = now();
+    const deadline = startedAt + budget;
+    let snapshot = await peekResult(deviceId, corr, trace, budget);
     if (isFinishedResult(snapshot) || budget <= 0) {
       return isFinishedResult(snapshot) ? snapshot : runningSnapshot(snapshot, corr, deviceId);
     }
-    const deadline = now() + budget;
     while (now() < deadline) {
       if (isFinishedResult(snapshot)) return snapshot;
       const left = deadline - now();
@@ -508,7 +523,7 @@ export function createOperator({
       const sl = Math.min(WAIT_POLL_MS, left);
       if (trace) trace.sleep_ms += sl;
       await sleep(sl);
-      snapshot = await peekResult(deviceId, corr, trace);
+      snapshot = await peekResult(deviceId, corr, trace, Math.max(0, deadline - now()));
     }
     if (isFinishedResult(snapshot)) return snapshot;
     return runningSnapshot(snapshot, corr, deviceId);
@@ -546,12 +561,22 @@ export function createOperator({
       if (!command) throw new Error("command required");
       const deviceId = resolveDevice(args);
       const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? RUN_WAIT_DEFAULT_MS);
-      const started = await callRpc(trace, "/v1/run", { device_id: deviceId, command });
+      const body = { device_id: deviceId, command };
+      if (waitMs > 0) body.wait_ms = waitMs;
+      const t0 = now();
+      const started = await callRpc(trace, "/v1/run", body);
       const corr = started?.corr;
       rememberCorr(corr, deviceId);
-      const out = withDevice({ ...started, corr, status: started?.status ?? "running" }, deviceId);
-      if (waitMs <= 0) return withDev(out, trace);
-      return withDev(await waitForResult(deviceId, corr, waitMs, trace), trace);
+      if (waitMs <= 0) {
+        return withDev(withDevice({ ...started, corr, status: started?.status ?? "running" }, deviceId), trace);
+      }
+      const finished = decorateResult({ ...started, corr }, deviceId);
+      if (isFinishedResult(started) || isFinishedResult(finished)) {
+        return withDev(finished, trace);
+      }
+      const left = waitMs - Math.max(0, now() - t0);
+      if (left <= 0) return withDev(runningSnapshot(started, corr, deviceId), trace);
+      return withDev(await waitForResult(deviceId, corr, left, trace), trace);
     }
 
     if (name === "get_result") {

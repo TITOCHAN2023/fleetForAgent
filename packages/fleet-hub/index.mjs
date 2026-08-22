@@ -20,7 +20,26 @@ const CORS = {
   "access-control-allow-methods": "GET, POST, OPTIONS",
 };
 
-export function createHub({ token = "", now = () => Date.now() } = {}) {
+const HUB_WAIT_MAX_MS = 30_000;
+const HUB_WAIT_POLL_MS = 25;
+
+function clampHubWaitMs(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(HUB_WAIT_MAX_MS, n);
+}
+
+function isHubResultDone(row) {
+  if (!row || typeof row !== "object") return false;
+  if (row.status === "pending" || row.status === "running") return false;
+  return row.ok !== undefined || row.exit_code !== undefined || row.status === "done";
+}
+
+export function createHub({
+  token = "",
+  now = () => Date.now(),
+  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+} = {}) {
   /** @type {Map<string, { id: string, name: string, os: string, online: boolean, lastSeen: number, agentVer?: string }>} */
   const fleet = new Map();
   /** @type {Map<string, import("ws").WebSocket>} */
@@ -136,6 +155,25 @@ export function createHub({ token = "", now = () => Date.now() } = {}) {
     return m;
   }
 
+  function hubResultPayload(corr, row) {
+    if (!row) return { status: "pending", corr };
+    return { status: "done", corr, ...row };
+  }
+
+  async function waitHubResult(deviceId, corr, waitMs) {
+    const budget = clampHubWaitMs(waitMs);
+    const deadline = now() + budget;
+    let row = deviceResults(deviceId).get(corr);
+    if (budget <= 0) return row;
+    while (!isHubResultDone(row) && now() < deadline) {
+      const left = deadline - now();
+      if (left <= 0) break;
+      await sleep(Math.min(HUB_WAIT_POLL_MS, left));
+      row = deviceResults(deviceId).get(corr);
+    }
+    return row;
+  }
+
   function mark(id, extra) {
     const prev = fleet.get(id);
     fleet.set(id, {
@@ -216,7 +254,13 @@ export function createHub({ token = "", now = () => Date.now() } = {}) {
         write(res, 409, { error: "offline" });
         return;
       }
-      write(res, 200, { corr, status: "running" });
+      const waitMs = clampHubWaitMs(body.wait_ms);
+      if (waitMs <= 0) {
+        write(res, 200, { corr, status: "running" });
+        return;
+      }
+      const row = await waitHubResult(body.device_id, corr, waitMs);
+      write(res, 200, hubResultPayload(corr, row));
       return;
     }
 
@@ -267,12 +311,11 @@ export function createHub({ token = "", now = () => Date.now() } = {}) {
         write(res, 400, { error: "device_id and corr required" });
         return;
       }
-      const row = deviceResults(body.device_id).get(body.corr);
-      if (!row) {
-        write(res, 200, { status: "pending", corr: body.corr });
-        return;
-      }
-      write(res, 200, { status: "done", corr: body.corr, ...row });
+      const waitMs = clampHubWaitMs(body.wait_ms);
+      const row = waitMs > 0
+        ? await waitHubResult(body.device_id, body.corr, waitMs)
+        : deviceResults(body.device_id).get(body.corr);
+      write(res, 200, hubResultPayload(body.corr, row));
       return;
     }
 

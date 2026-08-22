@@ -14,6 +14,7 @@ import {
   createOperator,
   deviceMismatchMessage,
   formatMcpText,
+  applyCliDevFlag,
   isFleetDev,
   isFinishedResult,
   measureHubFetch,
@@ -141,7 +142,7 @@ test("run wait_ms omitted waits and returns the finished payload", async () => {
     ["/v1/run"],
   );
   assert.ok(calls.some((c) => c.path === "/v1/get_result"));
-  assert.equal("wait_ms" in calls[0].body, false);
+  assert.equal(calls[0].body.wait_ms, RUN_WAIT_DEFAULT_MS);
   assertSentCommand(calls[0].body.command, "pwd");
 });
 
@@ -186,6 +187,48 @@ test("run wait_ms returns the full result when get_result finishes", async () =>
   assert.equal(out.device_id, "mac-1");
   assert.equal(out.corr, "c2");
   assert.ok(peeks >= 3);
+});
+
+test("finished /v1/run skips get_result", async () => {
+  const { rpc, calls } = mockRpc({
+    "/v1/run": (body) => {
+      assert.equal(body.wait_ms, RUN_WAIT_DEFAULT_MS);
+      return { status: "done", corr: "c-fast", ok: true, exit_code: 0, stdout: "hi" };
+    },
+  });
+  const out = await createOperator({ rpc }).callTool("run", { device_id: "mac-1", command: "pwd" });
+  assert.equal(out.status, "done");
+  assert.equal(out.stdout, "hi");
+  assert.equal(out.ok, true);
+  assert.equal(out.corr, "c-fast");
+  assert.deepEqual(
+    calls.map((c) => c.path),
+    ["/v1/run"],
+  );
+});
+
+test("running /v1/run still polls get_result", async () => {
+  const time = clock();
+  let peeks = 0;
+  const { rpc, calls } = mockRpc({
+    "/v1/run": (body) => {
+      assert.equal(body.wait_ms, 2000);
+      return { corr: "c-old", status: "running" };
+    },
+    "/v1/get_result": () => {
+      peeks += 1;
+      if (peeks < 2) return { status: "pending", corr: "c-old" };
+      return { status: "done", corr: "c-old", ok: true, exit_code: 0, stdout: "later" };
+    },
+  });
+  const out = await createOperator({ rpc, now: time.now, sleep: time.sleep }).callTool("run", {
+    device_id: "mac-1",
+    command: "pwd",
+    wait_ms: 2000,
+  });
+  assert.equal(out.stdout, "later");
+  assert.ok(peeks >= 2);
+  assert.ok(calls.some((c) => c.path === "/v1/get_result"));
 });
 
 test("run wait_ms timeout keeps the job and returns running plus snapshot", async () => {
@@ -670,6 +713,14 @@ test("timed rpc hop keeps the headers split", async () => {
   });
 });
 
-test("MCP version is 0.2.7", () => {
-  assert.equal(FLEET_VERSION, "0.2.7");
+test("applyCliDevFlag sets FLEET_DEV and strips --dev", () => {
+  const env = {};
+  assert.deepEqual(applyCliDevFlag(["--dev", "list"], env), ["list"]);
+  assert.equal(env.FLEET_DEV, "1");
+  assert.deepEqual(applyCliDevFlag(["list"], {}), ["list"]);
+  assert.equal(isFleetDev({}), false);
+});
+
+test("MCP version is 0.2.8", () => {
+  assert.equal(FLEET_VERSION, "0.2.8");
 });

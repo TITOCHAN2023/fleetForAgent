@@ -40,12 +40,12 @@ type Tab = "console" | "join" | "tools" | "lab" | "spec" | "agent" | "releases";
 
 const TABS: { id: Tab; label: MessageKey }[] = [
   { id: "console", label: "tab.console" },
-  { id: "agent", label: "tab.agent" },
   { id: "releases", label: "tab.releases" },
   { id: "lab", label: "tab.lab" },
   { id: "join", label: "tab.join" },
   { id: "tools", label: "tab.tools" },
   { id: "spec", label: "tab.spec" },
+  { id: "agent", label: "tab.agent" },
 ];
 
 function isTab(value: string | undefined): value is Tab {

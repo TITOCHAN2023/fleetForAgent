@@ -47,7 +47,7 @@ export function LoginLanding() {
         <ArchFan />
       </section>
 
-      <section className="mx-auto max-w-5xl px-5 pb-16">
+      <section className="mx-auto max-w-5xl px-5 pb-20">
         <h2 className="text-xl font-semibold tracking-tight">{t("home.keysTitle")}</h2>
         <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {keys.map((k, i) => (
@@ -58,17 +58,6 @@ export function LoginLanding() {
             </article>
           ))}
         </div>
-      </section>
-
-      <section className="mx-auto grid max-w-5xl gap-3 px-5 pb-20 md:grid-cols-2">
-        <article className="rounded-2xl border border-border bg-surface p-6">
-          <h3 className="text-lg font-semibold">{t("home.localTitle")}</h3>
-          <p className="mt-2 text-sm leading-relaxed text-muted">{t("home.localBody")}</p>
-        </article>
-        <article className="rounded-2xl border border-border bg-surface p-6">
-          <h3 className="text-lg font-semibold">{t("home.cloudTitle")}</h3>
-          <p className="mt-2 text-sm leading-relaxed text-muted">{t("home.cloudBody")}</p>
-        </article>
       </section>
     </main>
   );

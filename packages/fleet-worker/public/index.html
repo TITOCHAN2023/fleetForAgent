@@ -117,7 +117,7 @@
           help: "帮助", downloads: "下载", signOut: "退出", settings: "设置", fleet: "机器",
           kicker: "fleet.ginfo.cc",
           hero: "一个工具，连上你所有电脑。随时随地。",
-          body: "Tool 导入本站 URL 和 token。Windows、Linux、macOS 上的 Agent 只出网打 WebSocket。本地部署发挥不出多端互联，最多是个命令行；这个云端中枢才是产品。",
+          body: "Tool 导入本站 URL 和 token。Windows、Linux、macOS 上的 Agent 只出网打 WebSocket。",
           continueG: "使用 Google 继续", continueX: "使用 X 继续",
           archTitle: "命令怎么走",
           archHint: "设备只出网，不开端口。哪种架构能跑 Agent，就能进同一支舰队。",
@@ -158,7 +158,7 @@
           help: "Help", downloads: "Downloads", signOut: "Sign out", settings: "Settings", fleet: "Machines",
           kicker: "fleet.ginfo.cc",
           hero: "One tool. Every computer. Anywhere.",
-          body: "Import the MCP tool with this URL and a token. Agents on Windows, Linux, and macOS dial out over WebSocket. Localhost is only a CLI — this cloud hub is the product.",
+          body: "Import the MCP tool with this URL and a token. Agents on Windows, Linux, and macOS dial out over WebSocket.",
           continueG: "Continue with Google", continueX: "Continue with X",
           archTitle: "How a command travels",
           archHint: "Devices only dial out. No inbound ports. Any arch that can run the Agent joins the same fleet.",
@@ -201,7 +201,7 @@
         locale: localStorage.getItem("fleet-locale") === "en" ? "en" : "zh",
         themePref: localStorage.getItem("fleet-theme") || "system",
         user: null,
-        tab: "settings",
+        tab: "fleet",
         err: "",
         secret: "",
         meta: null,
@@ -322,19 +322,15 @@
             ${fan()}
             <h2 style="margin-top:64px">${t("keysTitle")}</h2>
             <div style="margin-top:20px">${keys()}</div>
-            <div class="grid-2" style="margin-top:48px">
-              <article class="card"><h3>${t("localTitle")}</h3><p class="muted" style="margin-top:8px">${t("localBody")}</p></article>
-              <article class="card"><h3>${t("cloudTitle")}</h3><p class="muted" style="margin-top:8px">${t("cloudBody")}</p></article>
-            </div>
           </div>`;
       }
       function helpView(inApp) {
         const origin = location.origin;
         const extra = inApp ? `<nav class="tabs">
-            <button class="tab" data-tab="settings">${t("settings")}</button>
-            <button class="tab" data-tab="downloads">${t("downloads")}</button>
             <button class="tab" data-tab="fleet">${t("fleet")}</button>
+            <button class="tab" data-tab="downloads">${t("downloads")}</button>
             <button class="tab on">${t("help")}</button>
+            <button class="tab" data-tab="settings">${t("settings")}</button>
           </nav>
           <span class="who">${state.user ? state.user.email : ""}</span>
           <button class="btn ghost" id="out">${t("signOut")}</button>` : "";
@@ -359,14 +355,10 @@ node packages/fleet-tool/index.mjs list</pre>
             <h2>${t("s4")}</h2>
             <p class="muted">${t("keysTitle")}</p>
             <div style="margin-top:16px">${keys()}</div>
-            <div class="grid-2" style="margin-top:32px">
-              <article class="card"><h3>${t("localTitle")}</h3><p class="muted" style="margin-top:8px">${t("localBody")}</p></article>
-              <article class="card"><h3>${t("cloudTitle")}</h3><p class="muted" style="margin-top:8px">${t("cloudBody")}</p></article>
-            </div>
           </div>`;
       }
       function appView() {
-        const tabs = [["settings", t("settings")], ["downloads", t("downloads")], ["fleet", t("fleet")], ["help", t("help")]];
+        const tabs = [["fleet", t("fleet")], ["downloads", t("downloads")], ["help", t("help")], ["settings", t("settings")]];
         return `${chrome(`<nav class="tabs">${tabs.map(([id, label]) => `<button class="tab${state.tab===id?" on":""}" data-tab="${id}">${label}</button>`).join("")}</nav>
             <span class="who">${state.user.email}</span>
             <button class="btn ghost" id="out">${t("signOut")}</button>`)}

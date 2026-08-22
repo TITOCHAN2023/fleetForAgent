@@ -13,6 +13,7 @@ const BUILDS: {
   icon: typeof Monitor;
 }[] = [
   { id: "win", os: "rel.win", file: "FleetAgent-windows-amd64.exe", hint: "rel.winHint", icon: Monitor },
+  { id: "win-arm", os: "rel.winArm", file: "FleetAgent-windows-arm64.exe", hint: "rel.winArmHint", icon: Monitor },
   { id: "mac-arm", os: "rel.macArm", file: "FleetAgent-macos-arm64.dmg", hint: "rel.macArmHint", icon: Apple },
   { id: "mac-arm-zip", os: "rel.macArmZip", file: "FleetAgent-macos-arm64.zip", hint: "rel.macArmZipHint", icon: Apple },
   { id: "mac-intel", os: "rel.macIntel", file: "FleetAgent-macos-amd64.dmg", hint: "rel.macIntelHint", icon: Apple },

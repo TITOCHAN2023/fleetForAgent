@@ -148,7 +148,7 @@
           online: "在线", offline: "离线",
           relTitle: "安装本机 Agent",
           relBody: "装在每台要被统筹的电脑上。打开后只出网连这个网站。",
-          win: "Windows", macArm: "macOS Apple 芯片", macArmZip: "macOS Apple 芯片 zip", macIntel: "macOS Intel", macIntelZip: "macOS Intel zip", linux: "Linux amd64", linuxArm: "Linux ARM64", checksums: "Checksums",
+          win: "Windows", winArm: "Windows ARM64", macArm: "macOS Apple 芯片", macArmZip: "macOS Apple 芯片 zip", macIntel: "macOS Intel", macIntelZip: "macOS Intel zip", linux: "Linux amd64", linuxArm: "Linux ARM64", checksums: "Checksums",
           themeL: "浅色", themeD: "深色", themeS: "系统",
         },
         en: {
@@ -189,7 +189,7 @@
           online: "online", offline: "offline",
           relTitle: "Install the local agent",
           relBody: "Install on every machine you want in the fleet. It only dials out to this site.",
-          win: "Windows", macArm: "macOS Apple silicon", macArmZip: "macOS Apple silicon zip", macIntel: "macOS Intel", macIntelZip: "macOS Intel zip", linux: "Linux amd64", linuxArm: "Linux ARM64", checksums: "Checksums",
+          win: "Windows", winArm: "Windows ARM64", macArm: "macOS Apple silicon", macArmZip: "macOS Apple silicon zip", macIntel: "macOS Intel", macIntelZip: "macOS Intel zip", linux: "Linux amd64", linuxArm: "Linux ARM64", checksums: "Checksums",
           themeL: "Light", themeD: "Dark", themeS: "System",
         },
       };
@@ -409,6 +409,7 @@ node packages/fleet-tool/index.mjs list</pre>
       function downloadsView() {
         const items = [
           [t("win"), "FleetAgent-windows-amd64.exe"],
+          [t("winArm"), "FleetAgent-windows-arm64.exe"],
           [t("macArm"), "FleetAgent-macos-arm64.dmg"],
           [t("macArmZip"), "FleetAgent-macos-arm64.zip"],
           [t("macIntel"), "FleetAgent-macos-amd64.dmg"],

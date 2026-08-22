@@ -28,12 +28,14 @@ build() {
 }
 
 build windows amd64 .exe
+build windows arm64 .exe
 build darwin arm64 ""
 build darwin amd64 ""
 build linux amd64 ""
 build linux arm64 ""
 
 cp dist/windows-amd64.exe "$OUT/FleetAgent-windows-amd64.exe"
+cp dist/windows-arm64.exe "$OUT/FleetAgent-windows-arm64.exe"
 
 is_zip() {
   # PK\x03\x04
@@ -126,13 +128,13 @@ tar -C dist/linuxpack-arm64 -czf "$OUT/fleet-agent-linux-arm64.tar.gz" fleet-age
   cd "$OUT"
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum \
-      FleetAgent-windows-amd64.exe \
+      FleetAgent-windows-amd64.exe FleetAgent-windows-arm64.exe \
       FleetAgent-macos-arm64.dmg FleetAgent-macos-amd64.dmg \
       FleetAgent-macos-arm64.zip FleetAgent-macos-amd64.zip \
       fleet-agent-linux-amd64.tar.gz fleet-agent-linux-arm64.tar.gz > checksums.txt
   else
     shasum -a 256 \
-      FleetAgent-windows-amd64.exe \
+      FleetAgent-windows-amd64.exe FleetAgent-windows-arm64.exe \
       FleetAgent-macos-arm64.dmg FleetAgent-macos-amd64.dmg \
       FleetAgent-macos-arm64.zip FleetAgent-macos-amd64.zip \
       fleet-agent-linux-amd64.tar.gz fleet-agent-linux-arm64.tar.gz > checksums.txt

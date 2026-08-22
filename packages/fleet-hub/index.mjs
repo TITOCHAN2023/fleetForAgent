@@ -12,6 +12,11 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
+import {
+  agentVerFromBody,
+  clampHeartbeatWaitMs,
+  computerPublic,
+} from "../fleet-worker/src/presence.mjs";
 import { createSessionBook, fingerprintFromHeaders } from "../fleet-worker/src/session.mjs";
 
 const CORS = {
@@ -51,6 +56,8 @@ export function createHub({
   const results = new Map();
   /** @type {Map<string, ReturnType<typeof createSessionBook>>} */
   const sessions = new Map();
+  /** @type {Map<string, { seq: number, waiters: Array<() => void> }>} */
+  const beats = new Map();
 
   const wss = new WebSocketServer({ noServer: true });
   const server = http.createServer((req, res) => {
@@ -126,11 +133,14 @@ export function createHub({
     }
     if (parsed.type === "ping" || parsed.type === "heartbeat") {
       const prev = fleet.get(id);
+      const agentVer = agentVerFromBody(parsed.body);
       mark(id, {
         name: prev?.name ?? id,
         os: prev?.os ?? "linux",
         online: true,
+        ...(agentVer !== undefined ? { agentVer } : {}),
       });
+      noteBeat(id);
       ws.send(JSON.stringify(envelope("pong", {}, parsed.id)));
       return;
     }
@@ -214,6 +224,47 @@ export function createHub({
     });
   }
 
+  function beatSlot(id) {
+    let slot = beats.get(id);
+    if (!slot) {
+      slot = { seq: 0, waiters: [] };
+      beats.set(id, slot);
+    }
+    return slot;
+  }
+
+  function noteBeat(id) {
+    const slot = beatSlot(id);
+    slot.seq += 1;
+    const waiters = slot.waiters.splice(0);
+    for (const w of waiters) w();
+  }
+
+  function waitNextBeat(id, waitMs) {
+    const slot = beatSlot(id);
+    const start = slot.seq;
+    return new Promise((resolve) => {
+      const onBeat = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      const timer = setTimeout(() => {
+        slot.waiters = slot.waiters.filter((w) => w !== onBeat);
+        resolve(slot.seq > start);
+      }, waitMs);
+      slot.waiters.push(onBeat);
+    });
+  }
+
+  function computerOf(id) {
+    const row = fleet.get(id);
+    if (!row) return null;
+    return computerPublic({
+      ...row,
+      online: sockets.get(row.id)?.readyState === WebSocket.OPEN,
+    });
+  }
+
   function sendTo(id, env) {
     const ws = sockets.get(id);
     if (!ws || ws.readyState !== WebSocket.OPEN) return false;
@@ -259,6 +310,51 @@ export function createHub({
 
     if (url.pathname === "/v1/list_computers" && req.method === "POST") {
       write(res, 200, listComputers());
+      return;
+    }
+
+    if (url.pathname === "/v1/get_computer" && req.method === "POST") {
+      if (!body.device_id) {
+        write(res, 400, { error: "device_id required" });
+        return;
+      }
+      const row = computerOf(body.device_id);
+      if (!row) {
+        write(res, 404, { error: "not found" });
+        return;
+      }
+      write(res, 200, row);
+      return;
+    }
+
+    if (url.pathname === "/v1/heartbeat" && req.method === "POST") {
+      if (!body.device_id) {
+        write(res, 400, { error: "device_id required" });
+        return;
+      }
+      if (!fleet.get(body.device_id)) {
+        write(res, 404, { error: "not found" });
+        return;
+      }
+      const live = sockets.get(body.device_id);
+      if (!live || live.readyState !== WebSocket.OPEN) {
+        write(res, 409, { error: "offline" });
+        return;
+      }
+      const waitMs = clampHeartbeatWaitMs(body.wait_ms);
+      const pending = waitNextBeat(body.device_id, waitMs);
+      live.send(JSON.stringify(envelope("ask_heartbeat", {})));
+      const got = await pending;
+      if (!got) {
+        write(res, 409, { error: "no heartbeat" });
+        return;
+      }
+      const row = computerOf(body.device_id);
+      if (!row) {
+        write(res, 404, { error: "not found" });
+        return;
+      }
+      write(res, 200, row);
       return;
     }
 

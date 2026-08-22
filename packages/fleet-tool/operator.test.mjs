@@ -91,14 +91,14 @@ test("isFinishedResult treats pending/running as not done", () => {
 test("existing five tools remain; device_id stays in schemas and is optional", () => {
   const tools = buildTools();
   const names = tools.map((t) => t.name);
-  for (const n of ["list_computers", "run", "get_result", "read_screen", "type"]) {
+  for (const n of ["list_computers", "get_computer", "heartbeat", "run", "get_result", "read_screen", "type"]) {
     assert.ok(names.includes(n), n);
   }
   assert.ok(names.includes("wait"));
   assert.ok(names.includes("set_computer"));
   assert.ok(names.includes("get_current_computer"));
 
-  for (const n of ["run", "get_result", "wait", "read_screen", "type"]) {
+  for (const n of ["get_computer", "heartbeat", "run", "get_result", "wait", "read_screen", "type"]) {
     const t = tools.find((x) => x.name === n);
     assert.equal(typeof t.inputSchema.properties.device_id, "object", n);
     assert.equal((t.inputSchema.required ?? []).includes("device_id"), false, n);
@@ -107,7 +107,7 @@ test("existing five tools remain; device_id stays in schemas and is optional", (
   assert.deepEqual(set.inputSchema.required, ["device_id"]);
   assert.ok(set.inputSchema.properties.device_id);
   assert.deepEqual(tools.find((x) => x.name === "run").inputSchema.required, ["command"]);
-  for (const n of ["run", "get_result", "wait", "read_screen", "type"]) {
+  for (const n of ["get_computer", "heartbeat", "run", "get_result", "wait", "read_screen", "type"]) {
     const t = tools.find((x) => x.name === n);
     assert.equal(t.inputSchema.properties.corr, undefined, n);
     assert.equal(t.inputSchema.properties.fingerprint, undefined, n);
@@ -455,6 +455,41 @@ test("get_result after set_computer uses last-used; hub isolates by fingerprint 
   const getCalls = calls.filter((c) => c.path === "/v1/get_result");
   assert.ok(getCalls.every((c) => c.body.device_id === "host-b"));
   assert.ok(getCalls.every((c) => !("corr" in c.body)));
+});
+
+test("get_computer and heartbeat use last-used and never invent a device id", async () => {
+  const { rpc, calls } = mockRpc({
+    "/v1/get_computer": (body) => ({
+      id: body.device_id,
+      name: "box",
+      os: "windows",
+      online: true,
+      lastSeen: 1,
+      agentVer: "0.2.8",
+    }),
+    "/v1/heartbeat": (body) => ({
+      id: body.device_id,
+      name: "box",
+      os: "windows",
+      online: true,
+      lastSeen: 2,
+      agentVer: "0.2.8",
+    }),
+  });
+  const op = createOperator({ rpc });
+  await assert.rejects(() => op.callTool("get_computer", {}), (err) => {
+    assert.match(String(err.message), /device_id required/);
+    return true;
+  });
+  await op.callTool("set_computer", { device_id: "win-1" });
+  const status = await op.callTool("get_computer", {});
+  assert.equal(status.device_id, "win-1");
+  assert.equal(status.agentVer, "0.2.8");
+  const beat = await op.callTool("heartbeat", {});
+  assert.equal(beat.device_id, "win-1");
+  assert.equal(beat.agentVer, "0.2.8");
+  assert.ok(calls.every((c) => c.body.device_id === "win-1"));
+  assert.ok(calls.every((c) => !("fingerprint" in c.body)));
 });
 
 test("list_computers does not touch last-used", async () => {

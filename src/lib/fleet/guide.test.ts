@@ -24,6 +24,8 @@ test("guide advertises only the MCP tools shipped on main", () => {
   const shipped = mcpToolNames(src("packages/fleet-tool/operator.mjs"));
   assert.deepEqual(shipped, [
     "list_computers",
+    "get_computer",
+    "heartbeat",
     "run",
     "get_result",
     "wait",

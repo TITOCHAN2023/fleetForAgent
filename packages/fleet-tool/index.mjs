@@ -10,7 +10,7 @@
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createOperator, FLEET_VERSION } from "./operator.mjs";
+import { createOperator, FLEET_VERSION, formatMcpText } from "./operator.mjs";
 
 function loadDotEnv(path) {
   try {
@@ -118,7 +118,7 @@ function mcp() {
         }
         if (msg.method === "tools/call") {
           const out = await callTool(msg.params?.name, msg.params?.arguments ?? {});
-          reply(id, { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] });
+          reply(id, { content: [{ type: "text", text: formatMcpText(msg.params?.name, out) }] });
           continue;
         }
         reply(id, {});

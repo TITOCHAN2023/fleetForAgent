@@ -3,7 +3,7 @@
  * Do not write hub_sessions, ~/.fleet, or a workspace file.
  */
 
-export const FLEET_VERSION = "0.2.5";
+export const FLEET_VERSION = "0.2.6";
 
 /** MCP-call wait budget only. Not a kill timeout. Hosts cancel tools at ~60s. */
 export const WAIT_MAX_MS = 30_000;
@@ -65,6 +65,39 @@ export function isFinishedResult(row) {
   if (row.status === "pending" || row.status === "running") return false;
   if (row.status === "done") return true;
   return row.ok !== undefined || row.exit_code !== undefined;
+}
+
+const SHELL_RESULT_TOOLS = new Set(["run", "get_result", "wait"]);
+
+function nonemptyText(value) {
+  if (value == null) return "";
+  return String(value);
+}
+
+/** MCP content text. Shell tools (run / get_result / wait) are human output, not JSON.stringify of the envelope. */
+export function formatMcpText(name, out) {
+  if (!SHELL_RESULT_TOOLS.has(name)) {
+    if (out == null) return "";
+    if (typeof out === "string") return out;
+    return JSON.stringify(out);
+  }
+  if (!out || typeof out !== "object") {
+    return out == null ? "" : String(out);
+  }
+  if (!isFinishedResult(out)) {
+    const corr = nonemptyText(out.corr).trim();
+    return corr ? `running corr=${corr}` : "running";
+  }
+  const stdout = nonemptyText(out.stdout);
+  const err = nonemptyText(out.error) || nonemptyText(out.stderr);
+  const code = out.exit_code;
+  const failed = (code != null && Number(code) !== 0) || out.ok === false || err !== "";
+  if (!failed) return stdout;
+  const lines = [];
+  if (stdout !== "") lines.push(stdout.endsWith("\n") ? stdout.slice(0, -1) : stdout);
+  if (code != null && String(code) !== "") lines.push(`exit_code: ${code}`);
+  if (err !== "") lines.push(err);
+  return lines.join("\n");
 }
 
 export function deviceMismatchMessage(corr, owner, got) {

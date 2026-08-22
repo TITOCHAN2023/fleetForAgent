@@ -13,6 +13,7 @@ import {
   clampWaitMs,
   createOperator,
   deviceMismatchMessage,
+  formatMcpText,
   isFinishedResult,
   parseOptionalMs,
   shQuote,
@@ -447,6 +448,56 @@ test("run sends the raw command — no __FLEET_META__ wrap", async () => {
   assert.ok(sent.every((c) => !String(c).includes(CWD_MARK)));
 });
 
-test("MCP version is 0.2.5", () => {
-  assert.equal(FLEET_VERSION, "0.2.5");
+test("formatMcpText is stdout for a finished ok run, not a JSON envelope", () => {
+  const text = formatMcpText("run", {
+    corr: "c1",
+    status: "done",
+    ok: true,
+    exit_code: 0,
+    error: "",
+    stdout: "/Users/bytedance",
+    device_id: "mac-1",
+    cwd: "/Users/bytedance",
+  });
+  assert.equal(text, "/Users/bytedance");
+  assert.equal(text.includes("{"), false);
+  assert.equal(text.includes("device_id"), false);
+});
+
+test("formatMcpText empty stdout is empty string, not {}", () => {
+  assert.equal(formatMcpText("run", { status: "done", ok: true, exit_code: 0, stdout: "" }), "");
+  assert.equal(formatMcpText("get_result", { status: "done", ok: true, exit_code: 0 }), "");
+});
+
+test("formatMcpText running is a corr ticket line", () => {
+  const text = formatMcpText("run", { corr: "c-tui", status: "running", device_id: "mac-1" });
+  assert.equal(text, "running corr=c-tui");
+  assert.equal(text.includes("{"), false);
+  assert.equal(formatMcpText("wait", { status: "pending", corr: "c2" }), "running corr=c2");
+});
+
+test("formatMcpText finished nonzero exit appends a short trailer", () => {
+  const text = formatMcpText("get_result", {
+    status: "done",
+    ok: false,
+    exit_code: 2,
+    stdout: "nope\n",
+    error: "denied",
+  });
+  assert.equal(text, "nope\nexit_code: 2\ndenied");
+  assert.equal(text.includes("\"ok\""), false);
+});
+
+test("formatMcpText does not force list/set/current through the shell formatter", () => {
+  const listed = formatMcpText("list_computers", { computers: [{ id: "solo", online: true }] });
+  assert.equal(listed, JSON.stringify({ computers: [{ id: "solo", online: true }] }));
+  const set = formatMcpText("set_computer", { ok: true, device_id: "mac-1" });
+  assert.equal(set, JSON.stringify({ ok: true, device_id: "mac-1" }));
+  const cur = formatMcpText("get_current_computer", { device_id: "mac-1", source: "last_used" });
+  assert.match(cur, /mac-1/);
+  assert.match(cur, /last_used/);
+});
+
+test("MCP version is 0.2.6", () => {
+  assert.equal(FLEET_VERSION, "0.2.6");
 });

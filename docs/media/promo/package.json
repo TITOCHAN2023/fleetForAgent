@@ -6,8 +6,12 @@
   "scripts": {
     "studio": "remotion studio",
     "render": "remotion render Architecture out/architecture.mp4",
+    "render:intro": "remotion render IntroZH out/intro-zh-silent.mp4 --props=vo/zh/props.json",
+    "render:intro-zh": "remotion render IntroZH out/intro-zh-silent.mp4 --props=vo/zh/props.json",
+    "render:intro-en": "remotion render IntroEN out/intro-en-silent.mp4 --props=vo/en/props.json",
     "render:loop": "remotion render FlowLoop out/flow-loop.mp4",
-    "still": "remotion still Architecture out/architecture.png --frame=200"
+    "still": "remotion still Architecture out/architecture.png --frame=200",
+    "still:intro": "remotion still IntroZH out/intro-check.png --frame=200"
   },
   "dependencies": {
     "@remotion/cli": "4.0.380",

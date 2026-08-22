@@ -1,0 +1,57 @@
+{
+  "lang": "en",
+  "full_s": 74.999,
+  "sceneFrames": [
+    360,
+    300,
+    600,
+    390,
+    390,
+    210
+  ],
+  "scenes": [
+    {
+      "id": "01-pain",
+      "target_s": 12,
+      "audio_s": 6.3,
+      "aligned_s": 12.0,
+      "frames": 360
+    },
+    {
+      "id": "02-product",
+      "target_s": 10,
+      "audio_s": 6.94,
+      "aligned_s": 10.0,
+      "frames": 300
+    },
+    {
+      "id": "03-principle",
+      "target_s": 20,
+      "audio_s": 10.18,
+      "aligned_s": 20.0,
+      "frames": 600
+    },
+    {
+      "id": "04-collab",
+      "target_s": 13,
+      "audio_s": 8.74,
+      "aligned_s": 13.0,
+      "frames": 390
+    },
+    {
+      "id": "05-setup",
+      "target_s": 13,
+      "audio_s": 8.46,
+      "aligned_s": 13.0,
+      "frames": 390
+    },
+    {
+      "id": "06-cta",
+      "target_s": 7,
+      "audio_s": 4.54,
+      "aligned_s": 7.0,
+      "frames": 210
+    }
+  ],
+  "file": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\en\\full-aligned.wav"
+}

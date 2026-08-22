@@ -1,0 +1,79 @@
+{
+  "voice": "洞白",
+  "voices": {
+    "zh": "洞白",
+    "en": "洞白en"
+  },
+  "speed": 1.0,
+  "prompt_text": "这里是有点脏的但是是鞋底",
+  "ref_audio": "G:\\project\\F5-TTS\\origin_audio\\洞白\\洞白.MP3",
+  "en_ref_audio": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\en-prompt\\dongbai-en.wav",
+  "en_prompt_text": "Please come in and take a seat so we can begin now.",
+  "notes": "中文口播用洞白原音。英文先用洞白合成一句流畅英语，再把该 wav 登记为洞白en 当源头。英文少用句号，避免句尾杂音。",
+  "langs": {
+    "zh": [
+      {
+        "id": "01-pain",
+        "seconds": 12,
+        "text": "你已经有很强的助手了。可电脑还是各管各的。官方远程通道动不动掉线。家里、公司、机房，永远对不齐。"
+      },
+      {
+        "id": "02-product",
+        "seconds": 10,
+        "text": "我们不替代你的人工智能。任意助手挂上一个工具，就能用你名下每一台电脑。"
+      },
+      {
+        "id": "03-principle",
+        "seconds": 20,
+        "text": "助手只连云端中枢。每台电脑上的程序，自己向外连出去。家里、公司、机房，哪种电脑都行。命令跑在你选的那一台，结果原路返回。家里不用开端口，也不用公网地址。"
+      },
+      {
+        "id": "04-collab",
+        "seconds": 13,
+        "text": "官方通道一断，上下文就没了。我们认的是中枢，不是某一家客户端。换一个助手，只要导入我们的工具，你的舰队还在。"
+      },
+      {
+        "id": "05-setup",
+        "seconds": 13,
+        "text": "四样东西。网站地址、一把令牌、每台电脑装上程序、把工具导入助手。中枢跑在本机，发挥不出多端互联。要随时随地，把服务放到云上。"
+      },
+      {
+        "id": "06-cta",
+        "seconds": 7,
+        "text": "先打开画面上的网站体验。登录，装上程序，导入工具。一个工具，你的所有电脑。"
+      }
+    ],
+    "en": [
+      {
+        "id": "01-pain",
+        "seconds": 12,
+        "text": "Your helper is already strong and your computers are still scattered so home and work never line up"
+      },
+      {
+        "id": "02-product",
+        "seconds": 10,
+        "text": "This does not replace your mind and any helper can load one tool and reach every computer you own"
+      },
+      {
+        "id": "03-principle",
+        "seconds": 20,
+        "text": "Your helper only talks to the cloud hub and each computer reaches out by itself so the job runs on the one you pick and comes back"
+      },
+      {
+        "id": "04-collab",
+        "seconds": 13,
+        "text": "When the official channel dies the context dies with it and we bind to the hub so your fleet is still there"
+      },
+      {
+        "id": "05-setup",
+        "seconds": 13,
+        "text": "You need the website and a token and a program on each computer and then put the server in the cloud"
+      },
+      {
+        "id": "06-cta",
+        "seconds": 7,
+        "text": "Open the website on screen and use one tool for all your computers"
+      }
+    ]
+  }
+}

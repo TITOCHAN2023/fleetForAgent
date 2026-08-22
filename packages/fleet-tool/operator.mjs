@@ -3,7 +3,7 @@
  * Do not write hub_sessions, ~/.fleet, or a workspace file.
  */
 
-export const FLEET_VERSION = "0.2.6";
+export const FLEET_VERSION = "0.2.7";
 
 /** MCP-call wait budget only. Not a kill timeout. Hosts cancel tools at ~60s. */
 export const WAIT_MAX_MS = 30_000;
@@ -74,30 +74,59 @@ function nonemptyText(value) {
   return String(value);
 }
 
+export function isFleetDev(env = {}) {
+  const v = String(env.FLEET_DEV ?? "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
+
+export function formatDevTrailer(timing) {
+  if (!timing || typeof timing !== "object") return "";
+  const hops = Array.isArray(timing.hops) ? timing.hops : [];
+  const runMs = hops.filter((h) => h.path === "/v1/run").reduce((s, h) => s + Number(h.ms || 0), 0);
+  const getHops = hops.filter((h) => h.path === "/v1/get_result");
+  const getMs = getHops.reduce((s, h) => s + Number(h.ms || 0), 0);
+  const total = Number.isFinite(Number(timing.total_ms)) ? Number(timing.total_ms) : 0;
+  const parts = [`# fleet-dev  total=${total}ms`];
+  if (hops.some((h) => h.path === "/v1/run")) parts.push(`run=${runMs}ms`);
+  if (getHops.length) parts.push(`get_result=${getMs}ms x${getHops.length}`);
+  return parts.join("  ");
+}
+
 /** MCP content text. Shell tools (run / get_result / wait) are human output, not JSON.stringify of the envelope. */
-export function formatMcpText(name, out) {
+export function formatMcpText(name, out, env = {}) {
+  let text;
   if (!SHELL_RESULT_TOOLS.has(name)) {
-    if (out == null) return "";
-    if (typeof out === "string") return out;
-    return JSON.stringify(out);
-  }
-  if (!out || typeof out !== "object") {
-    return out == null ? "" : String(out);
-  }
-  if (!isFinishedResult(out)) {
+    if (out == null) text = "";
+    else if (typeof out === "string") text = out;
+    else if (typeof out === "object") {
+      const { timing: _timing, ...rest } = out;
+      text = JSON.stringify(rest);
+    } else text = JSON.stringify(out);
+  } else if (!out || typeof out !== "object") {
+    text = out == null ? "" : String(out);
+  } else if (!isFinishedResult(out)) {
     const corr = nonemptyText(out.corr).trim();
-    return corr ? `running corr=${corr}` : "running";
+    text = corr ? `running corr=${corr}` : "running";
+  } else {
+    const stdout = nonemptyText(out.stdout);
+    const err = nonemptyText(out.error) || nonemptyText(out.stderr);
+    const code = out.exit_code;
+    const failed = (code != null && Number(code) !== 0) || out.ok === false || err !== "";
+    if (!failed) {
+      text = stdout;
+    } else {
+      const lines = [];
+      if (stdout !== "") lines.push(stdout.endsWith("\n") ? stdout.slice(0, -1) : stdout);
+      if (code != null && String(code) !== "") lines.push(`exit_code: ${code}`);
+      if (err !== "") lines.push(err);
+      text = lines.join("\n");
+    }
   }
-  const stdout = nonemptyText(out.stdout);
-  const err = nonemptyText(out.error) || nonemptyText(out.stderr);
-  const code = out.exit_code;
-  const failed = (code != null && Number(code) !== 0) || out.ok === false || err !== "";
-  if (!failed) return stdout;
-  const lines = [];
-  if (stdout !== "") lines.push(stdout.endsWith("\n") ? stdout.slice(0, -1) : stdout);
-  if (code != null && String(code) !== "") lines.push(`exit_code: ${code}`);
-  if (err !== "") lines.push(err);
-  return lines.join("\n");
+  if (!isFleetDev(env)) return text;
+  const trailer = formatDevTrailer(out && typeof out === "object" ? out.timing : null);
+  if (!trailer) return text;
+  if (text === "") return trailer;
+  return (text.endsWith("\n") ? text : text + "\n") + trailer;
 }
 
 export function deviceMismatchMessage(corr, owner, got) {
@@ -223,6 +252,13 @@ export function buildTools() {
   ];
 }
 
+function hopStatus(row) {
+  if (!row || typeof row !== "object") return undefined;
+  if (row.status != null) return row.status;
+  if (row.ok === false) return "error";
+  return undefined;
+}
+
 export function createOperator({
   rpc,
   env = {},
@@ -234,9 +270,35 @@ export function createOperator({
   let lastUsed = null;
   let lastCwd = null;
   const envDefault = trimId(env.FLEET_DEVICE_ID) || null;
+  const fleetDev = isFleetDev(env);
   /** @type {Map<string, string>} */
   const corrOwner = new Map();
   const tools = buildTools();
+
+  function newTrace() {
+    return { hops: [], started: now() };
+  }
+
+  async function callRpc(trace, path, body) {
+    if (!trace) return rpc(path, body);
+    const t0 = now();
+    const row = await rpc(path, body);
+    trace.hops.push({ path, ms: Math.max(0, now() - t0), status: hopStatus(row) });
+    return row;
+  }
+
+  function withTiming(out, trace) {
+    if (!fleetDev || !trace) return out;
+    const poll_count = trace.hops.filter((h) => h.path === "/v1/get_result").length;
+    return {
+      ...out,
+      timing: {
+        total_ms: Math.max(0, now() - trace.started),
+        hops: trace.hops.slice(),
+        poll_count,
+      },
+    };
+  }
 
   function currentDevice() {
     if (lastUsed) return { device_id: lastUsed, source: "last_used" };
@@ -276,14 +338,14 @@ export function createOperator({
     return out;
   }
 
-  async function peekResult(deviceId, corr) {
-    const row = await rpc("/v1/get_result", { device_id: deviceId, corr });
+  async function peekResult(deviceId, corr, trace) {
+    const row = await callRpc(trace, "/v1/get_result", { device_id: deviceId, corr });
     return decorateResult(row, deviceId);
   }
 
-  async function waitForResult(deviceId, corr, timeoutMs) {
+  async function waitForResult(deviceId, corr, timeoutMs, trace) {
     const budget = clampWaitMs(timeoutMs);
-    let snapshot = await peekResult(deviceId, corr);
+    let snapshot = await peekResult(deviceId, corr, trace);
     if (isFinishedResult(snapshot) || budget <= 0) {
       return isFinishedResult(snapshot) ? snapshot : runningSnapshot(snapshot, corr, deviceId);
     }
@@ -293,7 +355,7 @@ export function createOperator({
       const left = deadline - now();
       if (left <= 0) break;
       await sleep(Math.min(WAIT_POLL_MS, left));
-      snapshot = await peekResult(deviceId, corr);
+      snapshot = await peekResult(deviceId, corr, trace);
     }
     if (isFinishedResult(snapshot)) return snapshot;
     return runningSnapshot(snapshot, corr, deviceId);
@@ -301,9 +363,11 @@ export function createOperator({
 
   async function callTool(name, rawArgs) {
     const args = rawArgs && typeof rawArgs === "object" ? rawArgs : {};
+    const trace = fleetDev ? newTrace() : null;
 
     if (name === "list_computers") {
-      return rpc("/v1/list_computers", {});
+      const row = await callRpc(trace, "/v1/list_computers", {});
+      return withTiming(row, trace);
     }
 
     if (name === "set_computer") {
@@ -329,12 +393,12 @@ export function createOperator({
       if (!command) throw new Error("command required");
       const deviceId = resolveDevice(args);
       const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? RUN_WAIT_DEFAULT_MS);
-      const started = await rpc("/v1/run", { device_id: deviceId, command });
+      const started = await callRpc(trace, "/v1/run", { device_id: deviceId, command });
       const corr = started?.corr;
       rememberCorr(corr, deviceId);
       const out = withDevice({ ...started, corr, status: started?.status ?? "running" }, deviceId);
-      if (waitMs <= 0) return out;
-      return waitForResult(deviceId, corr, waitMs);
+      if (waitMs <= 0) return withTiming(out, trace);
+      return withTiming(await waitForResult(deviceId, corr, waitMs, trace), trace);
     }
 
     if (name === "get_result") {
@@ -342,8 +406,8 @@ export function createOperator({
       if (!corr) throw new Error("corr required");
       const deviceId = resolveDevice(args, { corr });
       const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? WAIT_DEFAULT_MS);
-      if (waitMs <= 0) return peekResult(deviceId, corr);
-      return waitForResult(deviceId, corr, waitMs);
+      if (waitMs <= 0) return withTiming(await peekResult(deviceId, corr, trace), trace);
+      return withTiming(await waitForResult(deviceId, corr, waitMs, trace), trace);
     }
 
     if (name === "wait") {
@@ -351,7 +415,7 @@ export function createOperator({
       if (!corr) throw new Error("corr required");
       const deviceId = resolveDevice(args, { corr });
       const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? WAIT_TOOL_DEFAULT_MS);
-      return waitForResult(deviceId, corr, waitMs);
+      return withTiming(await waitForResult(deviceId, corr, waitMs, trace), trace);
     }
 
     if (name === "read_screen") {
@@ -359,8 +423,8 @@ export function createOperator({
       const deviceId = resolveDevice(args, { corr });
       const body = { device_id: deviceId };
       if (corr) body.corr = corr;
-      const row = await rpc("/v1/read_screen", body);
-      return withDevice(row, deviceId);
+      const row = await callRpc(trace, "/v1/read_screen", body);
+      return withTiming(withDevice(row, deviceId), trace);
     }
 
     if (name === "type") {
@@ -371,8 +435,8 @@ export function createOperator({
       if (args.key != null && String(args.key) !== "") body.key = String(args.key);
       if (body.keys == null && body.key) body.keys = body.key;
       if (args.corr != null && String(args.corr) !== "") body.corr = args.corr;
-      const row = await rpc("/v1/type", body);
-      return withDevice(row, deviceId);
+      const row = await callRpc(trace, "/v1/type", body);
+      return withTiming(withDevice(row, deviceId), trace);
     }
 
     throw new Error(`unknown tool ${name}`);

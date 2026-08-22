@@ -118,7 +118,11 @@ function mcp() {
         }
         if (msg.method === "tools/call") {
           const out = await callTool(msg.params?.name, msg.params?.arguments ?? {});
-          reply(id, { content: [{ type: "text", text: formatMcpText(msg.params?.name, out) }] });
+          const payload = { content: [{ type: "text", text: formatMcpText(msg.params?.name, out, process.env) }] };
+          if (out && typeof out === "object" && out.timing && out.timing.total_ms != null) {
+            payload._meta = { duration_ms: out.timing.total_ms };
+          }
+          reply(id, payload);
           continue;
         }
         reply(id, {});

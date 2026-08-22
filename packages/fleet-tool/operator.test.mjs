@@ -14,6 +14,7 @@ import {
   createOperator,
   deviceMismatchMessage,
   formatMcpText,
+  isFleetDev,
   isFinishedResult,
   parseOptionalMs,
   shQuote,
@@ -498,6 +499,60 @@ test("formatMcpText does not force list/set/current through the shell formatter"
   assert.match(cur, /last_used/);
 });
 
-test("MCP version is 0.2.6", () => {
-  assert.equal(FLEET_VERSION, "0.2.6");
+test("isFleetDev accepts 1/true/yes and is off by default", () => {
+  assert.equal(isFleetDev({}), false);
+  assert.equal(isFleetDev({ FLEET_DEV: "0" }), false);
+  assert.equal(isFleetDev({ FLEET_DEV: "1" }), true);
+  assert.equal(isFleetDev({ FLEET_DEV: "true" }), true);
+  assert.equal(isFleetDev({ FLEET_DEV: "YES" }), true);
+});
+
+test("FLEET_DEV off leaves formatMcpText unchanged and records no timing", async () => {
+  const time = clock();
+  const { rpc } = mockRpc({
+    "/v1/run": async () => {
+      await time.sleep(10);
+      return { corr: "c-off", status: "running" };
+    },
+    "/v1/get_result": async () => {
+      await time.sleep(20);
+      return { status: "done", corr: "c-off", ok: true, exit_code: 0, stdout: "hi" };
+    },
+  });
+  const op = createOperator({ rpc, now: time.now, sleep: time.sleep });
+  const out = await op.callTool("run", { device_id: "mac-1", command: "pwd" });
+  assert.equal(out.timing, undefined);
+  const text = formatMcpText("run", out);
+  assert.equal(text, "hi");
+  assert.equal(text.includes("fleet-dev"), false);
+});
+
+test("FLEET_DEV on records hop ms and appends trailer after stdout", async () => {
+  const time = clock();
+  const { rpc } = mockRpc({
+    "/v1/run": async () => {
+      await time.sleep(336);
+      return { corr: "c-dev", status: "running" };
+    },
+    "/v1/get_result": async () => {
+      await time.sleep(323);
+      return { status: "done", corr: "c-dev", ok: true, exit_code: 0, stdout: "hi" };
+    },
+  });
+  const env = { FLEET_DEV: "1" };
+  const op = createOperator({ rpc, now: time.now, sleep: time.sleep, env });
+  const out = await op.callTool("run", { device_id: "mac-1", command: "pwd" });
+  assert.ok(out.timing);
+  assert.equal(out.timing.poll_count, 1);
+  assert.equal(out.timing.hops.find((h) => h.path === "/v1/run")?.ms, 336);
+  assert.equal(out.timing.hops.find((h) => h.path === "/v1/get_result")?.ms, 323);
+  assert.ok(out.timing.total_ms >= 336 + 323);
+  const text = formatMcpText("run", out, env);
+  assert.ok(text.startsWith("hi\n"));
+  assert.match(text, /# fleet-dev  total=\d+ms  run=336ms  get_result=323ms x1/);
+  assert.equal(text.includes("{"), false);
+});
+
+test("MCP version is 0.2.7", () => {
+  assert.equal(FLEET_VERSION, "0.2.7");
 });

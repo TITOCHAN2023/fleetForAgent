@@ -3,6 +3,7 @@ import {Composition} from 'remotion';
 import {Architecture} from './Architecture';
 import {FlowLoop} from './FlowLoop';
 import {DEFAULT_SCENE_FRAMES, INTRO_DURATION, INTRO_FPS, Intro, type IntroProps} from './Intro';
+import {IntroPortrait} from './IntroPortrait';
 
 const introMeta = async ({props}: {props: IntroProps}) => {
   const frames = props.sceneFrames?.length === 6 ? props.sceneFrames : DEFAULT_SCENE_FRAMES;
@@ -30,6 +31,16 @@ export const RemotionRoot: React.FC = () => {
         width={1920}
         height={1080}
         defaultProps={{locale: 'en', sceneFrames: DEFAULT_SCENE_FRAMES}}
+        calculateMetadata={introMeta}
+      />
+      <Composition
+        id="IntroZHDY"
+        component={IntroPortrait}
+        durationInFrames={INTRO_DURATION}
+        fps={INTRO_FPS}
+        width={1080}
+        height={1920}
+        defaultProps={{locale: 'zhdy', sceneFrames: DEFAULT_SCENE_FRAMES}}
         calculateMetadata={introMeta}
       />
       <Composition

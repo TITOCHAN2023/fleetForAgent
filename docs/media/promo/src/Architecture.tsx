@@ -8,27 +8,12 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from 'remotion';
-import {AMBER, BLUE, FONT, MINT, MUTED, ROSE, TEXT, fadeInOut} from './theme';
+import {AMBER, BG, BLUE, FONT, FONT_TITLE, HAIR, LIFT, MINT, MUTED, OpenBg, PANEL, PURPLE, ROSE, TEXT, fadeInOut} from './theme';
 
 const Background: React.FC = () => {
   const frame = useCurrentFrame();
-  const shift = Math.sin(frame / 80) * 10;
-  return (
-    <AbsoluteFill
-      style={{
-        background: `radial-gradient(110% 90% at ${48 + shift}% -10%, #16324a 0%, #070b14 42%, #05070c 100%)`,
-      }}
-    >
-      <svg width="1920" height="1080" style={{position: 'absolute', inset: 0, opacity: 0.18}}>
-        {Array.from({length: 16}).map((_, i) => (
-          <line key={`v${i}`} x1={120 * i} y1={0} x2={120 * i} y2={1080} stroke="#6ea8ff" strokeWidth="1" />
-        ))}
-        {Array.from({length: 10}).map((_, i) => (
-          <line key={`h${i}`} x1={0} y1={108 * i} x2={1920} y2={108 * i} stroke="#6ea8ff" strokeWidth="1" />
-        ))}
-      </svg>
-    </AbsoluteFill>
-  );
+  const {width, height} = useVideoConfig();
+  return <OpenBg width={width} height={height} frame={frame} />;
 };
 
 const Wordmark: React.FC = () => (
@@ -41,7 +26,8 @@ const Wordmark: React.FC = () => (
       letterSpacing: 3,
       fontSize: 22,
       fontWeight: 700,
-      color: MINT,
+      color: TEXT,
+      fontFamily: FONT_TITLE,
     }}
   >
     FLEET
@@ -73,9 +59,9 @@ const NodeCard: React.FC<{
         opacity: s,
         transform: `translateY(${(1 - s) * 24}px) scale(${0.94 + s * 0.06})`,
         borderRadius: 24,
-        border: `2px solid ${color}`,
-        background: `linear-gradient(165deg, ${color}40, #152033f2)`,
-        boxShadow: `0 18px 50px ${color}33`,
+        border: `1.5px solid ${HAIR}`,
+        background: PANEL,
+        boxShadow: '0 12px 32px rgba(0,0,0,0.06)',
         padding: 22,
         fontFamily: FONT,
         display: 'flex',
@@ -85,7 +71,7 @@ const NodeCard: React.FC<{
       }}
     >
       <div style={{color, fontSize: 16, fontWeight: 700, letterSpacing: 2}}>{kicker}</div>
-      <div style={{color: TEXT, fontSize: 32, fontWeight: 800, lineHeight: 1.15}}>{title}</div>
+      <div style={{color: TEXT, fontSize: 32, fontWeight: 800, lineHeight: 1.15, fontFamily: FONT_TITLE}}>{title}</div>
       <div style={{color: MUTED, fontSize: 18, fontWeight: 500}}>{sub}</div>
     </div>
   );
@@ -140,6 +126,7 @@ const SceneTitle: React.FC = () => {
           fontSize: 78,
           fontWeight: 900,
           color: TEXT,
+          fontFamily: FONT_TITLE,
           opacity: b,
           transform: `translateY(${(1 - b) * 24}px)`,
           textAlign: 'center',
@@ -176,7 +163,7 @@ const SceneFan: React.FC = () => {
   return (
     <AbsoluteFill style={{opacity: fadeInOut(frame, 180, 12), fontFamily: FONT}}>
       <Wordmark />
-      <div style={{position: 'absolute', top: 88, width: '100%', textAlign: 'center', color: TEXT, fontSize: 40, fontWeight: 800}}>
+      <div style={{position: 'absolute', top: 88, width: '100%', textAlign: 'center', color: TEXT, fontSize: 40, fontWeight: 800, fontFamily: FONT_TITLE}}>
         Tool → cloud hub → every OS over WebSocket
       </div>
       <FanLines grow={grow} />
@@ -198,7 +185,7 @@ const ScenePackets: React.FC = () => {
   return (
     <AbsoluteFill style={{opacity: fadeInOut(frame, 180, 12), fontFamily: FONT}}>
       <Wordmark />
-      <div style={{position: 'absolute', top: 88, width: '100%', textAlign: 'center', color: TEXT, fontSize: 40, fontWeight: 800}}>
+      <div style={{position: 'absolute', top: 88, width: '100%', textAlign: 'center', color: TEXT, fontSize: 40, fontWeight: 800, fontFamily: FONT_TITLE}}>
         Pick a machine. Run. Get the result. From anywhere.
       </div>
       <FanLines grow={1} />
@@ -207,14 +194,14 @@ const ScenePackets: React.FC = () => {
       <NodeCard x={1380} y={150} w={460} h={180} color={BLUE} delay={0} kicker="WIN" title="MySuperPC" sub="executes locally" />
       <NodeCard x={1380} y={400} w={460} h={180} color={MINT} delay={0} kicker="LINUX" title="colo box" sub="executes locally" />
       <NodeCard x={1380} y={650} w={460} h={180} color={ROSE} delay={0} kicker="MAC" title="888-test" sub="executes locally" />
-      <Packet x1={430} y1={540} x2={720} y2={540} progress={t < 0.28 ? t / 0.28 : 1} color={AMBER} />
-      <Packet x1={1120} y1={420} x2={1380} y2={250} progress={t > 0.18 && t < 0.48 ? (t - 0.18) / 0.3 : t >= 0.48 && t < 0.55 ? 1 : 0} color={BLUE} />
-      <Packet x1={1120} y1={540} x2={1380} y2={540} progress={t > 0.22 && t < 0.52 ? (t - 0.22) / 0.3 : t >= 0.52 && t < 0.58 ? 1 : 0} color={MINT} />
-      <Packet x1={1120} y1={660} x2={1380} y2={830} progress={t > 0.26 && t < 0.56 ? (t - 0.26) / 0.3 : t >= 0.56 && t < 0.62 ? 1 : 0} color={ROSE} />
-      <Packet x1={1380} y1={250} x2={1120} y2={420} progress={t > 0.55 && t < 0.82 ? (t - 0.55) / 0.27 : 0} color={BLUE} />
-      <Packet x1={1380} y1={540} x2={1120} y2={540} progress={t > 0.58 && t < 0.85 ? (t - 0.58) / 0.27 : 0} color={MINT} />
-      <Packet x1={1380} y1={830} x2={1120} y2={660} progress={t > 0.61 && t < 0.88 ? (t - 0.61) / 0.27 : 0} color={ROSE} />
-      <Packet x1={720} y1={540} x2={430} y2={540} progress={t > 0.78 ? (t - 0.78) / 0.22 : 0} color={AMBER} />
+      <Packet x1={430} y1={540} x2={720} y2={540} progress={t < 0.28 ? t / 0.28 : 1} color={PURPLE} />
+      <Packet x1={1120} y1={420} x2={1380} y2={250} progress={t > 0.18 && t < 0.48 ? (t - 0.18) / 0.3 : t >= 0.48 && t < 0.55 ? 1 : 0} color={PURPLE} />
+      <Packet x1={1120} y1={540} x2={1380} y2={540} progress={t > 0.22 && t < 0.52 ? (t - 0.22) / 0.3 : t >= 0.52 && t < 0.58 ? 1 : 0} color={PURPLE} />
+      <Packet x1={1120} y1={660} x2={1380} y2={830} progress={t > 0.26 && t < 0.56 ? (t - 0.26) / 0.3 : t >= 0.56 && t < 0.62 ? 1 : 0} color={PURPLE} />
+      <Packet x1={1380} y1={250} x2={1120} y2={420} progress={t > 0.55 && t < 0.82 ? (t - 0.55) / 0.27 : 0} color={PURPLE} />
+      <Packet x1={1380} y1={540} x2={1120} y2={540} progress={t > 0.58 && t < 0.85 ? (t - 0.58) / 0.27 : 0} color={PURPLE} />
+      <Packet x1={1380} y1={830} x2={1120} y2={660} progress={t > 0.61 && t < 0.88 ? (t - 0.61) / 0.27 : 0} color={PURPLE} />
+      <Packet x1={720} y1={540} x2={430} y2={540} progress={t > 0.78 ? (t - 0.78) / 0.22 : 0} color={PURPLE} />
     </AbsoluteFill>
   );
 };
@@ -237,7 +224,7 @@ const SceneKeys: React.FC = () => {
         alignItems: 'center',
       }}
     >
-      <div style={{fontSize: 44, fontWeight: 900, color: TEXT, marginBottom: 40}}>
+      <div style={{fontSize: 44, fontWeight: 900, color: TEXT, marginBottom: 40, fontFamily: FONT_TITLE}}>
         Four values. Then every machine is reachable.
       </div>
       <div style={{display: 'flex', gap: 20}}>
@@ -252,13 +239,13 @@ const SceneKeys: React.FC = () => {
                 opacity: s,
                 transform: `translateY(${(1 - s) * 22}px)`,
                 borderRadius: 22,
-                background: '#101826',
-                border: `1px solid ${MINT}55`,
+                background: PANEL,
+                border: `1px solid ${HAIR}`,
                 padding: 26,
               }}
             >
               <div style={{color: MINT, fontSize: 20, fontWeight: 800}}>{st.n}</div>
-              <div style={{color: TEXT, fontSize: 30, fontWeight: 800, marginTop: 16}}>{st.t}</div>
+              <div style={{color: TEXT, fontSize: 30, fontWeight: 800, marginTop: 16, fontFamily: FONT_TITLE}}>{st.t}</div>
               <div style={{color: MUTED, fontSize: 20, marginTop: 12}}>{st.s}</div>
             </div>
           );
@@ -275,7 +262,7 @@ const SceneCloud: React.FC = () => {
   const right = spring({frame: frame - 12, fps, config: {damping: 14}});
   return (
     <AbsoluteFill style={{opacity: fadeInOut(frame, 150, 12), fontFamily: FONT, justifyContent: 'center', alignItems: 'center'}}>
-      <div style={{fontSize: 42, fontWeight: 900, color: TEXT, marginBottom: 48}}>
+      <div style={{fontSize: 42, fontWeight: 900, color: TEXT, marginBottom: 48, fontFamily: FONT_TITLE}}>
         Local deploy cannot run a fleet. Cloud is the product.
       </div>
       <div style={{display: 'flex', gap: 36}}>
@@ -286,13 +273,13 @@ const SceneCloud: React.FC = () => {
             opacity: left,
             transform: `translateX(${(1 - left) * -30}px)`,
             borderRadius: 24,
-            border: '2px solid #3a4558',
+            border: `1px solid ${HAIR}`,
             padding: 36,
-            background: '#0c1220',
+            background: PANEL,
           }}
         >
           <div style={{color: MUTED, fontSize: 22, fontWeight: 800, letterSpacing: 2}}>LOCAL  npm run dev</div>
-          <div style={{color: TEXT, fontSize: 40, fontWeight: 800, marginTop: 20}}>At most a CLI</div>
+          <div style={{color: TEXT, fontSize: 40, fontWeight: 800, marginTop: 20, fontFamily: FONT_TITLE}}>At most a CLI</div>
           <div style={{color: MUTED, fontSize: 24, marginTop: 16, lineHeight: 1.4}}>
             127.0.0.1 only. Other OS cannot join. No “from anywhere.” Local hub never becomes the product.
           </div>
@@ -304,13 +291,13 @@ const SceneCloud: React.FC = () => {
             opacity: right,
             transform: `translateX(${(1 - right) * 30}px)`,
             borderRadius: 24,
-            border: `2px solid ${MINT}`,
+            border: `1.5px solid ${TEXT}`,
             padding: 36,
-            background: `${MINT}14`,
+            background: LIFT,
           }}
         >
           <div style={{color: MINT, fontSize: 22, fontWeight: 800, letterSpacing: 2}}>CLOUD  fleet.ginfo.cc</div>
-          <div style={{color: TEXT, fontSize: 40, fontWeight: 800, marginTop: 20}}>This is where it works</div>
+          <div style={{color: TEXT, fontSize: 40, fontWeight: 800, marginTop: 20, fontFamily: FONT_TITLE}}>This is where it works</div>
           <div style={{color: MUTED, fontSize: 24, marginTop: 16, lineHeight: 1.4}}>
             Deploy the hub in the cloud. Agents on Windows, Linux, and macOS dial out. One tool reaches every PC.
           </div>
@@ -334,8 +321,8 @@ const SceneCta: React.FC = () => {
       }}
     >
       <div style={{opacity: s, transform: `scale(${0.92 + s * 0.08})`, textAlign: 'center'}}>
-        <div style={{fontSize: 28, letterSpacing: 6, color: MINT, fontWeight: 700, marginBottom: 18}}>TRY IT FIRST</div>
-        <div style={{fontSize: 72, fontWeight: 900, color: TEXT}}>fleet.ginfo.cc</div>
+        <div style={{fontSize: 28, letterSpacing: 6, color: MUTED, fontWeight: 700, marginBottom: 18}}>TRY IT FIRST</div>
+        <div style={{fontSize: 72, fontWeight: 900, color: TEXT, fontFamily: FONT_TITLE}}>fleet.ginfo.cc</div>
         <div style={{marginTop: 28, fontSize: 32, color: MUTED}}>
           Log in · mint a token · install Agent · import the tool
         </div>
@@ -346,7 +333,7 @@ const SceneCta: React.FC = () => {
 
 export const Architecture: React.FC = () => {
   return (
-    <AbsoluteFill style={{background: '#070b14'}}>
+    <AbsoluteFill style={{background: BG}}>
       <Background />
       <Sequence from={0} durationInFrames={90}>
         <SceneTitle />

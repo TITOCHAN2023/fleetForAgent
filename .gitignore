@@ -1,38 +1,62 @@
+# --- build & deps ---
 node_modules
 dist
 .output
 .vinxi
 .tanstack
 .vite
+coverage
+*.log
+.DS_Store
+__pycache__/
+*.pyc
+
+# --- env & local tooling ---
 .env
 .env.*
 !.env.example
-*.log
-.DS_Store
-screenshots
-artifacts
-packages/fleet-agent/dist
 packages/fleet-worker/.dev.vars
-coverage
 .grok/
 AGENTS.md
 AGENTS.project.md
+screenshots
+artifacts
 
-# Remotion intermediates (final GIF/MP4/PNG live in docs/media/)
-docs/media/promo/out
-docs/media/brand-preview
-docs/media/brand/logo-64.b64.txt
-docs/media/promo/vo/listen/
-docs/media/promo/vo/probe/
-docs/media/promo/vo/en-prompt/
-!docs/media/promo/vo/en-prompt/dongbai-en.wav
-
-# Agent installers live on GitHub Releases
+# --- agent binaries (published on GitHub Releases) ---
+packages/fleet-agent/dist
+packages/fleet-agent/linuxpack
+packages/fleet-agent/ui/AppIcon.icns
 public/dl/*.exe
 public/dl/*.dmg
 public/dl/*.zip
 public/dl/*.tar.gz
+public/dl/checksums-*
+!public/dl/checksums.txt
 public/releases/*.exe
 public/releases/*.dmg
 public/releases/*.zip
 public/releases/*.tar.gz
+
+# --- media: finals live in docs/media/; promo source stays, drafts do not ---
+docs/media/promo/out/
+docs/media/promo/public/fonts/
+docs/media/brand-preview/
+docs/media/brand/logo-64.b64.txt
+
+# TTS / mux / stills / voice-clone samples
+docs/media/promo/vo/**/*.wav
+docs/media/promo/vo/**/*.m4a
+docs/media/promo/vo/**/*.mp3
+docs/media/promo/vo/**/*.png
+docs/media/promo/vo/**/asr.json
+docs/media/promo/vo/**/aligned.json
+docs/media/promo/vo/listen/
+docs/media/promo/vo/probe/
+docs/media/promo/vo/en-prompt/
+docs/media/promo/vo/titochan/
+docs/media/promo/vo/timing.json
+
+# one-off TTS probes
+docs/media/promo/scripts/probe_*.py
+docs/media/promo/scripts/tts_probe.py
+docs/media/promo/scripts/listen_asr.py

@@ -1,19 +1,24 @@
 # Media kit
 
-Assets for the README, docs, and a later intro video. Diagrams are drawn in code (SVG + Remotion) so labels stay exact.
+Committed files are **finals** (README / site / social). Remotion source lives in `promo/`; renders, TTS wavs, and font files stay local.
 
 ```
 docs/media/
-  title.png                 README hero / video title card
-  architecture.svg          static labeled diagram (README)
-  architecture-flow.gif     looping packet flow (README)
-  architecture.png          1920×1080 still of the round-trip scene
-  principle.png             outbound-only still
+  title.png                 README hero
+  architecture.svg          static labeled diagram
+  architecture-flow.gif     looping packet flow
+  architecture.png          1920×1080 still of the fan-out scene
+  principle.png             local vs cloud still
   setup.png                 four-step setup still
-  architecture.mp4          30s explainer (silent; seed for the later video)
-  SCRIPT.md                 voiceover + shot list for that video
-  promo/                    Remotion source — re-render from here
+  architecture.mp4          30s silent explainer
+  intro-zh.mp4              official site (洞白)
+  intro-en.mp4              Twitter
+  intro-zh-douyin.mp4       Douyin 9:16
+  brand/                    logos / favicons
+  promo/                    Remotion source (src, scripts, package.json)
 ```
+
+Not committed (see repo `.gitignore`): `promo/out/`, `promo/vo/**/*.wav`, `promo/public/fonts/`, `brand-preview/`.
 
 ## Use in README
 
@@ -22,34 +27,34 @@ docs/media/
 ![How a command travels](docs/media/architecture-flow.gif)
 ```
 
-GitHub does not autoplay MP4 in READMEs. Keep the GIF in the README; host the MP4 on GitHub Releases or YouTube when the spoken intro is ready.
+GitHub does not autoplay MP4 in READMEs. Keep the GIF in the README.
 
 ## Re-render
 
-Windows: Remotion is pointed at Edge in `promo/remotion.config.ts`.
+Windows: Remotion is pointed at Edge in `promo/remotion.config.ts`. Fonts are local under `promo/public/fonts/` (not in git).
 
 ```bash
 cd docs/media/promo
 npm install
-npm run studio          # preview
+npm run studio
 npm run render          # out/architecture.mp4
 npm run render:loop     # out/flow-loop.mp4
-npm run still           # out/architecture.png  (frame 200 = fan-out scene)
+npm run render:intro-zh
+npm run render:intro-en
+npm run render:intro-zhdy
 ```
 
 Then copy / convert into this folder:
 
 ```bash
-ffmpeg -y -i out/flow-loop.mp4 -vf "fps=12,eq=brightness=0.04:contrast=1.08,scale=960:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=full:reserve_transparent=0[p];[s1][p]paletteuse=dither=none" ../architecture-flow.gif
+ffmpeg -y -i out/flow-loop.mp4 -vf "fps=12,scale=960:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=full:reserve_transparent=0[p];[s1][p]paletteuse=dither=none" ../architecture-flow.gif
 npx remotion still Architecture ../architecture.png --frame=200
 npx remotion still Architecture ../title.png --frame=55
 npx remotion still Architecture ../setup.png --frame=520
 npx remotion still Architecture ../principle.png --frame=670
 copy out\architecture.mp4 ..\architecture.mp4
+python scripts/mux_intro.py zh en zhdy
+copy out\intro-zh.mp4 ..\intro-zh.mp4
+copy out\intro-en.mp4 ..\intro-en.mp4
+copy out\intro-zhdy.mp4 ..\intro-zh-douyin.mp4
 ```
-
-`promo/node_modules` and `promo/out` are not committed.
-
-## Later intro video
-
-See [SCRIPT.md](SCRIPT.md). The 24s MP4 is the visual bed: add voiceover + optional screen recordings of login / token / agent tray.

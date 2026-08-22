@@ -1,49 +1,61 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" role="img" aria-label="Fleet: one MCP tool talks to fleet.ginfo.cc, which fans out over WebSocket to Windows, Linux, and macOS agents">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#122033"/>
-      <stop offset="100%" stop-color="#070b14"/>
-    </linearGradient>
+    <pattern id="grid" width="108" height="108" patternUnits="userSpaceOnUse">
+      <path d="M 108 0 L 0 0 0 108" fill="none" stroke="#E6E6E6" stroke-width="1"/>
+    </pattern>
   </defs>
-  <rect width="1280" height="640" rx="28" fill="url(#bg)"/>
-  <text x="40" y="42" fill="#3ee0c5" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" letter-spacing="3">FLEET.GINFO.CC</text>
-  <text x="640" y="44" text-anchor="middle" fill="#eef3ff" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="20" font-weight="700">One tool. Windows + Linux + macOS. Anywhere.</text>
+  <rect width="1280" height="640" rx="28" fill="#FFFFFF"/>
+  <rect width="1280" height="640" rx="28" fill="url(#grid)" opacity="0.9"/>
+  <circle cx="154" cy="115" r="3" fill="#8B5CFF" opacity="0.7"/>
+  <circle cx="998" cy="90" r="2" fill="#8B5CFF" opacity="0.55"/>
+  <circle cx="1165" cy="269" r="3.5" fill="#8B5CFF" opacity="0.7"/>
+  <circle cx="230" cy="397" r="2.5" fill="#8B5CFF" opacity="0.55"/>
+  <circle cx="666" cy="51" r="2" fill="#8B5CFF" opacity="0.5"/>
+  <circle cx="819" cy="499" r="3" fill="#8B5CFF" opacity="0.7"/>
+  <circle cx="102" cy="563" r="2" fill="#8B5CFF" opacity="0.5"/>
+  <circle cx="1101" cy="461" r="2.5" fill="#8B5CFF" opacity="0.55"/>
 
-  <rect x="36" y="220" width="250" height="200" rx="20" fill="#101826" stroke="#f0c14a" stroke-width="2"/>
-  <text x="56" y="258" fill="#f0c14a" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="2">TOOL</text>
-  <text x="56" y="300" fill="#eef3ff" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="800">Cursor / Claude</text>
-  <text x="56" y="332" fill="#8b97ad" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14">MCP operator</text>
-  <text x="56" y="390" fill="#8b97ad" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13">URL + token</text>
+  <text x="40" y="42" fill="#111111" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" letter-spacing="3">FLEET</text>
+  <text x="640" y="44" text-anchor="middle" fill="#111111" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="20" font-weight="700">One tool. Windows + Linux + macOS. Anywhere.</text>
 
-  <line x1="286" y1="320" x2="430" y2="320" stroke="#f0c14a" stroke-width="3"/>
-  <polygon points="430,314 444,320 430,326" fill="#3ee0c5"/>
-  <text x="358" y="306" text-anchor="middle" fill="#f0c14a" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12">HTTPS</text>
+  <rect x="36" y="220" width="250" height="200" rx="20" fill="#F4F4F4" stroke="#D4D4D4" stroke-width="1.5"/>
+  <text x="56" y="258" fill="#2E2E2E" font-family="Excalifont, Segoe Script, cursive" font-size="13" font-weight="700" letter-spacing="2">TOOL</text>
+  <text x="56" y="300" fill="#111111" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="800">Cursor / Claude</text>
+  <text x="56" y="332" fill="#6B6B6B" font-family="Excalifont, Segoe Script, cursive" font-size="14">MCP operator</text>
+  <text x="56" y="390" fill="#6B6B6B" font-family="Excalifont, Segoe Script, cursive" font-size="13">URL + token</text>
 
-  <rect x="444" y="200" width="280" height="240" rx="20" fill="#101826" stroke="#3ee0c5" stroke-width="2"/>
-  <text x="464" y="242" fill="#3ee0c5" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="2">SERVER</text>
-  <text x="464" y="286" fill="#eef3ff" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="800">fleet.ginfo.cc</text>
-  <text x="464" y="318" fill="#8b97ad" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Cloud hub</text>
-  <text x="464" y="400" fill="#8b97ad" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13">WSS /v1/device</text>
+  <line x1="286" y1="320" x2="430" y2="320" stroke="#2E2E2E" stroke-width="3"/>
+  <circle cx="358" cy="320" r="7" fill="#8B5CFF"/>
+  <text x="358" y="306" text-anchor="middle" fill="#6B6B6B" font-family="Excalifont, Segoe Script, cursive" font-size="12">HTTPS</text>
 
-  <line x1="724" y1="250" x2="860" y2="140" stroke="#6ea8ff" stroke-width="2"/>
-  <line x1="724" y1="320" x2="860" y2="320" stroke="#3ee0c5" stroke-width="2"/>
-  <line x1="724" y1="390" x2="860" y2="500" stroke="#ff7b8a" stroke-width="2"/>
+  <rect x="444" y="200" width="280" height="240" rx="20" fill="#F4F4F4" stroke="#D4D4D4" stroke-width="1.5"/>
+  <text x="464" y="242" fill="#111111" font-family="Excalifont, Segoe Script, cursive" font-size="13" font-weight="700" letter-spacing="2">SERVER</text>
+  <text x="464" y="286" fill="#111111" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="800">fleet.ginfo.cc</text>
+  <text x="464" y="318" fill="#6B6B6B" font-family="Excalifont, Segoe Script, cursive" font-size="14">Cloud hub</text>
+  <text x="464" y="400" fill="#6B6B6B" font-family="Excalifont, Segoe Script, cursive" font-size="13">WSS /v1/device</text>
 
-  <rect x="860" y="70" width="380" height="120" rx="18" fill="#101826" stroke="#6ea8ff" stroke-width="2"/>
-  <text x="880" y="108" fill="#6ea8ff" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="2">WINDOWS</text>
-  <text x="880" y="148" fill="#eef3ff" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="800">amd64 Agent</text>
-  <text x="880" y="172" fill="#8b97ad" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13">outbound WebSocket</text>
+  <line x1="724" y1="250" x2="860" y2="140" stroke="#4A4A4A" stroke-width="2"/>
+  <line x1="724" y1="320" x2="860" y2="320" stroke="#111111" stroke-width="2"/>
+  <line x1="724" y1="390" x2="860" y2="500" stroke="#6B6B6B" stroke-width="2"/>
+  <circle cx="792" cy="195" r="7" fill="#8B5CFF"/>
+  <circle cx="792" cy="320" r="7" fill="#8B5CFF"/>
+  <circle cx="792" cy="445" r="7" fill="#8B5CFF"/>
 
-  <rect x="860" y="250" width="380" height="120" rx="18" fill="#101826" stroke="#3ee0c5" stroke-width="2"/>
-  <text x="880" y="288" fill="#3ee0c5" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="2">LINUX</text>
-  <text x="880" y="328" fill="#eef3ff" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="800">amd64 / arm64 Agent</text>
-  <text x="880" y="352" fill="#8b97ad" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13">outbound WebSocket</text>
+  <rect x="860" y="70" width="380" height="120" rx="18" fill="#F4F4F4" stroke="#D4D4D4" stroke-width="1.5"/>
+  <text x="880" y="108" fill="#4A4A4A" font-family="Excalifont, Segoe Script, cursive" font-size="13" font-weight="700" letter-spacing="2">WINDOWS</text>
+  <text x="880" y="148" fill="#111111" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="800">amd64 Agent</text>
+  <text x="880" y="172" fill="#6B6B6B" font-family="Excalifont, Segoe Script, cursive" font-size="13">outbound WebSocket</text>
 
-  <rect x="860" y="430" width="380" height="120" rx="18" fill="#101826" stroke="#ff7b8a" stroke-width="2"/>
-  <text x="880" y="468" fill="#ff7b8a" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="2">MACOS</text>
-  <text x="880" y="508" fill="#eef3ff" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="800">arm64 / amd64 Agent</text>
-  <text x="880" y="532" fill="#8b97ad" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13">outbound WebSocket</text>
+  <rect x="860" y="250" width="380" height="120" rx="18" fill="#F4F4F4" stroke="#D4D4D4" stroke-width="1.5"/>
+  <text x="880" y="288" fill="#111111" font-family="Excalifont, Segoe Script, cursive" font-size="13" font-weight="700" letter-spacing="2">LINUX</text>
+  <text x="880" y="328" fill="#111111" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="800">amd64 / arm64 Agent</text>
+  <text x="880" y="352" fill="#6B6B6B" font-family="Excalifont, Segoe Script, cursive" font-size="13">outbound WebSocket</text>
 
-  <rect x="70" y="560" width="1140" height="52" rx="14" fill="#0c1422" stroke="#1e2d44"/>
-  <text x="640" y="594" text-anchor="middle" fill="#c5d0e0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="16">Import the tool with this URL + token. Every Agent that dialed out is reachable from anywhere.</text>
+  <rect x="860" y="430" width="380" height="120" rx="18" fill="#F4F4F4" stroke="#D4D4D4" stroke-width="1.5"/>
+  <text x="880" y="468" fill="#6B6B6B" font-family="Excalifont, Segoe Script, cursive" font-size="13" font-weight="700" letter-spacing="2">MACOS</text>
+  <text x="880" y="508" fill="#111111" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="800">arm64 / amd64 Agent</text>
+  <text x="880" y="532" fill="#6B6B6B" font-family="Excalifont, Segoe Script, cursive" font-size="13">outbound WebSocket</text>
+
+  <rect x="70" y="560" width="1140" height="52" rx="14" fill="#F4F4F4" stroke="#D4D4D4"/>
+  <text x="640" y="594" text-anchor="middle" fill="#6B6B6B" font-family="Excalifont, Segoe Script, cursive" font-size="16">Import the tool with this URL + token. Every Agent that dialed out is reachable from anywhere.</text>
 </svg>

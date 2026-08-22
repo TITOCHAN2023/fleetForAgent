@@ -2,14 +2,17 @@
   "voice": "洞白",
   "voices": {
     "zh": "洞白",
-    "en": "洞白en"
+    "zhdy": "titochan",
+    "en": "titochan-en"
   },
   "speed": 1.0,
   "prompt_text": "这里是有点脏的但是是鞋底",
   "ref_audio": "G:\\project\\F5-TTS\\origin_audio\\洞白\\洞白.MP3",
-  "en_ref_audio": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\en-prompt\\dongbai-en.wav",
-  "en_prompt_text": "Please come in and take a seat so we can begin now.",
-  "notes": "中文口播用洞白原音。英文先用洞白合成一句流畅英语，再把该 wav 登记为洞白en 当源头。英文少用句号，避免句尾杂音。",
+  "titochan_audio": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\titochan\\zh.wav",
+  "titochan_prompt": "生活就像海洋，只有意志坚定的人才能到达彼岸",
+  "en_ref_audio": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\titochan\\en.wav",
+  "en_prompt_text": "Old tokens die immediately. Re-paste on every agent and tool.",
+  "notes": "官网中文仍用洞白。抖音中文、推特英文用 titochan 录音。推广口播用长句，直接念 Codex / Claude，不讲循环等术语。",
   "langs": {
     "zh": [
       {
@@ -43,36 +46,68 @@
         "text": "先打开画面上的网站体验。登录，装上程序，导入工具。一个工具，你的所有电脑。"
       }
     ],
-    "en": [
+    "zhdy": [
       {
         "id": "01-pain",
-        "seconds": 12,
-        "text": "Your helper is already strong and your computers are still scattered so home and work never line up"
+        "seconds": 15,
+        "text": "你是不是也在 Codex 里遇到过，助手明明很强，可它出不去眼前这台电脑，官方远程软件也一样，往往只能盯住某一台，家里公司机房永远对不齐。"
       },
       {
         "id": "02-product",
-        "seconds": 10,
-        "text": "This does not replace your mind and any helper can load one tool and reach every computer you own"
+        "seconds": 14,
+        "text": "我们不替代你的助手，随便哪个助手挂上一个工具，就能像本机上的 Claude 和 Codex 一样去用你名下每一台电脑，而且不限系统。"
       },
       {
         "id": "03-principle",
-        "seconds": 20,
-        "text": "Your helper only talks to the cloud hub and each computer reaches out by itself so the job runs on the one you pick and comes back"
+        "seconds": 16,
+        "text": "助手连到云上，每台电脑自己连出去，家里公司机房哪种电脑都行，你选哪台就在哪台干活，结果再回来。"
       },
       {
         "id": "04-collab",
         "seconds": 13,
-        "text": "When the official channel dies the context dies with it and we bind to the hub so your fleet is still there"
+        "text": "换到 Grok 或者 GPT，只要导入我们的工具，多台电脑就能一起用，不限 Windows，也不限 Mac。"
       },
       {
         "id": "05-setup",
-        "seconds": 13,
-        "text": "You need the website and a token and a program on each computer and then put the server in the cloud"
+        "seconds": 14,
+        "text": "四样东西，地址、令牌、每台电脑装上程序、再把工具导入助手，如果服务只装在自己这一台，别的电脑就加不进来，要随时随地就放到云上。"
       },
       {
         "id": "06-cta",
         "seconds": 7,
-        "text": "Open the website on screen and use one tool for all your computers"
+        "text": "一个工具，所有电脑，随时随地"
+      }
+    ],
+    "en": [
+      {
+        "id": "01-pain",
+        "seconds": 15,
+        "text": "Have you hit this in Codex too where the helper is strong but it cannot leave this computer and official remote apps also pin you to one box so the machines at home and at work stay out of reach"
+      },
+      {
+        "id": "02-product",
+        "seconds": 14,
+        "text": "This does not replace your helper and any helper can load one tool and use every computer you own just like Claude and Codex on one laptop and you are not limited to one operating system"
+      },
+      {
+        "id": "03-principle",
+        "seconds": 16,
+        "text": "Your helper talks to the cloud and each computer connects out by itself so the job runs on the one you pick and comes back on Windows and Linux and Mac"
+      },
+      {
+        "id": "04-collab",
+        "seconds": 13,
+        "text": "Switch to Grok or GPT and import the same tool and all your computers are still there and you are not stuck on one machine or one operating system"
+      },
+      {
+        "id": "05-setup",
+        "seconds": 14,
+        "text": "You need the website and a token and a program on each computer and then put the service in the cloud so you can reach them from anywhere"
+      },
+      {
+        "id": "06-cta",
+        "seconds": 7,
+        "text": "One tool for all your computers anywhere"
       }
     ]
   }

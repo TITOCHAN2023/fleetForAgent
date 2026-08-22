@@ -4,46 +4,46 @@
   "scenes": [
     {
       "id": "01-pain",
-      "text": "Your helper is already strong and your computers are still scattered so home and work never line up",
-      "target_s": 12,
-      "audio_s": 6.3,
+      "text": "Have you hit this in Codex too where the helper is strong but it cannot leave this computer and official remote apps also pin you to one box so the machines at home and at work stay out of reach",
+      "target_s": 15,
+      "audio_s": 13.14,
       "file": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\en\\01-pain.wav"
     },
     {
       "id": "02-product",
-      "text": "This does not replace your mind and any helper can load one tool and reach every computer you own",
-      "target_s": 10,
-      "audio_s": 6.94,
+      "text": "This does not replace your helper and any helper can load one tool and use every computer you own just like Claude and Codex on one laptop and you are not limited to one operating system",
+      "target_s": 14,
+      "audio_s": 13.26,
       "file": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\en\\02-product.wav"
     },
     {
       "id": "03-principle",
-      "text": "Your helper only talks to the cloud hub and each computer reaches out by itself so the job runs on the one you pick and comes back",
-      "target_s": 20,
-      "audio_s": 10.18,
+      "text": "Your helper talks to the cloud and each computer connects out by itself so the job runs on the one you pick and comes back on Windows and Linux and Mac",
+      "target_s": 16,
+      "audio_s": 12.46,
       "file": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\en\\03-principle.wav"
     },
     {
       "id": "04-collab",
-      "text": "When the official channel dies the context dies with it and we bind to the hub so your fleet is still there",
+      "text": "Switch to Grok or GPT and import the same tool and all your computers are still there and you are not stuck on one machine or one operating system",
       "target_s": 13,
-      "audio_s": 8.74,
+      "audio_s": 11.94,
       "file": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\en\\04-collab.wav"
     },
     {
       "id": "05-setup",
-      "text": "You need the website one token a program on each computer and the tool in your helper so put the server in the cloud",
-      "target_s": 13,
-      "audio_s": 8.46,
+      "text": "You need the website and a token and a program on each computer and then put the service in the cloud so you can reach them from anywhere",
+      "target_s": 14,
+      "audio_s": 10.26,
       "file": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\en\\05-setup.wav"
     },
     {
       "id": "06-cta",
-      "text": "Open the website on screen and use one tool for all your computers",
+      "text": "One tool for all your computers anywhere",
       "target_s": 7,
-      "audio_s": 4.54,
+      "audio_s": 3.94,
       "file": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\en\\06-cta.wav"
     }
   ],
-  "full_s": 47.079
+  "full_s": 66.919
 }

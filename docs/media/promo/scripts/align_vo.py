@@ -56,6 +56,11 @@ def align(lang: str) -> dict:
     (ROOT / "vo" / lang / "aligned.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    locale = "zh" if lang == "zh" else lang
+    (ROOT / "vo" / lang / "props.json").write_text(
+        json.dumps({"locale": locale, "sceneFrames": frames}, ensure_ascii=False),
+        encoding="utf-8",
+    )
     print(lang, "full_s", payload["full_s"], "frames", frames, "sum", sum(frames))
     return payload
 

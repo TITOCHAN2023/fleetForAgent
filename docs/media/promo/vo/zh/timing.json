@@ -1,49 +1,49 @@
 {
-  "voice": "洞白",
+  "voice": "titochan",
   "lang": "zh",
   "scenes": [
     {
       "id": "01-pain",
-      "text": "你已经有很强的助手了。可电脑还是各管各的。官方远程通道动不动掉线。家里、公司、机房，永远对不齐。",
-      "target_s": 12,
-      "audio_s": 11.64,
+      "text": "你是不是也在 Codex 里遇到过。助手很强。可它出不去这台电脑。官方远程软件。又只能盯住某一台。家里公司机房。永远对不齐。",
+      "target_s": 13,
+      "audio_s": 20.82,
       "file": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\zh\\01-pain.wav"
     },
     {
       "id": "02-product",
-      "text": "我们不替代你的人工智能。任意助手挂上一个工具，就能用你名下每一台电脑。",
-      "target_s": 10,
-      "audio_s": 7.117,
+      "text": "我们不替代你的助手。随便哪个助手。挂上一个工具。就能像本机上的 Claude 和 Codex 一样。去用你名下每一台电脑。不限系统。",
+      "target_s": 12,
+      "audio_s": 17.74,
       "file": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\zh\\02-product.wav"
     },
     {
       "id": "03-principle",
-      "text": "助手只连云端中枢。每台电脑上的程序，自己向外连出去。家里、公司、机房，哪种电脑都行。命令跑在你选的那一台，结果原路返回。家里不用开端口，也不用公网地址。",
-      "target_s": 20,
-      "audio_s": 14.76,
+      "text": "助手连到云上。每台电脑自己连出去。家里公司机房。哪种电脑都行。你选哪台。就在哪台干活。结果再回来。",
+      "target_s": 16,
+      "audio_s": 16.26,
       "file": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\zh\\03-principle.wav"
     },
     {
       "id": "04-collab",
-      "text": "官方通道一断，上下文就没了。我们认的是中枢，不是某一家客户端。换一个助手，只要导入我们的工具，你的舰队还在。",
-      "target_s": 13,
-      "audio_s": 10.08,
+      "text": "换到 Grok。换到 GPT。只要导入我们的工具。多台电脑都能一起用。不限 Windows。也不限 Mac。",
+      "target_s": 12,
+      "audio_s": 11.78,
       "file": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\zh\\04-collab.wav"
     },
     {
       "id": "05-setup",
-      "text": "四样东西。网站地址、一把令牌、每台电脑装上程序、把工具导入助手。中枢跑在本机，发挥不出多端互联。要随时随地，把服务放到云上。",
+      "text": "四样东西。网站地址、一把令牌、每台电脑装上程序、把工具导入助手。服务装在自己这一台。别的电脑加不进来。要随时随地。放到云上。",
       "target_s": 13,
-      "audio_s": 15.04,
+      "audio_s": 20.62,
       "file": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\zh\\05-setup.wav"
     },
     {
       "id": "06-cta",
-      "text": "先打开画面上的网站体验。登录，装上程序，导入工具。一个工具，你的所有电脑。",
+      "text": "先打开画面上的网站。一个工具，你的所有电脑。",
       "target_s": 7,
-      "audio_s": 8.004,
+      "audio_s": 6.98,
       "file": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\zh\\06-cta.wav"
     }
   ],
-  "full_s": 68.56
+  "full_s": 96.119
 }

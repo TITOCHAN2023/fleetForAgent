@@ -136,6 +136,12 @@ def main() -> None:
     spec = json.loads(SCRIPT.read_text(encoding="utf-8"))
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     ensure_voice(spec["voice"], spec["ref_audio"], spec["prompt_text"])
+    if spec.get("titochan_audio") and Path(spec["titochan_audio"]).exists():
+        ensure_voice(
+            (spec.get("voices") or {}).get("zhdy") or "titochan",
+            spec["titochan_audio"],
+            spec.get("titochan_prompt") or "",
+        )
     if spec.get("en_ref_audio") and Path(spec["en_ref_audio"]).exists():
         ensure_voice(
             (spec.get("voices") or {}).get("en") or "洞白en",

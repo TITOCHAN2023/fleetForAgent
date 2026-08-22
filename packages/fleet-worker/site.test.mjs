@@ -17,4 +17,8 @@ test("hub site explains multi-os fleet and ships a Help page", () => {
   assert.match(html, /data-theme-set="system"/);
   assert.match(html, /FLEET_URL=/);
   assert.match(html, /fleet-agent-linux-arm64/);
+  assert.match(html, /FleetAgent-macos-arm64\.zip/);
+  assert.match(html, /FleetAgent-macos-amd64\.zip/);
+  assert.match(html, /checksums-0\.2\.4\.txt/);
+  assert.match(html, /\/logo\.png/);
 });

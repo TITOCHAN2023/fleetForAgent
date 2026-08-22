@@ -136,7 +136,8 @@ export function FleetConsole({ initialTab }: { initialTab?: string } = {}) {
     <div className="bg-bg text-fg flex min-h-svh flex-col">
       <header className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3 md:px-6">
         <div className="flex items-center gap-3">
-          <span className="font-mono text-xs tracking-[0.22em] uppercase">Fleet</span>
+          <img src="/logo.png" alt="" width={28} height={28} className="size-7" />
+          <span className="font-medium tracking-tight">Fleet</span>
           <span className="hidden text-xs text-subtle sm:inline">{t("header.subtitle")}</span>
         </div>
         <nav className="flex flex-1 flex-wrap gap-1">

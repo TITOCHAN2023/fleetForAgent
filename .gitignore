@@ -20,6 +20,8 @@ AGENTS.project.md
 
 # Remotion intermediates (final GIF/MP4/PNG live in docs/media/)
 docs/media/promo/out
+docs/media/brand-preview
+docs/media/brand/logo-64.b64.txt
 
 # Agent installers live on GitHub Releases
 public/dl/*.exe

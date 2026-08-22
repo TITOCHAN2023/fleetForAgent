@@ -8,7 +8,8 @@ export function SiteHeader({ brand = "Fleet" }: { brand?: string }) {
   return (
     <header className="sticky top-0 z-20 border-b border-border bg-bg/80 backdrop-blur">
       <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-3 px-5 py-3">
-        <Link to="/" className="font-medium tracking-tight text-fg">
+        <Link to="/" className="flex items-center gap-2 font-medium tracking-tight text-fg">
+          <img src="/logo.png" alt="" width={28} height={28} className="size-7" />
           {brand}
         </Link>
         <nav className="ml-auto flex flex-wrap items-center gap-3 text-sm text-muted">

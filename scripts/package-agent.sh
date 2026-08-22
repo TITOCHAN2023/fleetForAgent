@@ -49,6 +49,7 @@ pack_macos() {
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
   cp "dist/darwin-${arch}" "$app/Contents/MacOS/FleetAgent"
   chmod +x "$app/Contents/MacOS/FleetAgent"
+  cp "$ROOT/docs/media/brand/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
   printf 'APPL????' > "$app/Contents/PkgInfo"
   cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -67,6 +68,7 @@ pack_macos() {
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSAppSleepDisabled</key><true/>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
 </dict>
 </plist>
 PLIST

@@ -44,8 +44,7 @@ func applyTrayIcon() {
 	case "linux":
 		systray.SetIcon(trayPNG(false))
 	default:
-		png := trayPNG(true)
-		systray.SetTemplateIcon(png, png)
+		systray.SetIcon(trayPNG(false))
 	}
 }
 
@@ -64,7 +63,7 @@ func runTray(a *Agent) {
 
 func onTrayReady(a *Agent) {
 	applyTrayIcon()
-	systray.SetTitle("F")
+	systray.SetTitle("")
 	systray.SetTooltip("Fleet Agent")
 
 	// Windows: left click opens the page, right click is the switch menu.

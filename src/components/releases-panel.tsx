@@ -14,9 +14,12 @@ const BUILDS: {
 }[] = [
   { id: "win", os: "rel.win", file: "FleetAgent-windows-amd64.exe", hint: "rel.winHint", icon: Monitor },
   { id: "mac-arm", os: "rel.macArm", file: "FleetAgent-macos-arm64.dmg", hint: "rel.macArmHint", icon: Apple },
+  { id: "mac-arm-zip", os: "rel.macArmZip", file: "FleetAgent-macos-arm64.zip", hint: "rel.macArmZipHint", icon: Apple },
   { id: "mac-intel", os: "rel.macIntel", file: "FleetAgent-macos-amd64.dmg", hint: "rel.macIntelHint", icon: Apple },
+  { id: "mac-intel-zip", os: "rel.macIntelZip", file: "FleetAgent-macos-amd64.zip", hint: "rel.macIntelZipHint", icon: Apple },
   { id: "linux", os: "rel.linux", file: "fleet-agent-linux-amd64.tar.gz", hint: "rel.linuxHint", icon: Server },
   { id: "linux-arm", os: "rel.linuxArm", file: "fleet-agent-linux-arm64.tar.gz", hint: "rel.linuxArmHint", icon: Server },
+  { id: "sum", os: "rel.checksums", file: "checksums-0.2.4.txt", hint: "rel.checksumsHint", icon: Server },
 ];
 
 export function ReleasesPanel() {
@@ -60,13 +63,6 @@ export function ReleasesPanel() {
                     {t("rel.download")}
                   </a>
                 </Button>
-                {b.id.startsWith("mac") && (
-                  <Button asChild variant="ghost">
-                    <a href={`${GH}/${b.file.replace(".dmg", ".zip")}`}>
-                      zip
-                    </a>
-                  </Button>
-                )}
               </div>
             </article>
           );

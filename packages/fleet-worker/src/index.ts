@@ -492,6 +492,17 @@ export class DeviceDO implements DurableObject {
       return;
     }
 
+    if (parsed.type === "ping" || parsed.type === "heartbeat") {
+      await this.mark(att.deviceId ?? "unknown", {
+        name: att.name ?? att.deviceId ?? "device",
+        os: att.os ?? "linux",
+        online: true,
+        userId: att.userId,
+      });
+      ws.send(JSON.stringify(envelope("pong", {}, parsed.id)));
+      return;
+    }
+
     if (parsed.type === "screen") {
       await this.ctx.storage.put("screen:last", parsed.body);
       if (parsed.corr) await this.ctx.storage.put(`screen:${parsed.corr}`, parsed.body);
@@ -518,6 +529,10 @@ export class DeviceDO implements DurableObject {
   }
 
   async webSocketClose(ws: WebSocket) {
+    // Replacing a socket closes the old one; that close must not flip the
+    // device offline while the new connection is already accepted.
+    const still = this.ctx.getWebSockets().filter((s) => s !== ws);
+    if (still.length > 0) return;
     const att = (ws.deserializeAttachment() ?? {}) as {
       deviceId?: string;
       name?: string;

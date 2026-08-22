@@ -1,0 +1,22 @@
+{
+  "name": "fleet-architecture-media",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Architecture explainer for FleetForAgent (Remotion)",
+  "scripts": {
+    "studio": "remotion studio",
+    "render": "remotion render Architecture out/architecture.mp4",
+    "render:loop": "remotion render FlowLoop out/flow-loop.mp4",
+    "still": "remotion still Architecture out/architecture.png --frame=330"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.380",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "4.0.380"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.1",
+    "typescript": "^5.4.5"
+  }
+}

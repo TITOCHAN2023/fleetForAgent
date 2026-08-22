@@ -12,10 +12,12 @@ import {
   buildTools,
   clampWaitMs,
   createOperator,
-  deviceMismatchMessage,
+  FLEET_OPERATOR_HEADER,
+  fleetHubHeaders,
   formatMcpText,
   applyCliDevFlag,
   isFleetDev,
+  newOperatorFingerprint,
   isFinishedResult,
   measureHubFetch,
   parseOptionalMs,
@@ -105,6 +107,15 @@ test("existing five tools remain; device_id stays in schemas and is optional", (
   assert.deepEqual(set.inputSchema.required, ["device_id"]);
   assert.ok(set.inputSchema.properties.device_id);
   assert.deepEqual(tools.find((x) => x.name === "run").inputSchema.required, ["command"]);
+  for (const n of ["run", "get_result", "wait", "read_screen", "type"]) {
+    const t = tools.find((x) => x.name === n);
+    assert.equal(t.inputSchema.properties.corr, undefined, n);
+    assert.equal(t.inputSchema.properties.fingerprint, undefined, n);
+    assert.equal(t.inputSchema.properties.operator, undefined, n);
+    assert.equal((t.inputSchema.required ?? []).includes("corr"), false, n);
+  }
+  assert.deepEqual(tools.find((x) => x.name === "get_result").inputSchema.required ?? [], []);
+  assert.deepEqual(tools.find((x) => x.name === "wait").inputSchema.required ?? [], []);
 
   for (const n of ["run", "get_result", "wait"]) {
     const w = tools.find((x) => x.name === n).inputSchema.properties.wait_ms;
@@ -252,29 +263,31 @@ test("run wait_ms timeout keeps the job and returns running plus snapshot", asyn
 test("wait tool polls get_result; omitted wait_ms uses the 30s cap", async () => {
   const time = clock();
   const { rpc, calls } = mockRpc({
-    "/v1/get_result": () => ({ status: "running", corr: "c4", pane_id: "p" }),
+    "/v1/get_result": () => ({ status: "running", pane_id: "p" }),
   });
   const op = createOperator({ rpc, env: { FLEET_DEVICE_ID: "env-1" }, now: time.now, sleep: time.sleep });
-  const out = await op.callTool("wait", { corr: "c4" });
+  const out = await op.callTool("wait", {});
   assert.equal(out.status, "running");
   assert.equal(out.device_id, "env-1");
   assert.equal("isError" in out, false);
   assert.ok(time.t >= WAIT_MAX_MS);
   assert.ok(time.t <= WAIT_TOOL_DEFAULT_MS + WAIT_POLL_MS);
   assert.ok(calls.every((c) => c.path === "/v1/get_result"));
+  assert.ok(calls.every((c) => !("corr" in c.body)));
 });
 
 test("get_result wait_ms omitted is a single snapshot; wait_ms long-polls", async () => {
   const { rpc, calls } = mockRpc({
-    "/v1/get_result": () => ({ status: "pending", corr: "c5" }),
+    "/v1/get_result": () => ({ status: "pending" }),
   });
   const op = createOperator({ rpc });
-  const out = await op.callTool("get_result", { device_id: "mac-1", corr: "c5" });
+  const out = await op.callTool("get_result", { device_id: "mac-1" });
   assert.equal(out.status, "pending");
   assert.equal(out.device_id, "mac-1");
   assert.equal(calls.length, 1);
+  assert.equal("corr" in calls[0].body, false);
 
-  const zero = await op.callTool("get_result", { device_id: "mac-1", corr: "c5", wait_ms: 0 });
+  const zero = await op.callTool("get_result", { device_id: "mac-1", wait_ms: 0 });
   assert.equal(zero.status, "pending");
   assert.equal(calls.length, 2);
 
@@ -289,7 +302,6 @@ test("get_result wait_ms omitted is a single snapshot; wait_ms long-polls", asyn
   });
   const blocked = await createOperator({ rpc: rpcW, now: time.now, sleep: time.sleep }).callTool("get_result", {
     device_id: "mac-1",
-    corr: "c5b",
     wait_ms: 5000,
   });
   assert.equal(blocked.status, "done");
@@ -318,7 +330,7 @@ test("explicit device_id updates last-used; later calls can omit it", async () =
   assert.equal(typeBodies[1].keys, "enter");
   const screen = await op.callTool("read_screen", {});
   assert.equal(screen.device_id, "mac-1");
-  const peek = await op.callTool("get_result", { corr: "c-1" });
+  const peek = await op.callTool("get_result", {});
   assert.equal(peek.device_id, "mac-1");
 
   const runBodies = calls.filter((c) => c.path === "/v1/run" || c.path === "/v1/type" || c.path === "/v1/read_screen");
@@ -410,62 +422,39 @@ test("remembered device offline fails explicitly with no fallback", async () => 
   assert.equal(runs[0].body.device_id, "dead");
 });
 
-test("type with corr targets the job owner after set_computer", async () => {
+test("type and get_result never send corr even if the model hallucinates one", async () => {
   const { rpc, calls } = mockRpc({
     "/v1/run": () => ({ corr: "job-a", status: "running" }),
     "/v1/type": () => ({ ok: true, status: "typed" }),
+    "/v1/get_result": () => ({ status: "pending" }),
+    "/v1/read_screen": () => ({ status: "empty", screen: null }),
   });
   const op = createOperator({ rpc });
   await op.callTool("run", { device_id: "host-a", command: "one", wait_ms: 0 });
-  await op.callTool("set_computer", { device_id: "host-b" });
-  const typed = await op.callTool("type", { corr: "job-a", keys: "x" });
-  assert.equal(typed.device_id, "host-a");
-  const typeCalls = calls.filter((c) => c.path === "/v1/type");
-  assert.equal(typeCalls.length, 1);
-  assert.equal(typeCalls[0].body.device_id, "host-a");
-  assert.equal(typeCalls[0].body.corr, "job-a");
-  await assert.rejects(
-    () => op.callTool("type", { device_id: "host-b", corr: "job-a", keys: "y" }),
-    /belongs to device/,
-  );
+  await op.callTool("type", { corr: "job-a", keys: "x" });
+  await op.callTool("get_result", { corr: "job-a" });
+  await op.callTool("read_screen", { corr: "job-a" });
+  const bodies = calls.filter((c) => c.path !== "/v1/run").map((c) => c.body);
+  assert.ok(bodies.length >= 3);
+  assert.ok(bodies.every((b) => !("corr" in b)));
+  assert.ok(bodies.every((b) => !("fingerprint" in b)));
+  assert.ok(bodies.every((b) => !("operator" in b)));
 });
 
-test("get_result / wait / read_screen refuse a different device than the job owner", async () => {
-  const { rpc } = mockRpc({
-    "/v1/run": () => ({ corr: "job-1", status: "running" }),
-    "/v1/get_result": () => ({ status: "pending", corr: "job-1" }),
-    "/v1/read_screen": () => ({ status: "ok", screen: { text: "x" } }),
-  });
-  const op = createOperator({ rpc });
-  await op.callTool("run", { device_id: "mac-1", command: "sleep 1", wait_ms: 0 });
-
-  await assert.rejects(
-    () => op.callTool("get_result", { device_id: "mac-2", corr: "job-1" }),
-    (err) => {
-      assert.equal(err.message, deviceMismatchMessage("job-1", "mac-1", "mac-2"));
-      return true;
-    },
-  );
-  await assert.rejects(() => op.callTool("wait", { device_id: "mac-2", corr: "job-1", wait_ms: 1000 }), /belongs to device/);
-  await assert.rejects(() => op.callTool("read_screen", { device_id: "mac-2", corr: "job-1" }), /belongs to device/);
-
-  const peek = await op.callTool("get_result", { corr: "job-1" });
-  assert.equal(peek.device_id, "mac-1");
-});
-
-test("corr owner wins over a later last-used so the job is not peeked on the wrong host", async () => {
+test("get_result after set_computer uses last-used; hub isolates by fingerprint header", async () => {
   const { rpc, calls } = mockRpc({
     "/v1/run": (body) => ({ corr: String(body.command).includes("one") ? "job-a" : "job-b", status: "running" }),
-    "/v1/get_result": (body) => ({ status: "pending", corr: body.corr, seen: body.device_id }),
+    "/v1/get_result": (body) => ({ status: "pending", seen: body.device_id }),
   });
   const op = createOperator({ rpc });
   await op.callTool("run", { device_id: "host-a", command: "one", wait_ms: 0 });
   await op.callTool("set_computer", { device_id: "host-b" });
-  const peek = await op.callTool("get_result", { corr: "job-a" });
-  assert.equal(peek.device_id, "host-a");
-  assert.equal(peek.seen, "host-a");
+  const peek = await op.callTool("get_result", {});
+  assert.equal(peek.device_id, "host-b");
+  assert.equal(peek.seen, "host-b");
   const getCalls = calls.filter((c) => c.path === "/v1/get_result");
-  assert.ok(getCalls.every((c) => c.body.device_id === "host-a"));
+  assert.ok(getCalls.every((c) => c.body.device_id === "host-b"));
+  assert.ok(getCalls.every((c) => !("corr" in c.body)));
 });
 
 test("list_computers does not touch last-used", async () => {
@@ -534,11 +523,20 @@ test("formatMcpText empty stdout is empty string, not {}", () => {
   assert.equal(formatMcpText("get_result", { status: "done", ok: true, exit_code: 0 }), "");
 });
 
-test("formatMcpText running is a corr ticket line", () => {
-  const text = formatMcpText("run", { corr: "c-tui", status: "running", device_id: "mac-1" });
-  assert.equal(text, "running corr=c-tui");
+test("formatMcpText running is plain text and never emits corr= or other ids", () => {
+  const text = formatMcpText("run", { corr: "c-tui", status: "running", device_id: "mac-1", pane_id: "p9" });
+  assert.equal(text, "still running");
   assert.equal(text.includes("{"), false);
-  assert.equal(formatMcpText("wait", { status: "pending", corr: "c2" }), "running corr=c2");
+  assert.equal(text.includes("corr="), false);
+  assert.equal(text.includes("c-tui"), false);
+  assert.equal(text.includes("pane_id"), false);
+  assert.equal(formatMcpText("wait", { status: "pending", corr: "c2" }), "still running");
+  const uuid = "6f1d2b3a-4c5e-6789-abcd-ef0123456789";
+  const hid = formatMcpText("get_result", { status: "running", corr: uuid, fingerprint: "fp-1", operator: "op" });
+  assert.equal(hid, "still running");
+  assert.equal(hid.includes(uuid), false);
+  assert.equal(hid.includes("fp-1"), false);
+  assert.equal(hid.includes("corr"), false);
 });
 
 test("formatMcpText success with stderr stays stdout-first", () => {
@@ -668,7 +666,7 @@ test("FLEET_DEV on records hop wall times and appends trailer after stdout", asy
   assert.equal(text.includes("{"), false);
 });
 
-test("FLEET_DEV running ticket is still one corr line plus trailer", async () => {
+test("FLEET_DEV still-running reply is plain text plus trailer", async () => {
   const time = clock();
   const { rpc } = mockRpc({
     "/v1/run": async () => {
@@ -685,7 +683,9 @@ test("FLEET_DEV running ticket is still one corr line plus trailer", async () =>
   assertHopFields(out.dev.hops[0], { path: "/v1/run", wait_ms: 40, split: "body" });
   const text = formatMcpText("run", out, env);
   const lines = text.split("\n");
-  assert.equal(lines[0], "running corr=c-tui");
+  assert.equal(lines[0], "still running");
+  assert.equal(text.includes("corr="), false);
+  assert.equal(text.includes("c-tui"), false);
   assert.equal(lines[1], "# fleet-dev");
   assert.match(lines[2], /# hop \/v1\/run\s+out=\d+ in=\d+ send=0ms wait=40ms recv=0ms total=40ms/);
   assert.match(text, /# poll=0 total=\d+ms/);
@@ -763,4 +763,51 @@ test("applyCliDevFlag sets FLEET_DEV and strips --dev", () => {
 
 test("MCP version is 0.2.8", () => {
   assert.equal(FLEET_VERSION, "0.2.8");
+});
+
+test("newOperatorFingerprint is a UUID and is not read from FLEET_OPERATOR", () => {
+  const prev = process.env.FLEET_OPERATOR;
+  process.env.FLEET_OPERATOR = "model-filled-id";
+  try {
+    const a = newOperatorFingerprint();
+    const b = newOperatorFingerprint();
+    assert.match(a, /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    assert.notEqual(a, b);
+    assert.notEqual(a, "model-filled-id");
+  } finally {
+    if (prev == null) delete process.env.FLEET_OPERATOR;
+    else process.env.FLEET_OPERATOR = prev;
+  }
+});
+
+test("fleetHubHeaders attaches X-Fleet-Operator and never a tool-shaped field", () => {
+  const fp = "11111111-2222-4333-8444-555555555555";
+  const headers = fleetHubHeaders({ token: "flt_test", fingerprint: fp });
+  assert.equal(headers[FLEET_OPERATOR_HEADER], fp);
+  assert.equal(headers.authorization, "Bearer flt_test");
+  assert.equal(headers["content-type"], "application/json");
+  assert.equal("corr" in headers, false);
+  const none = fleetHubHeaders({ token: "flt_test" });
+  assert.equal(none[FLEET_OPERATOR_HEADER], undefined);
+});
+
+test("measureHubFetch sends the operator fingerprint header", async () => {
+  const orig = globalThis.fetch;
+  let seen;
+  globalThis.fetch = async (_url, init) => {
+    seen = init.headers;
+    return { ok: true, status: 200, json: async () => ({ status: "running" }) };
+  };
+  try {
+    const fp = newOperatorFingerprint();
+    await measureHubFetch("http://example.test/v1/run", {
+      method: "POST",
+      headers: fleetHubHeaders({ token: "flt_x", fingerprint: fp }),
+      body: { command: "pwd" },
+    });
+    assert.equal(seen[FLEET_OPERATOR_HEADER], fp);
+    assert.equal(seen.authorization, "Bearer flt_x");
+  } finally {
+    globalThis.fetch = orig;
+  }
 });

@@ -12,11 +12,12 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
+import { createSessionBook, fingerprintFromHeaders } from "../fleet-worker/src/session.mjs";
 
 const CORS = {
   "access-control-allow-origin": "*",
   "access-control-allow-headers":
-    "authorization, content-type, x-device-id, x-device-name, x-device-os, x-fleet-proto",
+    "authorization, content-type, x-device-id, x-device-name, x-device-os, x-fleet-proto, x-fleet-operator",
   "access-control-allow-methods": "GET, POST, OPTIONS",
 };
 
@@ -48,6 +49,8 @@ export function createHub({
   const screens = new Map();
   /** @type {Map<string, Map<string, Record<string, unknown>>>} */
   const results = new Map();
+  /** @type {Map<string, ReturnType<typeof createSessionBook>>} */
+  const sessions = new Map();
 
   const wss = new WebSocketServer({ noServer: true });
   const server = http.createServer((req, res) => {
@@ -153,6 +156,7 @@ export function createHub({
         stdout: parsed.body?.stdout ?? "",
         t: parsed.t,
       });
+      deviceSessions(id).finish(parsed.corr);
     }
   }
 
@@ -163,6 +167,20 @@ export function createHub({
       results.set(id, m);
     }
     return m;
+  }
+
+  function deviceSessions(id) {
+    let book = sessions.get(id);
+    if (!book) {
+      book = createSessionBook();
+      sessions.set(id, book);
+    }
+    return book;
+  }
+
+  function withFingerprint(body, fp) {
+    if (fp) return { ...body, fingerprint: fp };
+    return body;
   }
 
   function hubResultPayload(corr, row) {
@@ -258,10 +276,12 @@ export function createHub({
         write(res, 400, { error: "device_id and command required" });
         return;
       }
+      const fp = fingerprintFromHeaders(req.headers);
       const corr = randomUUID();
+      deviceSessions(body.device_id).claim(fp, corr);
       const ok = sendTo(
         body.device_id,
-        envelope("run", { command: body.command, mode: "pane" }, corr),
+        envelope("run", withFingerprint({ command: body.command, mode: "pane" }, fp), corr),
       );
       if (!ok) {
         write(res, 409, { error: "offline" });
@@ -282,7 +302,16 @@ export function createHub({
         write(res, 400, { error: "device_id and keys or key required" });
         return;
       }
-      const ok = sendTo(body.device_id, envelope("type", { keys: body.keys, key: body.key, corr: body.corr }));
+      const fp = fingerprintFromHeaders(req.headers);
+      const resolved = deviceSessions(body.device_id).resolve(fp, body.corr);
+      if (resolved.drop) {
+        write(res, 200, { ok: true, status: "typed" });
+        return;
+      }
+      const ok = sendTo(
+        body.device_id,
+        envelope("type", withFingerprint({ keys: body.keys, key: body.key, corr: resolved.corr }, fp)),
+      );
       if (!ok) {
         write(res, 409, { error: "offline" });
         return;
@@ -296,12 +325,18 @@ export function createHub({
         write(res, 400, { error: "device_id required" });
         return;
       }
+      const fp = fingerprintFromHeaders(req.headers);
+      const resolved = deviceSessions(body.device_id).resolve(fp, body.corr);
+      if (resolved.drop || !resolved.corr) {
+        write(res, 200, { status: "empty", screen: null });
+        return;
+      }
       sendTo(
         body.device_id,
-        envelope("read_screen", { corr: body.corr ?? "" }, body.corr || undefined),
+        envelope("read_screen", withFingerprint({ corr: resolved.corr }, fp), resolved.corr),
       );
       const slot = screens.get(body.device_id);
-      const row = (body.corr && slot?.byCorr.get(body.corr)) || slot?.last || null;
+      const row = slot?.byCorr.get(resolved.corr) || null;
       write(res, 200, { status: row ? "ok" : "empty", screen: row });
       return;
     }
@@ -320,15 +355,21 @@ export function createHub({
     }
 
     if (url.pathname === "/v1/get_result" && req.method === "POST") {
-      if (!body.device_id || !body.corr) {
-        write(res, 400, { error: "device_id and corr required" });
+      if (!body.device_id) {
+        write(res, 400, { error: "device_id required" });
+        return;
+      }
+      const fp = fingerprintFromHeaders(req.headers);
+      const resolved = deviceSessions(body.device_id).resolve(fp, body.corr);
+      if (resolved.drop || !resolved.corr) {
+        write(res, 200, { status: "pending" });
         return;
       }
       const waitMs = clampHubWaitMs(body.wait_ms);
       const row = waitMs > 0
-        ? await waitHubResult(body.device_id, body.corr, waitMs)
-        : deviceResults(body.device_id).get(body.corr);
-      write(res, 200, hubResultPayload(body.corr, row));
+        ? await waitHubResult(body.device_id, resolved.corr, waitMs)
+        : deviceResults(body.device_id).get(resolved.corr);
+      write(res, 200, hubResultPayload(resolved.corr, row));
       return;
     }
 

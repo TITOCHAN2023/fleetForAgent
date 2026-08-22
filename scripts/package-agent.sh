@@ -10,7 +10,7 @@ mkdir -p "$OUT" "$SRC/dist"
 cd "$SRC"
 go mod tidy
 LDFLAGS="-s -w"
-VERSION="${VERSION:-0.2.7}"
+VERSION="${VERSION:-0.2.8}"
 
 build() {
   local os="$1" arch="$2" ext="$3"

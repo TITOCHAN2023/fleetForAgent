@@ -91,3 +91,33 @@ func TestResultIsValidUTF8(t *testing.T) {
 		t.Fatalf("result stdout is not valid UTF-8")
 	}
 }
+
+func TestGetForIsolatesFingerprints(t *testing.T) {
+	s := newSupervisor()
+	a := &pane{id: "pane-a", corr: "ca", fingerprint: "fp-a", running: true}
+	b := &pane{id: "pane-b", corr: "cb", fingerprint: "fp-b", running: true}
+	s.panes["pane-a"] = a
+	s.panes["ca"] = a
+	s.panes["pane-b"] = b
+	s.panes["cb"] = b
+	s.order = []string{"pane-a", "pane-b"}
+
+	if got := s.getFor("fp-a", ""); got != a {
+		t.Fatalf("empty id for fp-a got %#v", got)
+	}
+	if got := s.getFor("fp-b", ""); got != b {
+		t.Fatalf("empty id for fp-b got %#v", got)
+	}
+	if got := s.getFor("fp-a", "cb"); got != nil {
+		t.Fatal("fp-a must not see fp-b's ticket")
+	}
+	if got := s.getFor("fp-b", "ca"); got != nil {
+		t.Fatal("fp-b must not see fp-a's ticket")
+	}
+	if got := s.getFor("fp-a", "ca"); got != a {
+		t.Fatalf("own ticket should resolve, got %#v", got)
+	}
+	if got := s.get(""); got != b {
+		t.Fatalf("anonymous get() stays last pane for old clients, got %#v", got)
+	}
+}

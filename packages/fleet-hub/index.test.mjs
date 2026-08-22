@@ -157,6 +157,111 @@ test("run on offline device is 409; type does not wait", async (t) => {
   assert.equal(typed.json.status, "typed");
   const down = await waitType(dev.inbox, "type");
   assert.equal(down.body.keys, "q\n");
+
+  const named = await post(http, "/v1/type", { device_id: "dev-1", key: "ctrl+c" });
+  assert.equal(named.status, 200);
+  const t0 = Date.now();
+  let downKey;
+  while (Date.now() - t0 < 1000) {
+    downKey = dev.inbox.find((m) => m.type === "type" && m.body?.key === "ctrl+c");
+    if (downKey) break;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assert.equal(downKey?.body?.key, "ctrl+c");
+});
+
+test("run wait_ms>0 returns the get_result payload when the device finishes", async (t) => {
+  const hub = createHub();
+  t.after(() => hub.close());
+  const { http, ws: wsUrl } = await listen(hub);
+  const dev = connectDevice(wsUrl, { id: "mac-1" });
+  t.after(() => dev.ws.close());
+  await dev.opened;
+  await waitType(dev.inbox, "hello_ok");
+
+  const runP = post(http, "/v1/run", { device_id: "mac-1", command: "pwd", wait_ms: 1000 });
+  const down = await waitType(dev.inbox, "run");
+  dev.ws.send(
+    JSON.stringify({
+      v: 1,
+      type: "result",
+      id: "r-wait",
+      corr: down.corr,
+      t: Date.now(),
+      body: { ok: true, exit_code: 0, stdout: "hi", error: "" },
+    }),
+  );
+  const run = await runP;
+  assert.equal(run.status, 200);
+  assert.equal(run.json.status, "done");
+  assert.equal(run.json.ok, true);
+  assert.equal(run.json.stdout, "hi");
+  assert.equal(run.json.corr, down.corr);
+});
+
+test("run wait_ms timeout does not kill; later get_result still lands", async (t) => {
+  const hub = createHub();
+  t.after(() => hub.close());
+  const { http, ws: wsUrl } = await listen(hub);
+  const dev = connectDevice(wsUrl, { id: "mac-1" });
+  t.after(() => dev.ws.close());
+  await dev.opened;
+  await waitType(dev.inbox, "hello_ok");
+
+  const t0 = Date.now();
+  const run = await post(http, "/v1/run", { device_id: "mac-1", command: "sleep 30", wait_ms: 60 });
+  assert.ok(Date.now() - t0 < 400, `held ${Date.now() - t0}ms`);
+  assert.ok(run.json.corr);
+  assert.notEqual(run.json.status, "done");
+
+  const down = await waitType(dev.inbox, "run");
+  dev.ws.send(
+    JSON.stringify({
+      v: 1,
+      type: "result",
+      id: "r-late",
+      corr: down.corr,
+      t: Date.now(),
+      body: { ok: true, exit_code: 0, stdout: "late", error: "" },
+    }),
+  );
+  const t1 = Date.now();
+  while (Date.now() - t1 < 1000) {
+    const got = await post(http, "/v1/get_result", { device_id: "mac-1", corr: run.json.corr });
+    if (got.json.status === "done") {
+      assert.equal(got.json.stdout, "late");
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error("result never landed after wait timeout");
+});
+
+test("get_result wait_ms long-polls until the device result", async (t) => {
+  const hub = createHub();
+  t.after(() => hub.close());
+  const { http, ws: wsUrl } = await listen(hub);
+  const dev = connectDevice(wsUrl, { id: "mac-1" });
+  t.after(() => dev.ws.close());
+  await dev.opened;
+  await waitType(dev.inbox, "hello_ok");
+
+  const run = await post(http, "/v1/run", { device_id: "mac-1", command: "pwd" });
+  const down = await waitType(dev.inbox, "run");
+  const gotP = post(http, "/v1/get_result", { device_id: "mac-1", corr: run.json.corr, wait_ms: 1000 });
+  dev.ws.send(
+    JSON.stringify({
+      v: 1,
+      type: "result",
+      id: "r-get",
+      corr: down.corr,
+      t: Date.now(),
+      body: { ok: true, exit_code: 0, stdout: "polled", error: "" },
+    }),
+  );
+  const got = await gotP;
+  assert.equal(got.json.status, "done");
+  assert.equal(got.json.stdout, "polled");
 });
 
 test("device ping updates lastSeen, replies pong, list follows live socket", async (t) => {

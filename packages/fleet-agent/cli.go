@@ -15,7 +15,9 @@ import (
 	"time"
 )
 
-const apiRoot = "http://127.0.0.1:17890"
+func apiRoot() string {
+	return settingsURL()
+}
 
 func isCLICommand(name string) bool {
 	switch name {
@@ -74,11 +76,12 @@ func runCLI(args []string) int {
 	return 0
 }
 
-func printHelp() {
-	fmt.Print(`Fleet Agent — same process as the tray / settings UI.
+func helpText() string {
+	return fmt.Sprintf(`Fleet Agent %s — same process as the tray / settings UI.
 
-Commands talk to the local agent at 127.0.0.1:17890. If the agent is
-running, CLI and UI share one state. Do not edit config.json while it runs.
+Commands talk to the local agent at 127.0.0.1:17890 (FLEET_SETTINGS_ADDR
+overrides; FLEET_HOME overrides ~/.fleet-agent). If the agent is running,
+CLI and UI share one state. Do not edit config.json while it runs.
 
   fleet start [--hub URL] [--token TOKEN] [--permit off|ask|allow]
   fleet stop                 disable (daemon stays in the tray)
@@ -93,7 +96,11 @@ running, CLI and UI share one state. Do not edit config.json while it runs.
 
 Linux has no settings page: use these commands or the tray.
 Start the daemon with:  fleet start   or   fleet --daemon
-`)
+`, agentVersion)
+}
+
+func printHelp() {
+	fmt.Print(helpText())
 }
 
 func cliStatus(args []string) error {
@@ -284,7 +291,7 @@ func cliInstall() error {
 
 func liveState() (State, error) {
 	client := &http.Client{Timeout: time.Second}
-	res, err := client.Get(apiRoot + "/api/state")
+	res, err := client.Get(apiRoot() + "/api/state")
 	if err != nil {
 		return State{}, err
 	}
@@ -312,7 +319,7 @@ func waitReady(d time.Duration) error {
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
-	return fmt.Errorf("agent did not come up on %s", settingsAddr)
+	return fmt.Errorf("agent did not come up on %s", settingsAddr())
 }
 
 func waitConn(d time.Duration) {
@@ -336,7 +343,7 @@ func postJSON(path string, body any) error {
 		rdr = bytes.NewReader(b)
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	res, err := client.Post(apiRoot+path, "application/json", rdr)
+	res, err := client.Post(apiRoot()+path, "application/json", rdr)
 	if err != nil {
 		return err
 	}
@@ -349,11 +356,7 @@ func postJSON(path string, body any) error {
 }
 
 func writeOfflineStart(hub, token, permit string) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	dir := filepath.Join(home, ".fleet-agent")
+	dir := fleetHome()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}

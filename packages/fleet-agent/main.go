@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -26,8 +25,6 @@ import (
 
 const (
 	agentVersion = "0.2.4"
-	settingsAddr = "127.0.0.1:17890"
-	settingsURL  = "http://127.0.0.1:17890"
 )
 
 //go:embed ui/index.html
@@ -292,7 +289,7 @@ func (a *Agent) connect(hub string) error {
 	headers := map[string][]string{
 		"X-Fleet-Proto": {"1"},
 		"X-Device-Id":   {a.deviceID},
-		"X-Device-Name": {hostname()},
+		"X-Device-Name": {deviceName()},
 		"X-Device-Os":   {osKind()},
 	}
 	tok := a.hubToken
@@ -323,8 +320,8 @@ func (a *Agent) connect(hub string) error {
 	hello := Envelope{V: 1, Type: "hello", ID: fmt.Sprintf("%d", time.Now().UnixNano()), T: time.Now().UnixMilli(), Body: map[string]any{
 		"os":        osKind(),
 		"arch":      runtime.GOARCH,
-		"hostname":  hostname(),
-		"caps":      []string{"shell", "pane"},
+		"hostname":  deviceName(),
+		"caps":      agentCaps(),
 		"agent_ver": agentVersion,
 		"permit":    string(a.permit),
 		"egress":    "internet",
@@ -391,6 +388,22 @@ func hostname() string {
 	return h
 }
 
+// deviceName is X-Device-Name / hello hostname. FLEET_NAME overrides so a test
+// agent is not listed as a second copy of the machine hostname.
+func deviceName() string {
+	if v := strings.TrimSpace(os.Getenv("FLEET_NAME")); v != "" {
+		return v
+	}
+	return hostname()
+}
+
+func agentCaps() []string {
+	if runtime.GOOS == "windows" {
+		return []string{"shell", "pane"}
+	}
+	return []string{"shell", "pane", "live_shell"}
+}
+
 func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 	defer func() {
 		a.mu.Lock()
@@ -421,11 +434,12 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 			go a.handleRun(ctx, c, env.Corr, cmd)
 		case "type":
 			keys, _ := env.Body["keys"].(string)
+			key, _ := env.Body["key"].(string)
 			id, _ := env.Body["pane_id"].(string)
 			if id == "" {
 				id, _ = env.Body["corr"].(string)
 			}
-			go a.handleType(ctx, c, env.Corr, id, keys)
+			go a.handleType(ctx, c, env.Corr, id, keys, key)
 		case "read_screen":
 			id, _ := env.Body["pane_id"].(string)
 			if id == "" {
@@ -495,8 +509,8 @@ func (a *Agent) spawnPane(ctx context.Context, c *websocket.Conn, corr, cmd stri
 			code := p.exitCode
 			p.mu.Unlock()
 			if done {
-				text, _, _, _ := p.snapshot()
-				_ = wsjson.Write(ctx, c, resultEnv(corr, code == 0, code, text, ""))
+				stdout, stderr := p.resultText()
+				_ = wsjson.Write(ctx, c, resultEnv(corr, code == 0, code, stdout, stderr))
 				a.mu.Lock()
 				a.log("info", fmt.Sprintf("result %d: %s", code, cmd))
 				a.mu.Unlock()
@@ -511,7 +525,7 @@ func (a *Agent) spawnPane(ctx context.Context, c *websocket.Conn, corr, cmd stri
 	}()
 }
 
-func (a *Agent) handleType(ctx context.Context, c *websocket.Conn, corr, id, keys string) {
+func (a *Agent) handleType(ctx context.Context, c *websocket.Conn, corr, id, keys, key string) {
 	a.mu.Lock()
 	sup := a.panes
 	a.mu.Unlock()
@@ -524,7 +538,7 @@ func (a *Agent) handleType(ctx context.Context, c *websocket.Conn, corr, id, key
 		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "typed", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"ok": false, "error": "pane gone"}})
 		return
 	}
-	err := p.typeKeys(keys)
+	err := p.typeInput(keys, key)
 	ok := err == nil
 	msg := ""
 	if err != nil {
@@ -546,9 +560,10 @@ func (a *Agent) handleScreen(ctx context.Context, c *websocket.Conn, corr, id st
 		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"text": "", "running": false}})
 		return
 	}
-	text, running, code, seq := p.snapshot()
+	text, running, code, seq, row, col := sup.paneSnapshot(p)
 	_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{
 		"pane_id": p.id, "text": text, "running": running, "exit_code": code, "seq": seq,
+		"cursor_row": row, "cursor_col": col,
 	}})
 }
 
@@ -570,9 +585,10 @@ func (a *Agent) coalesceLoop(ctx context.Context, c *websocket.Conn) {
 			if p == nil {
 				continue
 			}
-			text, running, code, seq := p.snapshot()
+			text, running, code, seq, row, col := sup.paneSnapshot(p)
 			_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: p.corr, T: time.Now().UnixMilli(), Body: map[string]any{
 				"pane_id": p.id, "text": text, "running": running, "exit_code": code, "seq": seq,
+				"cursor_row": row, "cursor_col": col,
 			}})
 		}
 	}
@@ -644,11 +660,11 @@ func main() {
 	if len(args) > 0 && args[0] != "--daemon" && args[0] != "daemon" {
 		os.Exit(runCLI(args))
 	}
+	maybeDaemonize()
 
-	home, _ := os.UserHomeDir()
-	dir := filepath.Join(home, ".fleet-agent")
+	dir := fleetHome()
 	_ = os.MkdirAll(dir, 0o700)
-	agent := &Agent{permit: PermitAsk, conn: "offline", cfgPath: filepath.Join(dir, "config.json"), panes: newSupervisor()}
+	agent := &Agent{permit: PermitAsk, conn: "offline", cfgPath: configPath(), panes: newSupervisor()}
 	agent.load()
 
 	mux := http.NewServeMux()
@@ -733,14 +749,14 @@ func main() {
 		}()
 	})
 
-	ln, err := net.Listen("tcp", settingsAddr)
+	ln, err := net.Listen("tcp", settingsAddr())
 	if err != nil {
 		if runtime.GOOS == "linux" {
 			log.Println("already running")
 			return
 		}
 		log.Println("already running, opening settings")
-		openBrowser(settingsURL)
+		openBrowser(settingsURL())
 		time.Sleep(400 * time.Millisecond)
 		return
 	}
@@ -748,9 +764,9 @@ func main() {
 		log.Fatal(http.Serve(ln, mux))
 	}()
 	if runtime.GOOS == "linux" {
-		log.Println("linux tray; hub from FLEET_URL + FLEET_TOKEN or ~/.fleet-agent/config.json")
+		log.Println("linux tray; hub from FLEET_URL + FLEET_TOKEN or", configPath())
 	} else {
-		log.Println("settings", settingsURL)
+		log.Println("settings", settingsURL())
 	}
 
 	startKeepAliveLoop()
@@ -770,7 +786,7 @@ func main() {
 		go func() { _ = agent.connect(hub) }()
 	}
 	if runtime.GOOS != "linux" && (first || !trayEnabled) {
-		openBrowser(settingsURL)
+		openBrowser(settingsURL())
 	}
 	if runtime.GOOS == "linux" && first {
 		log.Println("no hub set: export FLEET_URL and FLEET_TOKEN, then restart")

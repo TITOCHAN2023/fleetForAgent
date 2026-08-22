@@ -282,6 +282,9 @@ More info → Run anyway. Normal for an unsigned exe.
 **list_computers is empty**  
 The Agent must show connected first. Wait a few seconds and POST again.
 
+**Windows jobs vs Mac/Linux live shell**
+Mac/Linux share a login PTY (cwd and env persist across commands). Windows uses `cmd /C` oneshot so the agent still compiles and runs without ConPTY. Same hub protocol either way.
+
 **Tray says connected, list says offline**  
 The hub advertised `heartbeat_s` but older agents never sent a heartbeat, so a half-open socket (common on Windows after sleep or NAT idle) stayed “online” on the machine and “offline” on the hub. Current agents ping the hub every 25s; a failed ping reconnects. Restart the Agent once to pick that up.
 

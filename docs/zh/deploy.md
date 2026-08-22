@@ -283,6 +283,9 @@ npm run build
 **list_computers 是空的**  
 Agent 要先显示已连接。刷新几秒后再 POST。
 
+**Windows 任务 vs Mac/Linux live shell**
+Mac/Linux 共用一个登录 PTY（工作目录和环境会留到下一条命令）。Windows 用 `cmd /C` 一次性任务，这样不靠 ConPTY 也能编过、能跑。中枢协议两边一样。
+
 **托盘显示已连接，列表却是 offline**  
 中枢会下发 `heartbeat_s`，但旧版 Agent 从不发心跳。Windows 休眠或 NAT 空闲后容易半开：本机还显示在线，中枢已经当掉线。新版每 25 秒 ping 一次，失败就重连。装上新 Agent 后重启一次即可。
 

@@ -12,22 +12,31 @@ function src(rel: string) {
 
 function mcpToolNames(toolSrc: string): string[] {
   const names: string[] = [];
-  const block = toolSrc.match(/function mcp\(\) \{[\s\S]*?const tools = \[([\s\S]*?)\];/);
-  assert.ok(block, "expected fleet-tool mcp() tools array");
-  for (const m of block[1].matchAll(/name:\s*"([a-z_]+)"/g)) names.push(m[1]);
+  const start = toolSrc.indexOf("export function buildTools()");
+  assert.ok(start >= 0, "expected fleet-tool operator buildTools() array");
+  const end = toolSrc.indexOf("\nfunction hopStatus", start);
+  const block = toolSrc.slice(start, end === -1 ? undefined : end);
+  for (const m of block.matchAll(/name:\s*"([a-z_]+)"/g)) names.push(m[1]);
   return names;
 }
 
 test("guide advertises only the MCP tools shipped on main", () => {
-  const shipped = mcpToolNames(src("packages/fleet-tool/index.mjs"));
-  assert.deepEqual(shipped, ["list_computers", "run", "get_result", "read_screen", "type"]);
+  const shipped = mcpToolNames(src("packages/fleet-tool/operator.mjs"));
+  assert.deepEqual(shipped, [
+    "list_computers",
+    "run",
+    "get_result",
+    "wait",
+    "read_screen",
+    "type",
+    "set_computer",
+    "get_current_computer",
+  ]);
 
   const guide = src("src/components/guide-panel.tsx");
   for (const name of shipped) {
     assert.match(guide, new RegExp(`name: "${name}"`));
   }
-  assert.doesNotMatch(guide, /\bwait\b/);
-  assert.doesNotMatch(guide, /set_computer/);
 });
 
 test("guide documents real env, flags, and placeholder tokens", () => {

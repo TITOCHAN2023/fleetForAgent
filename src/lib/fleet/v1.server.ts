@@ -20,6 +20,44 @@ import {
 } from "./live";
 import { bearerToken, hashHubToken, isHubToken } from "./token";
 
+const HUB_WAIT_MAX_MS = 30_000;
+const HUB_WAIT_POLL_MS = 25;
+
+function clampHubWaitMs(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(HUB_WAIT_MAX_MS, n);
+}
+
+function isHubResultDone(row: Record<string, unknown> | undefined | null): boolean {
+  if (!row) return false;
+  if (row.status === "pending" || row.status === "running") return false;
+  return row.ok !== undefined || row.exit_code !== undefined || row.status === "done";
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitHubResult(deviceId: string, corr: string, waitMs: number) {
+  const budget = clampHubWaitMs(waitMs);
+  const deadline = Date.now() + budget;
+  let row = getResult(deviceId, corr);
+  if (budget <= 0) return row;
+  while (!isHubResultDone(row) && Date.now() < deadline) {
+    const left = deadline - Date.now();
+    if (left <= 0) break;
+    await sleep(Math.min(HUB_WAIT_POLL_MS, left));
+    row = getResult(deviceId, corr);
+  }
+  return row;
+}
+
+function hubResultPayload(corr: string, row: Record<string, unknown> | undefined) {
+  if (!row) return { status: "pending", corr };
+  return { status: "done", corr, ...row };
+}
+
 const CORS: Record<string, string> = {
   "access-control-allow-origin": "*",
   "access-control-allow-headers":
@@ -111,17 +149,20 @@ export async function handleHubHttp(request: Request): Promise<Response> {
       insert into commands (id, user_id, device_id, command, status)
       values (${corr}, ${userId}, ${deviceId}, ${command}, ${"running"})
     `;
-    return json({ corr, status: "running" });
+    const waitMs = clampHubWaitMs(body.wait_ms);
+    if (waitMs <= 0) return json({ corr, status: "running" });
+    const row = await waitHubResult(deviceId, corr, waitMs);
+    return json(hubResultPayload(corr, row));
   }
 
   if (path === "/v1/type" && request.method === "POST") {
     const deviceId = String(body.device_id ?? "");
-    if (!deviceId || body.keys == null) return json({ error: "device_id and keys required" }, 400);
+    if (!deviceId || (body.keys == null && body.key == null)) return json({ error: "device_id and keys or key required" }, 400);
     if (!(await ownsDevice(userId, deviceId))) return json({ error: "not found" }, 404);
     const ok = sendToDevice(
       userId,
       deviceId,
-      envelope("type", { keys: body.keys, corr: body.corr }),
+      envelope("type", { keys: body.keys, key: body.key, corr: body.corr }),
     );
     if (!ok) return json({ error: "offline" }, 409);
     return json({ ok: true, status: "typed" });
@@ -152,9 +193,9 @@ export async function handleHubHttp(request: Request): Promise<Response> {
     const corr = String(body.corr ?? "");
     if (!deviceId || !corr) return json({ error: "device_id and corr required" }, 400);
     if (!(await ownsDevice(userId, deviceId))) return json({ error: "not found" }, 404);
-    const row = getResult(deviceId, corr);
-    if (!row) return json({ status: "pending", corr });
-    return json({ status: "done", corr, ...row });
+    const waitMs = clampHubWaitMs(body.wait_ms);
+    const row = waitMs > 0 ? await waitHubResult(deviceId, corr, waitMs) : getResult(deviceId, corr);
+    return json(hubResultPayload(corr, row));
   }
 
   return json({ error: "not found" }, 404);

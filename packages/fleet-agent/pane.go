@@ -3,25 +3,85 @@ package main
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
 	screenInterval = 250 * time.Millisecond
 	ringLines      = 200
+	headLines      = 200
 	screenLines    = 80
 )
+
+type streamBuf struct {
+	head     []string
+	tail     []string
+	current  string
+	headDone bool
+	dropped  int
+}
+
+func newStreamBuf() *streamBuf {
+	return &streamBuf{}
+}
+
+func (s *streamBuf) append(chunk string) {
+	chunk = strings.ReplaceAll(chunk, "\r", "")
+	if !utf8.ValidString(chunk) {
+		chunk = strings.ToValidUTF8(chunk, "\uFFFD")
+	}
+	parts := strings.Split(chunk, "\n")
+	s.current += parts[0]
+	for _, rest := range parts[1:] {
+		s.pushCompleted(s.current)
+		s.current = rest
+	}
+}
+
+func (s *streamBuf) pushCompleted(line string) {
+	if !s.headDone {
+		s.head = append(s.head, line)
+		if len(s.head) >= headLines {
+			s.headDone = true
+		}
+		return
+	}
+	s.tail = append(s.tail, line)
+	if len(s.tail) > ringLines {
+		s.dropped++
+		s.tail = s.tail[1:]
+	}
+}
+
+func (s *streamBuf) render() string {
+	parts := append([]string{}, s.head...)
+	if s.headDone {
+		if s.dropped > 0 {
+			parts = append(parts, "", fmt.Sprintf("[... %d lines omitted ...]", s.dropped), "")
+		}
+		parts = append(parts, s.tail...)
+	}
+	if s.current != "" {
+		parts = append(parts, s.current)
+	}
+	return strings.Join(parts, "\n")
+}
 
 type pane struct {
 	id, corr, command string
 	mu                sync.Mutex
 	lines             []string
+	stdout            *streamBuf
+	stderr            *streamBuf
 	running           bool
+	typed             bool
 	exitCode          int
 	seq               int
 	stdin             io.WriteCloser
@@ -30,9 +90,13 @@ type pane struct {
 }
 
 type supervisor struct {
-	mu    sync.Mutex
-	panes map[string]*pane
-	order []string
+	mu      sync.Mutex
+	panes   map[string]*pane
+	order   []string
+	live    *liveShell
+	pending *liveJob
+	queue   []*liveJob
+	pumping bool
 }
 
 func newSupervisor() *supervisor {
@@ -40,13 +104,17 @@ func newSupervisor() *supervisor {
 }
 
 func (s *supervisor) spawn(corr, command string) (*pane, error) {
-	ctx := context.Background()
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/C", command)
-	} else {
-		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", command)
+	// Live login PTY is POSIX-only (cwd/env persist across jobs).
+	// Windows keeps cmd /C oneshot so old clients and this agent stay compatible.
+	if runtime.GOOS != "windows" {
+		return s.enqueueLive(corr, command)
 	}
+	return s.spawnOneshot(corr, command)
+}
+
+func (s *supervisor) spawnOneshot(corr, command string) (*pane, error) {
+	ctx := context.Background()
+	cmd := exec.CommandContext(ctx, "cmd", "/C", command)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -70,6 +138,8 @@ func (s *supervisor) spawn(corr, command string) (*pane, error) {
 		stdin:   stdin,
 		cmd:     cmd,
 		lines:   []string{""},
+		stdout:  newStreamBuf(),
+		stderr:  newStreamBuf(),
 	}
 	s.mu.Lock()
 	s.panes[p.id] = p
@@ -78,8 +148,8 @@ func (s *supervisor) spawn(corr, command string) (*pane, error) {
 	}
 	s.order = append(s.order, p.id)
 	s.mu.Unlock()
-	go drain(p, stdout)
-	go drain(p, stderr)
+	go drain(p, stdout, "stdout")
+	go drain(p, stderr, "stderr")
 	go func() {
 		err := cmd.Wait()
 		code := 0
@@ -99,13 +169,13 @@ func (s *supervisor) spawn(corr, command string) (*pane, error) {
 	return p, nil
 }
 
-func drain(p *pane, r io.Reader) {
+func drain(p *pane, r io.Reader, which string) {
 	br := bufio.NewReader(r)
 	buf := make([]byte, 4096)
 	for {
 		n, err := br.Read(buf)
 		if n > 0 {
-			p.append(string(buf[:n]))
+			p.append(which, string(buf[:n]))
 		}
 		if err != nil {
 			return
@@ -113,9 +183,25 @@ func drain(p *pane, r io.Reader) {
 	}
 }
 
-func (p *pane) append(chunk string) {
+func (p *pane) append(which, chunk string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.appendDisplayLocked(chunk)
+	if p.stdout == nil {
+		p.stdout = newStreamBuf()
+	}
+	if p.stderr == nil {
+		p.stderr = newStreamBuf()
+	}
+	if which == "stderr" {
+		p.stderr.append(chunk)
+	} else {
+		p.stdout.append(chunk)
+	}
+	p.dirty = true
+}
+
+func (p *pane) appendDisplayLocked(chunk string) {
 	chunk = strings.ReplaceAll(chunk, "\r", "")
 	parts := strings.Split(chunk, "\n")
 	if len(p.lines) == 0 {
@@ -126,10 +212,14 @@ func (p *pane) append(chunk string) {
 	if len(p.lines) > ringLines {
 		p.lines = p.lines[len(p.lines)-ringLines:]
 	}
-	p.dirty = true
 }
 
 func (p *pane) snapshot() (text string, running bool, code int, seq int) {
+	text, running, code, seq, _, _ = p.snapshotFrame()
+	return
+}
+
+func (p *pane) snapshotFrame() (text string, running bool, code, seq, row, col int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.seq++
@@ -139,31 +229,102 @@ func (p *pane) snapshot() (text string, running bool, code int, seq int) {
 	}
 	text = strings.Join(p.lines[start:], "\n")
 	p.dirty = false
-	return text, p.running, p.exitCode, p.seq
+	return text, p.running, p.exitCode, p.seq, 0, 0
+}
+
+func (s *supervisor) paneSnapshot(p *pane) (text string, running bool, code, seq, row, col int) {
+	if p == nil {
+		return "", false, 0, 0, 0, 0
+	}
+	s.mu.Lock()
+	live := s.live
+	s.mu.Unlock()
+	if live != nil && live.screen != nil {
+		text, row, col = live.screen.grid()
+		p.mu.Lock()
+		p.seq++
+		running, code, seq = p.running, p.exitCode, p.seq
+		p.dirty = false
+		p.mu.Unlock()
+		return
+	}
+	return p.snapshotFrame()
+}
+
+func (p *pane) resultText() (stdout, stderr string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stdout == nil {
+		p.stdout = newStreamBuf()
+	}
+	if p.stderr == nil {
+		p.stderr = newStreamBuf()
+	}
+	return p.stdout.render(), p.stderr.render()
 }
 
 func (p *pane) typeKeys(keys string) error {
+	return p.typeInput(keys, "")
+}
+
+func (p *pane) typeInput(keys, named string) error {
 	p.mu.Lock()
 	w := p.stdin
+	oneshot := p.cmd != nil
 	alive := p.running
+	if !oneshot && alive {
+		p.typed = true
+	}
 	p.mu.Unlock()
-	if !alive || w == nil {
+	if w == nil {
 		return io.ErrClosedPipe
 	}
-	_, err := io.WriteString(w, keys)
-	return err
+	if oneshot && !alive {
+		return io.ErrClosedPipe
+	}
+	if oneshot {
+		if strings.TrimSpace(named) != "" {
+			stroke, err := encodeType("", named)
+			if err != nil {
+				return err
+			}
+			_, err = w.Write(stroke.payload)
+			return err
+		}
+		_, err := io.WriteString(w, keys)
+		return err
+	}
+	stroke, err := encodeType(keys, named)
+	if err != nil {
+		return err
+	}
+	if len(stroke.payload) > 0 {
+		if err := writeTypedKeys(w, stroke.payload); err != nil {
+			return err
+		}
+	}
+	signalForeground(w, stroke.sigint, stroke.sigquit)
+	return nil
 }
 
 func (s *supervisor) get(id string) *pane {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var p *pane
 	if id == "" {
 		if len(s.order) == 0 {
 			return nil
 		}
-		return s.panes[s.order[len(s.order)-1]]
+		p = s.panes[s.order[len(s.order)-1]]
+	} else {
+		p = s.panes[id]
 	}
-	return s.panes[id]
+	if p != nil && s.live != nil && s.live.stdin != nil {
+		p.mu.Lock()
+		p.stdin = s.live.stdin
+		p.mu.Unlock()
+	}
+	return p
 }
 
 func (s *supervisor) list() []map[string]any {

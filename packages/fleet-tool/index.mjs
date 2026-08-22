@@ -4,12 +4,14 @@
  *
  *   FLEET_URL=https://your.app FLEET_TOKEN=flt_... node index.mjs list
  *   FLEET_URL=... FLEET_TOKEN=... node index.mjs run <device_id> 'uname -a'
+ *   node index.mjs --dev list
  *
- * No extra args → MCP stdio (Cursor / other agents).
+ * No extra args → MCP stdio (Cursor / other agents). `--dev` sets FLEET_DEV=1.
  */
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { applyCliDevFlag, createOperator, FLEET_VERSION, formatMcpText, isFleetDev, measureHubFetch } from "./operator.mjs";
 
 function loadDotEnv(path) {
   try {
@@ -33,7 +35,7 @@ loadDotEnv(join(homedir(), ".fleet", "mcp.env"));
 const url = (process.env.FLEET_URL || "").replace(/\/$/, "");
 const token = process.env.FLEET_TOKEN || "";
 
-const argv = process.argv.slice(2);
+const argv = applyCliDevFlag(process.argv.slice(2), process.env);
 if (argv.length) {
   if (!url || !token) {
     console.error("Need FLEET_URL and FLEET_TOKEN (env or ~/.fleet/mcp.env)");
@@ -47,9 +49,23 @@ if (argv.length) {
   mcp();
 }
 
-async function rpc(path, body) {
+async function hubRpc(path, body, { timed = false } = {}) {
   if (!url || !token) {
     throw new Error("Need FLEET_URL and FLEET_TOKEN (env or ~/.fleet/mcp.env)");
+  }
+  const payload = body ?? {};
+  if (timed && isFleetDev(process.env)) {
+    const measured = await measureHubFetch(`${url}${path}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "X-Fleet-Dev": "1",
+      },
+      body: { ...payload, dev: true },
+    });
+    if (!measured.ok) throw new Error(measured.json?.error || String(measured.status));
+    return { __fleetTimed: true, json: measured.json, hop: { ...measured.hop, path } };
   }
   const res = await fetch(`${url}${path}`, {
     method: "POST",
@@ -57,11 +73,15 @@ async function rpc(path, body) {
       authorization: `Bearer ${token}`,
       "content-type": "application/json",
     },
-    body: JSON.stringify(body ?? {}),
+    body: JSON.stringify(payload),
   });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || res.statusText);
   return json;
+}
+
+async function rpc(path, body) {
+  return hubRpc(path, body, { timed: false });
 }
 
 async function cli(args) {
@@ -88,58 +108,10 @@ async function cli(args) {
 }
 
 function mcp() {
-  const tools = [
-    {
-      name: "list_computers",
-      description: "List machines in this hub account. Never returns IPs.",
-      inputSchema: { type: "object", properties: {} },
-    },
-    {
-      name: "run",
-      description: "Start a command on a device. Returns corr immediately; job lives on the device.",
-      inputSchema: {
-        type: "object",
-        required: ["device_id", "command"],
-        properties: { device_id: { type: "string" }, command: { type: "string" } },
-      },
-    },
-    {
-      name: "get_result",
-      description: "Fetch a previous run by corr.",
-      inputSchema: {
-        type: "object",
-        required: ["device_id", "corr"],
-        properties: { device_id: { type: "string" }, corr: { type: "string" } },
-      },
-    },
-    {
-      name: "read_screen",
-      description: "Snapshot the pane. Does not attach or stream.",
-      inputSchema: {
-        type: "object",
-        required: ["device_id"],
-        properties: { device_id: { type: "string" }, corr: { type: "string" } },
-      },
-    },
-    {
-      name: "type",
-      description: "Fire-and-forget keystrokes into the pane stdin.",
-      inputSchema: {
-        type: "object",
-        required: ["device_id", "keys"],
-        properties: { device_id: { type: "string" }, keys: { type: "string" }, corr: { type: "string" } },
-      },
-    },
-  ];
-
-  async function callTool(name, args) {
-    if (name === "list_computers") return rpc("/v1/list_computers", {});
-    if (name === "run") return rpc("/v1/run", args);
-    if (name === "get_result") return rpc("/v1/get_result", args);
-    if (name === "read_screen") return rpc("/v1/read_screen", args);
-    if (name === "type") return rpc("/v1/type", args);
-    throw new Error(`unknown tool ${name}`);
-  }
+  const { tools, callTool } = createOperator({
+    rpc: (path, body) => hubRpc(path, body, { timed: true }),
+    env: process.env,
+  });
 
   const rl = readline();
   void (async () => {
@@ -158,7 +130,7 @@ function mcp() {
           reply(id, {
             protocolVersion: "2024-11-05",
             capabilities: { tools: {} },
-            serverInfo: { name: "fleet", version: "0.2.0" },
+            serverInfo: { name: "fleet", version: FLEET_VERSION },
           });
           continue;
         }
@@ -168,7 +140,11 @@ function mcp() {
         }
         if (msg.method === "tools/call") {
           const out = await callTool(msg.params?.name, msg.params?.arguments ?? {});
-          reply(id, { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] });
+          const payload = { content: [{ type: "text", text: formatMcpText(msg.params?.name, out, process.env) }] };
+          if (out && typeof out === "object" && out.dev && Number.isFinite(out.dev.total_ms)) {
+            payload._meta = { duration_ms: out.dev.total_ms, fleet_dev: out.dev };
+          }
+          reply(id, payload);
           continue;
         }
         reply(id, {});

@@ -423,7 +423,7 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 		switch env.Type {
 		case "hello_ok":
 			a.mu.Lock()
-			a.hb = heartbeatEvery(env.Body)
+			// report cadence is chosen on the client
 			a.mu.Unlock()
 		case "pong":
 			// hub ack of our ping; liveness is the websocket Ping below

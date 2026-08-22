@@ -444,7 +444,7 @@ export class DeviceDO implements DurableObject {
         os: request.headers.get("x-device-os") ?? "linux",
         userId: request.headers.get("x-fleet-user") ?? undefined,
       });
-      pair[1].send(JSON.stringify(envelope("hello_ok", { heartbeat_s: 25 })));
+      pair[1].send(JSON.stringify(envelope("hello_ok", { heartbeat_s: 3600 })));
       await this.mark(id, {
         name: request.headers.get("x-device-name") ?? id,
         os: request.headers.get("x-device-os") ?? "linux",

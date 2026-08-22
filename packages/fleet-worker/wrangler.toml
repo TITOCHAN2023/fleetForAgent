@@ -5,6 +5,10 @@ compatibility_date = "2026-04-07"
 # Optional shared token. Leave unset for a first bring-up, then:
 #   npx wrangler secret put HUB_TOKEN
 # [vars] must not hold the token.
+#
+# aud inside every flt_1 token. Never taken from the Host header.
+[vars]
+HUB_ORIGIN = "https://fleet.ginfo.cc"
 
 [[routes]]
 pattern = "fleet.ginfo.cc"

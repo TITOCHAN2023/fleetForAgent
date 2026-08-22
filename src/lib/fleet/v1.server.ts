@@ -1,6 +1,6 @@
 /**
  * Hub wire on the website origin. App assembles /v1/*.
- * Bearer is the per-account hub token (flt_…), not the login session.
+ * Operators present Fleet-OAEP wraps of flt_1 tokens, not plaintext Bearer.
  */
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
@@ -18,7 +18,19 @@ import {
   putScreen,
   sendToDevice,
 } from "./live";
-import { bearerToken, hashHubToken, isHubToken } from "./token";
+import {
+  CHALLENGE_TTL_MS,
+  HIGH_SEC_HANDSHAKE,
+  HIGH_SEC_KEY_MISMATCH,
+  HIGH_SEC_UPGRADE,
+  createChallengeBook,
+  hashHubToken,
+  hubOrigin,
+  isLegacyFlt,
+  parseAuthorization,
+  signChallenge,
+  unwrapAuth,
+} from "./token";
 
 const HUB_WAIT_MAX_MS = 30_000;
 const HUB_WAIT_POLL_MS = 25;
@@ -81,14 +93,77 @@ function wss(): WebSocketServer {
   return g.__fleetWss__;
 }
 
+const gChal = globalThis as typeof globalThis & {
+  __fleetChalBook__?: ReturnType<typeof createChallengeBook>;
+};
+
+function challenges() {
+  gChal.__fleetChalBook__ ??= createChallengeBook();
+  return gChal.__fleetChalBook__;
+}
+
+function configuredOrigin() {
+  return hubOrigin(process.env.FLEET_HUB_ORIGIN || "https://fleet.ginfo.cc") || "https://fleet.ginfo.cc";
+}
+
+function highSecJson(error: string, status = 401) {
+  return json({ error, code: "HIGH_SEC" }, status);
+}
+
 export async function lookupHubUser(authorization: string | null | undefined): Promise<string | null> {
-  const raw = bearerToken(authorization);
-  if (!isHubToken(raw)) return null;
+  const got = await lookupHubActor(authorization);
+  return got.userId ?? null;
+}
+
+async function lookupHubActor(
+  authorization: string | null | undefined,
+): Promise<{ userId?: string; error?: string; code?: string }> {
+  const auth = parseAuthorization(authorization);
+  if (auth.kind === "oaep") {
+    const sql = await getSql();
+    const rows = await sql<{ user_id: string; token_hash: string; kid: string; priv: string }>`
+      select user_id, token_hash, kid, priv from hub_tokens where kid = ${auth.kid}
+    `;
+    const row = rows[0];
+    if (!row?.priv || row.kid !== auth.kid) return { error: HIGH_SEC_KEY_MISMATCH, code: "HIGH_SEC" };
+    let opened: { sec: string; nonce: string };
+    try {
+      opened = await unwrapAuth({ privatePkcs8B64: row.priv, wrapB64: auth.wrap });
+    } catch {
+      return { error: HIGH_SEC_KEY_MISMATCH, code: "HIGH_SEC" };
+    }
+    const chal = challenges().take(opened.nonce) as
+      | { kid: string; userId: string; exp: number }
+      | undefined;
+    if (!chal || chal.kid !== auth.kid || chal.userId !== row.user_id || chal.exp < Date.now()) {
+      return { error: HIGH_SEC_HANDSHAKE, code: "HIGH_SEC" };
+    }
+    const hash = await hashHubToken(opened.sec);
+    if (hash !== row.token_hash) return { error: HIGH_SEC_KEY_MISMATCH, code: "HIGH_SEC" };
+    return { userId: row.user_id };
+  }
+  if (auth.kind === "bearer" && (isLegacyFlt(auth.token) || auth.token.startsWith("flt_1."))) {
+    return { error: HIGH_SEC_UPGRADE, code: "HIGH_SEC" };
+  }
+  return {};
+}
+
+async function issueChallenge(kid: string) {
+  const origin = configuredOrigin();
+  if (!kid) return highSecJson(HIGH_SEC_KEY_MISMATCH);
   const sql = await getSql();
-  const rows = await sql<{ user_id: string }>`
-    select user_id from hub_tokens where token_hash = ${hashHubToken(raw)}
+  const rows = await sql<{ user_id: string; kid: string; priv: string }>`
+    select user_id, kid, priv from hub_tokens where kid = ${kid}
   `;
-  return rows[0]?.user_id ?? null;
+  const row = rows[0];
+  if (!row?.priv || row.kid !== kid) return highSecJson(HIGH_SEC_KEY_MISMATCH);
+  const nonce = [...crypto.getRandomValues(new Uint8Array(32))]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  const exp = Date.now() + CHALLENGE_TTL_MS;
+  challenges().put(kid, nonce, { userId: row.user_id, exp });
+  const sig = await signChallenge({ privatePkcs8B64: row.priv, aud: origin, kid, nonce });
+  return json({ nonce, kid, aud: origin, exp, sig });
 }
 
 export async function handleHubHttp(request: Request): Promise<Response> {
@@ -100,8 +175,13 @@ export async function handleHubHttp(request: Request): Promise<Response> {
   if (path === "/v1/health" || path === "/v1") {
     return json({ name: "fleet-hub", v: 1, ok: true, backend: "app" });
   }
+  if (path === "/v1/challenge" && request.method === "GET") {
+    return issueChallenge(url.searchParams.get("kid") ?? "");
+  }
 
-  const userId = await lookupHubUser(request.headers.get("authorization"));
+  const got = await lookupHubActor(request.headers.get("authorization"));
+  if (got.error) return json({ error: got.error, code: got.code }, 401);
+  const userId = got.userId;
   if (!userId) return json({ error: "unauthorized" }, 401);
 
   let body: Record<string, unknown> = {};
@@ -205,7 +285,8 @@ export async function handleHubUpgrade(req: IncomingMessage, socket: Duplex, hea
   const url = new URL(req.url ?? "/", "http://hub");
   if (url.pathname !== "/v1/device") return false;
 
-  const userId = await lookupHubUser(header(req, "authorization"));
+  const got = await lookupHubActor(header(req, "authorization"));
+  const userId = got.userId;
   if (!userId) {
     socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
     socket.destroy();

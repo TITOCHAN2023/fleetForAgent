@@ -2,7 +2,7 @@
 /**
  * Operator tool. Same two values as the agent: website origin + hub token.
  *
- *   FLEET_URL=https://your.app FLEET_TOKEN=flt_... node index.mjs list
+ *   FLEET_URL=https://your.app FLEET_TOKEN=flt_1... node index.mjs list
  *   FLEET_URL=... FLEET_TOKEN=... node index.mjs run <device_id> 'uname -a'
  *   node index.mjs --dev list
  *
@@ -21,6 +21,7 @@ import {
   measureHubFetch,
   newOperatorFingerprint,
 } from "./operator.mjs";
+import { highSecAuthorization } from "../fleet-worker/src/tokenv1.mjs";
 
 const operatorFingerprint = newOperatorFingerprint();
 
@@ -60,19 +61,21 @@ if (argv.length) {
   mcp();
 }
 
+async function hubHeaders() {
+  const authorization = await highSecAuthorization(token, url);
+  return fleetHubHeaders({ authorization, fingerprint: operatorFingerprint });
+}
+
 async function hubRpc(path, body, { timed = false } = {}) {
   if (!url || !token) {
     throw new Error("Need FLEET_URL and FLEET_TOKEN (env or ~/.fleet/mcp.env)");
   }
   const payload = body ?? {};
+  const headers = await hubHeaders();
   if (timed && isFleetDev(process.env)) {
     const measured = await measureHubFetch(`${url}${path}`, {
       method: "POST",
-      headers: fleetHubHeaders({
-        token,
-        fingerprint: operatorFingerprint,
-        extra: { "X-Fleet-Dev": "1" },
-      }),
+      headers: { ...headers, "X-Fleet-Dev": "1" },
       body: { ...payload, dev: true },
     });
     if (!measured.ok) throw new Error(measured.json?.error || String(measured.status));
@@ -80,7 +83,7 @@ async function hubRpc(path, body, { timed = false } = {}) {
   }
   const res = await fetch(`${url}${path}`, {
     method: "POST",
-    headers: fleetHubHeaders({ token, fingerprint: operatorFingerprint }),
+    headers,
     body: JSON.stringify(payload),
   });
   const json = await res.json();

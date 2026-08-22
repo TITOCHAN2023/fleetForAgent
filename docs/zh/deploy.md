@@ -11,7 +11,7 @@
 
 ```
 [fleet-tool / Cursor / Claude]
-        HTTPS + Bearer flt_…
+        HTTPS + Fleet-OAEP (flt_1)
             │
             ▼
    fleet.ginfo.cc  (云端中枢)

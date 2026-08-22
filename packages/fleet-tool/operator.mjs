@@ -3,7 +3,7 @@
  * Do not write hub_sessions, ~/.fleet, or a workspace file.
  */
 
-export const FLEET_VERSION = "0.2.8";
+export const FLEET_VERSION = "0.2.9";
 
 /** MCP-process fingerprint. HTTP header only — never a tool argument. */
 export const FLEET_OPERATOR_HEADER = "X-Fleet-Operator";
@@ -82,9 +82,9 @@ export function newOperatorFingerprint() {
   return crypto.randomUUID();
 }
 
-export function fleetHubHeaders({ token, fingerprint, extra } = {}) {
+export function fleetHubHeaders({ token, authorization, fingerprint, extra } = {}) {
   const headers = {
-    authorization: `Bearer ${token}`,
+    authorization: authorization || (token ? `Bearer ${token}` : ""),
     "content-type": "application/json",
     ...extra,
   };

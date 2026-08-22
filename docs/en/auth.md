@@ -35,3 +35,17 @@ https://fleet.ginfo.cc/v1/auth/callback/x
 ```
 
 If these are unset, the buttons open an explicit error page. Do not add email/password login again. `/v1/register` and `/v1/login` are closed.
+
+## High-security hub token (`flt_1`)
+
+Settings mints a per-account RSA-2048 keypair. The string you copy is `flt_1.<payload>.<sig>`: it carries the public key and a secret, and is bound to `HUB_ORIGIN` (`https://fleet.ginfo.cc`), never the HTTP Host header.
+
+Agents and MCP do not send that string as `Authorization: Bearer`. They:
+
+1. `GET /v1/challenge?kid=…` — the hub PSS-signs a nonce with the matching private key.
+2. OAEP-wrap `{sec, nonce}` with the public key from the token.
+3. Send `Authorization: Fleet-OAEP <kid>.<wrap>` on WSS `/v1/device` and on every operator HTTPS call.
+
+Resetting the token deletes the old keypair and closes every live device WebSocket for that account (`1008 token reset`). Legacy `flt_` hex Bearer is rejected with an English `HIGH_SEC` error: update the agent / MCP client, then issue a new token.
+
+`HUB_ORIGIN` is set in `packages/fleet-worker/wrangler.toml` `[vars]`. Optional `HUB_TOKEN` remains HTTP-only super for list/run; it cannot steal a device WebSocket.

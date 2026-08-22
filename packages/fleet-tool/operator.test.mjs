@@ -761,8 +761,8 @@ test("applyCliDevFlag sets FLEET_DEV and strips --dev", () => {
   assert.equal(isFleetDev({}), false);
 });
 
-test("MCP version is 0.2.8", () => {
-  assert.equal(FLEET_VERSION, "0.2.8");
+test("MCP version is 0.2.9", () => {
+  assert.equal(FLEET_VERSION, "0.2.9");
 });
 
 test("newOperatorFingerprint is a UUID and is not read from FLEET_OPERATOR", () => {
@@ -789,6 +789,8 @@ test("fleetHubHeaders attaches X-Fleet-Operator and never a tool-shaped field", 
   assert.equal("corr" in headers, false);
   const none = fleetHubHeaders({ token: "flt_test" });
   assert.equal(none[FLEET_OPERATOR_HEADER], undefined);
+  const oaep = fleetHubHeaders({ authorization: "Fleet-OAEP kid.wrap" });
+  assert.equal(oaep.authorization, "Fleet-OAEP kid.wrap");
 });
 
 test("measureHubFetch sends the operator fingerprint header", async () => {

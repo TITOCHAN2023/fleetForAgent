@@ -1,28 +1,33 @@
-import { createHash, randomBytes } from "node:crypto";
+export {
+  CHALLENGE_TTL_MS,
+  createChallengeBook,
+  HIGH_SEC_HANDSHAKE,
+  HIGH_SEC_KEY_MISMATCH,
+  HIGH_SEC_UPGRADE,
+  audMismatch,
+  bearerToken,
+  hashHubToken,
+  highSecAuthorization,
+  hubOrigin,
+  isLegacyFlt,
+  isTokenV1,
+  mintTokenV1,
+  parseAuthorization,
+  signChallenge,
+  unwrapAuth,
+  verifyChallenge,
+  verifyTokenV1,
+  wrapAuth,
+} from "../../../packages/fleet-worker/src/tokenv1.mjs";
 
-export const HUB_TOKEN_PREFIX = "flt_";
-
-export type MintedHubToken = {
-  raw: string;
-  hash: string;
-  prefix: string;
-};
-
-export function hashHubToken(raw: string): string {
-  return createHash("sha256").update(raw.trim(), "utf8").digest("hex");
-}
-
-export function mintHubToken(): MintedHubToken {
-  const raw = HUB_TOKEN_PREFIX + randomBytes(32).toString("hex");
-  return { raw, hash: hashHubToken(raw), prefix: raw.slice(0, 12) };
-}
+import { isTokenV1, mintTokenV1 } from "../../../packages/fleet-worker/src/tokenv1.mjs";
 
 export function isHubToken(raw: string): boolean {
-  const t = raw.trim();
-  return t.startsWith(HUB_TOKEN_PREFIX) && t.length === HUB_TOKEN_PREFIX.length + 64;
+  return isTokenV1(raw);
 }
 
-export function bearerToken(header: string | null | undefined): string {
-  const h = header ?? "";
-  return h.startsWith("Bearer ") ? h.slice(7).trim() : "";
+export async function mintHubToken(aud?: string) {
+  return mintTokenV1({
+    aud: aud || process.env.FLEET_HUB_ORIGIN || "https://fleet.ginfo.cc",
+  });
 }

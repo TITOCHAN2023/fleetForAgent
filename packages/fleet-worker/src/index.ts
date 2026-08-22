@@ -5,9 +5,10 @@
  * Operators call HTTPS: list_computers / select_computer / run / get_result.
  * No inbound ports on the machines. No intranet overlay.
  *
- * Auth: per-account flt_ tokens (hashed). Optional secret HUB_TOKEN is a
- * super operator for HTTP list/run only — it cannot steal a device WebSocket.
- * Empty HUB_TOKEN = no super user.
+ * Auth: per-account flt_1 tokens (RSA-2048, aud = HUB_ORIGIN). Operators and
+ * agents present Fleet-OAEP wraps, not plaintext Bearer. Optional secret
+ * HUB_TOKEN is a super operator for HTTP list/run only — it cannot steal a
+ * device WebSocket. Empty HUB_TOKEN = no super user.
  */
 
 import { handleOAuth } from "./oauth";
@@ -18,11 +19,27 @@ import {
   fingerprintFromHeaders,
   resolveTicket,
 } from "./session.mjs";
+import {
+  CHALLENGE_TTL_MS,
+  HIGH_SEC_HANDSHAKE,
+  HIGH_SEC_KEY_MISMATCH,
+  HIGH_SEC_UPGRADE,
+  dropChallengeNonce,
+  hashHubToken,
+  hubOrigin,
+  isLegacyFlt,
+  mintTokenV1,
+  nextChallengeList,
+  parseAuthorization,
+  signChallenge,
+  unwrapAuth,
+} from "./tokenv1.mjs";
 
 export interface Env {
   DEVICE: DurableObjectNamespace;
   FLEET: DurableObjectNamespace;
   HUB_TOKEN?: string;
+  HUB_ORIGIN?: string;
   ASSETS?: Fetcher;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
@@ -96,7 +113,14 @@ type UserRow = {
   tokenHash?: string;
   tokenPrefix?: string;
   tokenAt?: number;
+  kid?: string;
+  pub?: string;
+  priv?: string;
 };
+
+type Resolved =
+  | { actor: Actor }
+  | { error: string; status: number; code?: string };
 
 const CORS: Record<string, string> = {
   "access-control-allow-origin": "*",
@@ -126,6 +150,11 @@ export default {
 
     const fleet = env.FLEET.get(env.FLEET.idFromName("fleet"));
 
+    if (url.pathname === "/v1/challenge" && request.method === "GET") {
+      const kid = url.searchParams.get("kid") ?? "";
+      return fleetChallenge(fleet, kid, configuredOrigin(env));
+    }
+
     if ((url.pathname === "/v1/register" || url.pathname === "/v1/login") && request.method === "POST") {
       return json({ error: "email login disabled" }, 404);
     }
@@ -136,24 +165,30 @@ export default {
       return withCookies(json({ ok: true }), 'fleet_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax');
     }
     if (url.pathname === "/v1/me" && request.method === "GET") {
-      const actor = await resolveActor(request, env, fleet);
-      if (!actor || actor.super) return json({ error: "unauthorized" }, 401);
-      return json({ id: actor.id, email: actor.email });
+      const resolved = await resolveActor(request, env, fleet);
+      if (!resolved.actor || resolved.actor.super) return deny(resolved, true);
+      return json({ id: resolved.actor.id, email: resolved.actor.email });
     }
     if (url.pathname === "/v1/hub_token" && request.method === "GET") {
-      const actor = await resolveActor(request, env, fleet);
-      if (!actor || actor.super) return json({ error: "unauthorized" }, 401);
-      return fleet.fetch(new Request(`https://fleet/token-meta?user=${encodeURIComponent(actor.id)}`));
+      const resolved = await resolveActor(request, env, fleet);
+      if (!resolved.actor || resolved.actor.super) return deny(resolved, true);
+      return fleet.fetch(new Request(`https://fleet/token-meta?user=${encodeURIComponent(resolved.actor.id)}`));
     }
     if (url.pathname === "/v1/hub_token" && request.method === "POST") {
-      const actor = await resolveActor(request, env, fleet);
-      if (!actor || actor.super) return json({ error: "unauthorized" }, 401);
-      return fleet.fetch(new Request(`https://fleet/token-issue?user=${encodeURIComponent(actor.id)}`, { method: "POST" }));
+      const resolved = await resolveActor(request, env, fleet);
+      if (!resolved.actor || resolved.actor.super) return deny(resolved, true);
+      const aud = encodeURIComponent(configuredOrigin(env));
+      return fleet.fetch(
+        new Request(`https://fleet/token-issue?user=${encodeURIComponent(resolved.actor.id)}&aud=${aud}`, {
+          method: "POST",
+        }),
+      );
     }
 
     if (url.pathname === "/v1/device") {
-      const actor = await resolveActor(request, env, fleet);
-      if (!actor) return json({ error: "unauthorized" }, 401);
+      const resolved = await resolveActor(request, env, fleet);
+      if (!resolved.actor) return deny(resolved);
+      const actor = resolved.actor;
       const deviceId = deviceIdFrom(request);
       if (!deviceId) return json({ error: "x-device-id required" }, 400);
       const rowRes = await fleet.fetch(
@@ -169,8 +204,9 @@ export default {
       return stub.fetch(new Request(request, { headers }));
     }
 
-    const actor = await resolveActor(request, env, fleet);
-    if (!actor) return json({ error: "unauthorized" }, 401);
+    const resolved = await resolveActor(request, env, fleet);
+    if (!resolved.actor) return deny(resolved);
+    const actor = resolved.actor;
 
     if (url.pathname === "/v1/list_computers" && request.method === "POST") {
       const q = actor.super ? "" : `?user=${encodeURIComponent(actor.id)}`;
@@ -315,6 +351,13 @@ export class FleetDO implements DurableObject {
     if (url.pathname === "/resolve") {
       return json((await this.resolve(request)) ?? {});
     }
+    if (url.pathname === "/challenge" && request.method === "GET") {
+      return this.challenge(url.searchParams.get("kid") ?? "", url.searchParams.get("aud") ?? "");
+    }
+    if (url.pathname === "/resolve-wrap" && request.method === "POST") {
+      const body = (await request.json()) as { kid?: string; wrap?: string };
+      return this.resolveWrap(body.kid ?? "", body.wrap ?? "");
+    }
     if (url.pathname === "/token-meta") {
       const userId = url.searchParams.get("user") ?? "";
       const user = await this.userById(userId);
@@ -329,14 +372,19 @@ export class FleetDO implements DurableObject {
       const userId = url.searchParams.get("user") ?? "";
       const user = await this.userById(userId);
       if (!user) return json({ error: "unauthorized" }, 401);
-      if (user.tokenHash) await this.ctx.storage.delete(`tok:${user.tokenHash}`);
-      const minted = await mintHubToken();
+      const minted = await mintTokenV1({ aud: url.searchParams.get("aud") ?? "" });
+      await this.revokeToken(user);
       user.tokenHash = minted.hash;
       user.tokenPrefix = minted.prefix;
       user.tokenAt = Date.now();
+      user.kid = minted.kid;
+      user.pub = minted.pub;
+      user.priv = minted.priv;
       await this.ctx.storage.put(`u:${user.email}`, user);
       await this.ctx.storage.put(`id:${user.id}`, user.email);
       await this.ctx.storage.put(`tok:${minted.hash}`, user.id);
+      await this.ctx.storage.put(`kid:${minted.kid}`, user.id);
+      await this.kickUserDevices(user.id);
       return json({ token: minted.raw, prefix: minted.prefix });
     }
     return json({ error: "not found" }, 404);
@@ -367,16 +415,76 @@ export class FleetDO implements DurableObject {
         if (user) return { id: user.id, email: user.email };
       }
     }
-    const tok = bearer(request);
-    if (tok.startsWith("flt_")) {
-      const hash = await sha256hex(tok);
-      const userId = await this.ctx.storage.get<string>(`tok:${hash}`);
-      if (userId) {
-        const email = await this.ctx.storage.get<string>(`id:${userId}`);
-        return { id: userId, email: email ?? undefined };
-      }
-    }
     return null;
+  }
+
+  async challenge(kid: string, aud: string): Promise<Response> {
+    const origin = hubOrigin(aud);
+    if (!kid || !origin) return highSecJson(HIGH_SEC_KEY_MISMATCH, 401);
+    const userId = await this.ctx.storage.get<string>(`kid:${kid}`);
+    const user = userId ? await this.userById(userId) : null;
+    if (!user?.priv || user.kid !== kid) return highSecJson(HIGH_SEC_KEY_MISMATCH, 401);
+    const nonce = [...crypto.getRandomValues(new Uint8Array(32))]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    const exp = Date.now() + CHALLENGE_TTL_MS;
+    const live = (await this.ctx.storage.get<string[]>(`chals:${kid}`)) ?? [];
+    const { list, dropped } = nextChallengeList(live, nonce);
+    await Promise.all(dropped.map((n) => this.ctx.storage.delete(`chal:${n}`)));
+    await this.ctx.storage.put(`chal:${nonce}`, { kid, userId: user.id, exp });
+    await this.ctx.storage.put(`chals:${kid}`, list);
+    const sig = await signChallenge({ privatePkcs8B64: user.priv, aud: origin, kid, nonce });
+    return json({ nonce, kid, aud: origin, exp, sig });
+  }
+
+  async resolveWrap(kid: string, wrap: string): Promise<Response> {
+    if (!kid || !wrap) return highSecJson(HIGH_SEC_KEY_MISMATCH, 401);
+    const userId = await this.ctx.storage.get<string>(`kid:${kid}`);
+    const user = userId ? await this.userById(userId) : null;
+    if (!user?.priv || user.kid !== kid) return highSecJson(HIGH_SEC_KEY_MISMATCH, 401);
+    let opened: { sec: string; nonce: string };
+    try {
+      opened = await unwrapAuth({ privatePkcs8B64: user.priv, wrapB64: wrap });
+    } catch {
+      return highSecJson(HIGH_SEC_KEY_MISMATCH, 401);
+    }
+    const chal = await this.ctx.storage.get<{ kid: string; userId: string; exp: number }>(`chal:${opened.nonce}`);
+    await this.ctx.storage.delete(`chal:${opened.nonce}`);
+    const live = (await this.ctx.storage.get<string[]>(`chals:${kid}`)) ?? [];
+    await this.ctx.storage.put(`chals:${kid}`, dropChallengeNonce(live, opened.nonce));
+    if (!chal || chal.kid !== kid || chal.userId !== user.id || chal.exp < Date.now()) {
+      return highSecJson(HIGH_SEC_HANDSHAKE, 401);
+    }
+    const hash = await hashHubToken(opened.sec);
+    if (hash !== user.tokenHash) return highSecJson(HIGH_SEC_KEY_MISMATCH, 401);
+    return json({ id: user.id, email: user.email });
+  }
+
+  async revokeToken(user: UserRow) {
+    if (user.tokenHash) await this.ctx.storage.delete(`tok:${user.tokenHash}`);
+    if (user.kid) {
+      const live = (await this.ctx.storage.get<string[]>(`chals:${user.kid}`)) ?? [];
+      await Promise.all(live.map((n) => this.ctx.storage.delete(`chal:${n}`)));
+      await this.ctx.storage.delete(`chals:${user.kid}`);
+      await this.ctx.storage.delete(`kid:${user.kid}`);
+    }
+    user.tokenHash = undefined;
+    user.tokenPrefix = undefined;
+    user.kid = undefined;
+    user.pub = undefined;
+    user.priv = undefined;
+    await this.ctx.storage.put(`u:${user.email}`, user);
+  }
+
+  async kickUserDevices(userId: string) {
+    const devices = await this.list(userId);
+    await Promise.all(
+      devices.map((d) =>
+        this.env.DEVICE.get(this.env.DEVICE.idFromName(d.id)).fetch(
+          new Request("https://device/kick", { method: "POST" }),
+        ),
+      ),
+    );
   }
 
   async userById(userId: string): Promise<UserRow | null> {
@@ -452,6 +560,13 @@ export class DeviceDO implements DurableObject {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+
+    if (url.pathname === "/kick" && request.method === "POST") {
+      for (const ws of this.ctx.getWebSockets()) {
+        ws.close(1008, "token reset");
+      }
+      return json({ ok: true });
+    }
 
     if (request.headers.get("Upgrade") === "websocket") {
       const id = deviceIdFrom(request) ?? "unknown";
@@ -685,16 +800,66 @@ export class DeviceDO implements DurableObject {
   }
 }
 
+function configuredOrigin(env: Env): string {
+  return hubOrigin(env.HUB_ORIGIN || "https://fleet.ginfo.cc") || "https://fleet.ginfo.cc";
+}
+
+function highSecJson(error: string, status = 401) {
+  return json({ error, code: "HIGH_SEC" }, status);
+}
+
+function deny(resolved: Resolved, rejectSuper = false) {
+  if (resolved.actor && rejectSuper) return json({ error: "unauthorized" }, 401);
+  if ("error" in resolved && resolved.error) {
+    return json(
+      resolved.code ? { error: resolved.error, code: resolved.code } : { error: resolved.error },
+      resolved.status ?? 401,
+    );
+  }
+  return json({ error: "unauthorized" }, 401);
+}
+
+function fleetChallenge(fleet: DurableObjectStub, kid: string, aud: string) {
+  const q = new URLSearchParams({ kid, aud });
+  return fleet.fetch(new Request(`https://fleet/challenge?${q}`));
+}
+
 async function resolveActor(
   request: Request,
   env: Env,
   fleet: DurableObjectStub,
-): Promise<Actor | null> {
+): Promise<Resolved> {
   const need = env.HUB_TOKEN?.trim();
-  if (need && bearer(request) === need) return { id: "*", super: true };
-  const res = await fleet.fetch(new Request("https://fleet/resolve", { headers: request.headers }));
-  const data = (await res.json()) as Actor;
-  return data.id ? data : null;
+  const auth = parseAuthorization(request.headers.get("authorization"));
+  if (need && auth.kind === "bearer" && auth.token === need) return { actor: { id: "*", super: true } };
+
+  const sessRes = await fleet.fetch(new Request("https://fleet/resolve", { headers: request.headers }));
+  const sess = (await sessRes.json()) as Actor;
+  if (sess.id) return { actor: sess };
+
+  if (auth.kind === "oaep") {
+    const wrapRes = await fleet.fetch(
+      new Request("https://fleet/resolve-wrap", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kid: auth.kid, wrap: auth.wrap }),
+      }),
+    );
+    const data = (await wrapRes.json()) as Actor & { error?: string; code?: string };
+    if (wrapRes.ok && data.id) return { actor: { id: data.id, email: data.email } };
+    return {
+      error: data.error || HIGH_SEC_KEY_MISMATCH,
+      status: wrapRes.status || 401,
+      code: data.code || "HIGH_SEC",
+    };
+  }
+  if (auth.kind === "bearer" && isLegacyFlt(auth.token)) {
+    return { error: HIGH_SEC_UPGRADE, status: 401, code: "HIGH_SEC" };
+  }
+  if (auth.kind === "bearer" && auth.token.startsWith("flt_1.")) {
+    return { error: HIGH_SEC_UPGRADE, status: 401, code: "HIGH_SEC" };
+  }
+  return { error: "unauthorized", status: 401 };
 }
 
 async function owns(fleet: DurableObjectStub, actor: Actor, deviceId: string): Promise<boolean> {
@@ -719,11 +884,6 @@ function cookie(request: Request, name: string): string | null {
   return null;
 }
 
-async function sha256hex(raw: string): Promise<string> {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 async function pbkdf2(password: string, salt: string): Promise<string> {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, [
     "deriveBits",
@@ -734,16 +894,6 @@ async function pbkdf2(password: string, salt: string): Promise<string> {
     256,
   );
   return [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-async function mintHubToken() {
-  const raw = "flt_" + [...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, "0")).join("");
-  return { raw, hash: await sha256hex(raw), prefix: raw.slice(0, 12) };
-}
-
-function bearer(request: Request) {
-  const h = request.headers.get("authorization") ?? "";
-  return h.startsWith("Bearer ") ? h.slice(7) : "";
 }
 
 function deviceIdFrom(request: Request): string | null {

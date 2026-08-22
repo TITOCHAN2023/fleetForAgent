@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	agentVersion = "0.2.8"
+	agentVersion = "0.2.9"
 )
 
 //go:embed ui/index.html
@@ -287,21 +287,33 @@ func (a *Agent) connect(hub string) error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
-	headers := map[string][]string{
-		"X-Fleet-Proto": {"1"},
-		"X-Device-Id":   {a.deviceID},
-		"X-Device-Name": {deviceName()},
-		"X-Device-Os":   {osKind()},
-	}
 	tok := a.hubToken
 	if tok == "" {
 		tok = os.Getenv("FLEET_HUB_TOKEN")
 	}
-	if tok != "" {
-		headers["Authorization"] = []string{"Bearer " + tok}
-	}
 	deviceID := a.deviceID
 	a.mu.Unlock()
+
+	headers := map[string][]string{
+		"X-Fleet-Proto": {"1"},
+		"X-Device-Id":   {deviceID},
+		"X-Device-Name": {deviceName()},
+		"X-Device-Os":   {osKind()},
+	}
+	auth, err := highSecAuthorization(ctx, wss, tok)
+	if err != nil {
+		a.mu.Lock()
+		a.conn = "error"
+		a.err = err.Error()
+		a.log("error", a.err)
+		a.save()
+		a.mu.Unlock()
+		a.pushUI()
+		return err
+	}
+	if auth != "" {
+		headers["Authorization"] = []string{auth}
+	}
 
 	c, _, err := websocket.Dial(ctx, wss, &websocket.DialOptions{HTTPHeader: headers})
 	a.mu.Lock()

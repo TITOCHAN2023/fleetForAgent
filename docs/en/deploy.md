@@ -11,7 +11,7 @@ Import the tool → FLEET_URL + FLEET_TOKEN
 
 ```
 [fleet-tool / Cursor / Claude]
-        HTTPS + Bearer flt_…
+        HTTPS + Fleet-OAEP (flt_1)
             │
             ▼
    fleet.ginfo.cc  (cloud hub)

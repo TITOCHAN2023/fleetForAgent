@@ -30,15 +30,22 @@ export const issueHubToken = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator(() => true)
   .handler(async ({ context }) => {
-    const minted = mintHubToken();
+    const minted = await mintHubToken();
     const sql = await getSql();
     await sql`
-      insert into hub_tokens (user_id, token_hash, token_prefix, created_at)
-      values (${context.userId}, ${minted.hash}, ${minted.prefix}, now())
+      insert into hub_tokens (user_id, token_hash, token_prefix, created_at, kid, pub, priv, aud)
+      values (
+        ${context.userId}, ${minted.hash}, ${minted.prefix}, now(),
+        ${minted.kid}, ${minted.pub}, ${minted.priv}, ${minted.aud}
+      )
       on conflict (user_id) do update
         set token_hash = excluded.token_hash,
             token_prefix = excluded.token_prefix,
-            created_at = now()
+            created_at = now(),
+            kid = excluded.kid,
+            pub = excluded.pub,
+            priv = excluded.priv,
+            aud = excluded.aud
     `;
     kickUser(context.userId);
     return { token: minted.raw, prefix: minted.prefix };

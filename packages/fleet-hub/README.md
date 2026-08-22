@@ -14,4 +14,4 @@ Agent: paste `http://127.0.0.1:8787` (local) or `hub.example.com` (behind TLS).
 
 Production: put Caddy/nginx in front for HTTPS, set `HUB_TOKEN`, bind `0.0.0.0`.
 
-Full steps: [docs/DEPLOY.md](../../docs/DEPLOY.md)
+Full steps: [English](../../docs/en/deploy.md) · [中文](../../docs/zh/deploy.md)

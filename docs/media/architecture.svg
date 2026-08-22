@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 560" role="img" aria-label="Fleet architecture: Cursor talks to the website hub; agents dial out over WebSocket">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#122033"/>
+      <stop offset="100%" stop-color="#070b14"/>
+    </linearGradient>
+    <linearGradient id="amberMint" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#f0c14a"/>
+      <stop offset="100%" stop-color="#3ee0c5"/>
+    </linearGradient>
+    <linearGradient id="blueMint" x1="1" y1="0" x2="0" y2="0">
+      <stop offset="0%" stop-color="#6ea8ff"/>
+      <stop offset="100%" stop-color="#3ee0c5"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="1280" height="560" rx="28" fill="url(#bg)"/>
+  <text x="48" y="48" fill="#3ee0c5" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" letter-spacing="3">FLEET</text>
+  <text x="640" y="52" text-anchor="middle" fill="#eef3ff" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="22" font-weight="700">Devices dial out. The website is the hub.</text>
+
+  <line x1="330" y1="250" x2="500" y2="250" stroke="url(#amberMint)" stroke-width="4"/>
+  <polygon points="500,244 514,250 500,256" fill="#3ee0c5"/>
+  <text x="415" y="232" text-anchor="middle" fill="#f0c14a" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600">HTTPS + flt_ token</text>
+
+  <line x1="950" y1="250" x2="780" y2="250" stroke="url(#blueMint)" stroke-width="4"/>
+  <polygon points="780,244 766,250 780,256" fill="#3ee0c5"/>
+  <text x="865" y="232" text-anchor="middle" fill="#6ea8ff" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600">WSS /v1/device · outbound</text>
+
+  <rect x="40" y="140" width="290" height="220" rx="22" fill="#101826" stroke="#f0c14a" stroke-width="2" filter="url(#glow)"/>
+  <text x="62" y="176" fill="#f0c14a" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="2">YOU</text>
+  <text x="62" y="218" fill="#eef3ff" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="26" font-weight="800">Cursor / Claude</text>
+  <text x="62" y="250" fill="#8b97ad" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15">MCP operator</text>
+  <text x="62" y="318" fill="#8b97ad" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14">FLEET_URL + FLEET_TOKEN</text>
+
+  <rect x="500" y="120" width="280" height="260" rx="22" fill="#101826" stroke="#3ee0c5" stroke-width="2" filter="url(#glow)"/>
+  <text x="522" y="160" fill="#3ee0c5" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="2">HUB</text>
+  <text x="522" y="206" fill="#eef3ff" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="26" font-weight="800">This website</text>
+  <text x="522" y="240" fill="#8b97ad" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15">Login · mint token</text>
+  <text x="522" y="268" fill="#8b97ad" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15">Route jobs · /v1/*</text>
+  <text x="522" y="340" fill="#8b97ad" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14">SQL scoped by user_id</text>
+
+  <rect x="950" y="140" width="290" height="220" rx="22" fill="#101826" stroke="#6ea8ff" stroke-width="2" filter="url(#glow)"/>
+  <text x="972" y="176" fill="#6ea8ff" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="2">DEVICE</text>
+  <text x="972" y="218" fill="#eef3ff" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="26" font-weight="800">Fleet Agent</text>
+  <text x="972" y="250" fill="#8b97ad" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15">Mac / Windows / Linux</text>
+  <text x="972" y="318" fill="#8b97ad" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14">Never accepts inbound</text>
+
+  <text x="640" y="430" text-anchor="middle" fill="#8b97ad" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="16">list → run → stdout/result · one round trip</text>
+
+  <rect x="70" y="470" width="1140" height="56" rx="14" fill="#0c1422" stroke="#1e2d44"/>
+  <text x="640" y="506" text-anchor="middle" fill="#c5d0e0" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="18">No VPS on the device side. Agents only open outbound connections to the hub.</text>
+</svg>

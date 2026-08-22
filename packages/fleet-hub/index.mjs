@@ -102,6 +102,16 @@ export function createHub({ token = "", now = () => Date.now() } = {}) {
       });
       return;
     }
+    if (parsed.type === "ping" || parsed.type === "heartbeat") {
+      const prev = fleet.get(id);
+      mark(id, {
+        name: prev?.name ?? id,
+        os: prev?.os ?? "linux",
+        online: true,
+      });
+      ws.send(JSON.stringify(envelope("pong", {}, parsed.id)));
+      return;
+    }
     if (parsed.type === "screen") {
       const slot = screens.get(id) ?? { byCorr: new Map() };
       slot.last = parsed.body ?? {};
@@ -156,7 +166,10 @@ export function createHub({ token = "", now = () => Date.now() } = {}) {
   }
 
   function listComputers() {
-    const computers = [...fleet.values()];
+    const computers = [...fleet.values()].map((row) => ({
+      ...row,
+      online: sockets.get(row.id)?.readyState === WebSocket.OPEN,
+    }));
     computers.sort((a, b) => Number(b.online) - Number(a.online) || b.lastSeen - a.lastSeen);
     return { computers };
   }

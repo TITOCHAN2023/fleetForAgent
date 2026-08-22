@@ -159,6 +159,41 @@ test("run on offline device is 409; type does not wait", async (t) => {
   assert.equal(down.body.keys, "q\n");
 });
 
+test("device ping updates lastSeen, replies pong, list follows live socket", async (t) => {
+  let now = 1_000;
+  const hub = createHub({ now: () => now });
+  t.after(() => hub.close());
+  const { http, ws: wsUrl } = await listen(hub);
+  const dev = connectDevice(wsUrl, { id: "win-1", name: "MySuperPC", os: "windows" });
+  t.after(() => {
+    try {
+      dev.ws.close();
+    } catch {
+      /* ignore */
+    }
+  });
+  await dev.opened;
+  await waitType(dev.inbox, "hello_ok");
+
+  now = 2_000;
+  dev.ws.send(JSON.stringify({ v: 1, type: "ping", id: "p1", t: now, body: {} }));
+  const pong = await waitType(dev.inbox, "pong");
+  assert.equal(pong.corr, "p1");
+
+  const listed = await post(http, "/v1/list_computers", {});
+  const row = listed.json.computers.find((c) => c.id === "win-1");
+  assert.ok(row);
+  assert.equal(row.online, true);
+  assert.equal(row.lastSeen, 2_000);
+  assert.equal(row.os, "windows");
+
+  const closed = once(dev.ws, "close");
+  dev.ws.close();
+  await closed;
+  const after = await post(http, "/v1/list_computers", {});
+  assert.equal(after.json.computers[0].online, false);
+});
+
 test("new socket kicks the old one", async (t) => {
   const hub = createHub();
   t.after(() => hub.close());

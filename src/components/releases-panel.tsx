@@ -19,7 +19,7 @@ const BUILDS: {
 ];
 
 export function ReleasesPanel() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   return (
     <div className="grid gap-4">
       <section className="rounded-xl border border-border bg-surface p-5">
@@ -30,7 +30,7 @@ export function ReleasesPanel() {
             GitHub Releases
           </a>
           <span className="text-subtle"> · </span>
-          <a className="underline underline-offset-4" href="https://github.com/TITOCHAN2023/fleetForAgent/blob/main/docs/DEPLOY.md">
+          <a className="underline underline-offset-4" href={locale === "zh" ? "https://github.com/TITOCHAN2023/fleetForAgent/blob/main/docs/zh/deploy.md" : "https://github.com/TITOCHAN2023/fleetForAgent/blob/main/docs/en/deploy.md"}>
             {t("rel.deploy")}
           </a>
         </p>

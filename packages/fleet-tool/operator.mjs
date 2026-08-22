@@ -237,9 +237,12 @@ export function formatMcpText(name, out, env = {}) {
     const stdout = nonemptyText(out.stdout);
     const err = nonemptyText(out.error) || nonemptyText(out.stderr);
     const code = out.exit_code;
-    const failed = (code != null && Number(code) !== 0) || out.ok === false || err !== "";
+    const failed = out.ok === false || (code != null && Number(code) !== 0);
     if (!failed) {
       text = stdout;
+      if (err !== "") {
+        text = text === "" ? err : (text.endsWith("\n") ? text : text + "\n") + err;
+      }
     } else {
       const lines = [];
       if (stdout !== "") lines.push(stdout.endsWith("\n") ? stdout.slice(0, -1) : stdout);
@@ -607,12 +610,13 @@ export function createOperator({
 
     if (name === "type") {
       if (args.keys == null && args.key == null) throw new Error("keys or key required");
-      const deviceId = resolveDevice(args);
+      const corr = trimId(args.corr) || undefined;
+      const deviceId = resolveDevice(args, { corr });
       const body = { device_id: deviceId };
       if (args.keys != null) body.keys = args.keys;
       if (args.key != null && String(args.key) !== "") body.key = String(args.key);
       if (body.keys == null && body.key) body.keys = body.key;
-      if (args.corr != null && String(args.corr) !== "") body.corr = args.corr;
+      if (corr) body.corr = corr;
       const row = await callRpc(trace, "/v1/type", body);
       return withDev(withDevice(row, deviceId), trace);
     }

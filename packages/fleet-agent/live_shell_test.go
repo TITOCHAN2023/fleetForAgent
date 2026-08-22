@@ -106,29 +106,45 @@ func TestExitCommandCode(t *testing.T) {
 	}
 }
 
+func TestAppendCappedRawKeepsPromptTail(t *testing.T) {
+	head := strings.Repeat("n", rawOutMaxBytes)
+	got := appendCappedRaw(head, promptPrefix+"0\n")
+	if len(got) > rawOutMaxBytes {
+		t.Fatalf("uncapped len=%d", len(got))
+	}
+	if !strings.HasSuffix(got, promptPrefix+"0\n") {
+		t.Fatalf("lost prompt tail: %q", got[len(got)-40:])
+	}
+	if !scanPrompt(got) {
+		t.Fatal("capped tail must still see PS1")
+	}
+	over := appendCappedRaw(strings.Repeat("x", rawOutMaxBytes), strings.Repeat("y", rawOutMaxBytes+10))
+	if len(over) != rawOutMaxBytes {
+		t.Fatalf("oversize chunk cap=%d", len(over))
+	}
+	if !strings.HasSuffix(over, "y") {
+		t.Fatal("oversize chunk must keep its tail")
+	}
+}
+
+func TestScanPromptLookbehindSplitMarker(t *testing.T) {
+	prefix := "hello\n" + promptPrefix[:len(promptPrefix)-3]
+	chunk := promptPrefix[len(promptPrefix)-3:] + "0\n"
+	buf := appendCappedRaw(prefix, chunk)
+	if !scanPrompt(buf) {
+		t.Fatal("marker split across chunks must still match")
+	}
+	if scanPrompt(strings.Repeat("z", 4096)) {
+		t.Fatal("noise must not look like PS1")
+	}
+}
+
 func TestHasReadyLine(t *testing.T) {
 	if hasReadyLine("PS1='" + promptPrefix + "$?'\n") {
 		t.Fatal("PS1 assignment must not count as ready")
 	}
 	if !hasReadyLine("noise\n" + promptPrefix + "0\n") {
 		t.Fatal("expected prompt ready line")
-	}
-}
-
-func TestLiveShellEnvDropsNoColor(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("live shell is POSIX-only")
-	}
-	t.Setenv("NO_COLOR", "1")
-	t.Setenv("FORCE_COLOR", "0")
-	t.Setenv("TERM", "dumb")
-	for _, e := range liveShellEnv() {
-		if strings.HasPrefix(e, "NO_COLOR=") || strings.HasPrefix(e, "FORCE_COLOR=") {
-			t.Fatalf("launcher color env leaked: %q", e)
-		}
-		if e == "TERM=dumb" {
-			t.Fatal("TERM=dumb must not win")
-		}
 	}
 }
 

@@ -10,13 +10,10 @@ import (
 	"unicode/utf8"
 )
 
-// Codex/vim composers often miss Enter when text and CR arrive in one
-// kernel write (the same class as ssh_send(text)+Enter). Flush the text,
-// settle one frame, then write CR so a single type() of `hello\r` submits.
+// Split text and CR so the slave sees Enter.
 const typeEnterSettle = 40 * time.Millisecond
 
-// ssh-pty-mcp ssh_press named keys (src/keys.rs), plus Enter aliases.
-// ctrl+\ is SIGQUIT on a tty; 888 needed the signal, not just a byte.
+// Named keys plus Enter aliases. SIGINT goes to the fg pgid; byte 0x03 is not enough on this PTY.
 
 type typeStroke struct {
 	payload []byte

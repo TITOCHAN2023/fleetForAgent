@@ -155,6 +155,32 @@ func TestVTScreenGridStripsPromptMarker(t *testing.T) {
 	}
 }
 
+func TestVTScreenConcurrentResetWriteGrid(t *testing.T) {
+	var replies bytes.Buffer
+	sc := newVTScreen(livePtyCols, livePtyRows, &replies)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 80; i++ {
+			sc.write([]byte("hello\n"))
+			_, _, _ = sc.grid()
+			_ = sc.altUsed()
+			_ = sc.answered()
+		}
+	}()
+	for i := 0; i < 80; i++ {
+		sc.resetPrimary()
+		sc.replay([]byte("pwd\n"))
+		_, _, _ = sc.grid()
+		sc.leaveAlt()
+	}
+	<-done
+	text, _, _ := sc.grid()
+	if strings.Contains(text, "\x00") {
+		t.Fatalf("torn grid: %q", text)
+	}
+}
+
 func TestVTScreenDASplitAcrossWrites(t *testing.T) {
 	var replies bytes.Buffer
 	sc := newVTScreen(livePtyCols, livePtyRows, &replies)

@@ -21,7 +21,38 @@ const (
 	childQuietFor    = 200 * time.Millisecond
 	promptPrefix     = "__FLEET_PROMPT__"
 	doneMarkerPrefix = "__MCP_DONE__" // legacy; never written on the live path
+	rawOutMaxBytes   = 64 * 1024
+	// marker + CSI around the exit + CR/LF, plus a split-chunk lookbehind
+	promptScanTail = len(promptPrefix) + 48
 )
+
+func appendCappedRaw(buf, chunk string) string {
+	if chunk == "" {
+		return buf
+	}
+	n := len(buf) + len(chunk)
+	if n <= rawOutMaxBytes {
+		return buf + chunk
+	}
+	if len(chunk) >= rawOutMaxBytes {
+		return chunk[len(chunk)-rawOutMaxBytes:]
+	}
+	return buf[n-rawOutMaxBytes:] + chunk
+}
+
+// scanPrompt looks only at a small tail so a long job is not re-parsed
+// from the start on every PTY chunk. Lookbehind covers a marker split
+// across the last write.
+func scanPrompt(buf string) bool {
+	if buf == "" {
+		return false
+	}
+	tail := buf
+	if len(tail) > promptScanTail {
+		tail = tail[len(tail)-promptScanTail:]
+	}
+	return hasReadyLine(tail)
+}
 
 type liveJob struct {
 	pane      *pane
@@ -348,8 +379,8 @@ func (ls *liveShell) ingestReady(chunk string, readyCh chan struct{}) bool {
 		ls.mu.Unlock()
 		return false
 	}
-	ls.rawOut += chunk
-	if hasReadyLine(ls.rawOut) {
+	ls.rawOut = appendCappedRaw(ls.rawOut, chunk)
+	if scanPrompt(ls.rawOut) {
 		ls.ready = true
 		ls.rawOut = ""
 		ls.rawErr = ""
@@ -682,7 +713,7 @@ func (s *supervisor) feedLive(chunk string) {
 		return
 	}
 	live.mu.Lock()
-	live.rawOut += chunk
+	live.rawOut = appendCappedRaw(live.rawOut, chunk)
 	live.mu.Unlock()
 	if s.tryFinishLive(job, live, false) {
 		return
@@ -704,6 +735,10 @@ func (s *supervisor) tryFinishLive(job *liveJob, live *liveShell, force bool) bo
 	if job.finishing {
 		live.mu.Unlock()
 		return true
+	}
+	if !force && !scanPrompt(live.rawOut) {
+		live.mu.Unlock()
+		return false
 	}
 	out, rest, code, ok := parsePrompt(live.rawOut)
 	if !ok && !force {

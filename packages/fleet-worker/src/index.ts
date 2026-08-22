@@ -21,6 +21,43 @@ export interface Env {
   X_CLIENT_SECRET?: string;
 }
 
+const HUB_WAIT_MAX_MS = 30_000;
+const HUB_WAIT_POLL_MS = 25;
+
+function clampHubWaitMs(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(HUB_WAIT_MAX_MS, n);
+}
+
+function isHubResultDone(row: Record<string, unknown> | undefined | null): boolean {
+  if (!row) return false;
+  if (row.status === "pending" || row.status === "running") return false;
+  return row.ok !== undefined || row.exit_code !== undefined || row.status === "done";
+}
+
+function hubResultPayload(corr: string, row: Record<string, unknown> | undefined) {
+  if (!row) return { status: "pending", corr };
+  return { status: "done", corr, ...row };
+}
+
+async function waitDeviceResult(
+  getRow: () => Promise<Record<string, unknown> | undefined>,
+  waitMs: number,
+) {
+  const budget = clampHubWaitMs(waitMs);
+  const deadline = Date.now() + budget;
+  let row = await getRow();
+  if (budget <= 0) return row;
+  while (!isHubResultDone(row) && Date.now() < deadline) {
+    const left = deadline - Date.now();
+    if (left <= 0) break;
+    await new Promise((r) => setTimeout(r, Math.min(HUB_WAIT_POLL_MS, left)));
+    row = await getRow();
+  }
+  return row;
+}
+
 type Envelope = {
   v: 1;
   type: string;
@@ -131,7 +168,7 @@ export default {
     }
 
     if (url.pathname === "/v1/run" && request.method === "POST") {
-      const body = (await request.json()) as { device_id?: string; command?: string };
+      const body = (await request.json()) as { device_id?: string; command?: string; wait_ms?: number };
       if (!body.device_id || !body.command) {
         return json({ error: "device_id and command required" }, 400);
       }
@@ -141,7 +178,7 @@ export default {
         new Request("https://device/run", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ command: body.command }),
+          body: JSON.stringify({ command: body.command, wait_ms: body.wait_ms }),
         }),
       );
     }
@@ -178,11 +215,14 @@ export default {
     }
 
     if (url.pathname === "/v1/get_result" && request.method === "POST") {
-      const body = (await request.json()) as { device_id?: string; corr?: string };
+      const body = (await request.json()) as { device_id?: string; corr?: string; wait_ms?: number };
       if (!body.device_id || !body.corr) return json({ error: "device_id and corr required" }, 400);
       if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
       const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
-      return stub.fetch(new Request(`https://device/result?corr=${encodeURIComponent(body.corr)}`));
+      const q = new URLSearchParams({ corr: body.corr });
+      const waitMs = clampHubWaitMs(body.wait_ms);
+      if (waitMs > 0) q.set("wait_ms", String(waitMs));
+      return stub.fetch(new Request(`https://device/result?${q}`));
     }
 
     return json({ error: "not found" }, 404);
@@ -417,10 +457,13 @@ export class DeviceDO implements DurableObject {
     if (url.pathname === "/run" && request.method === "POST") {
       const sockets = this.ctx.getWebSockets();
       if (sockets.length === 0) return json({ error: "offline" }, 409);
-      const body = (await request.json()) as { command: string };
+      const body = (await request.json()) as { command: string; wait_ms?: number };
       const corr = crypto.randomUUID();
       sockets[0]!.send(JSON.stringify(envelope("run", { command: body.command, mode: "pane" }, corr)));
-      return json({ corr, status: "running" });
+      const waitMs = clampHubWaitMs(body.wait_ms);
+      if (waitMs <= 0) return json({ corr, status: "running" });
+      const row = await waitDeviceResult(() => this.ctx.storage.get<Record<string, unknown>>(`res:${corr}`), waitMs);
+      return json(hubResultPayload(corr, row));
     }
 
     if (url.pathname === "/type" && request.method === "POST") {
@@ -452,9 +495,11 @@ export class DeviceDO implements DurableObject {
 
     if (url.pathname === "/result") {
       const corr = url.searchParams.get("corr") ?? "";
-      const row = await this.ctx.storage.get<Record<string, unknown>>(`res:${corr}`);
-      if (!row) return json({ status: "pending", corr });
-      return json({ status: "done", corr, ...row });
+      const waitMs = clampHubWaitMs(url.searchParams.get("wait_ms"));
+      const row = waitMs > 0
+        ? await waitDeviceResult(() => this.ctx.storage.get<Record<string, unknown>>(`res:${corr}`), waitMs)
+        : await this.ctx.storage.get<Record<string, unknown>>(`res:${corr}`);
+      return json(hubResultPayload(corr, row));
     }
 
     return json({ ok: true });

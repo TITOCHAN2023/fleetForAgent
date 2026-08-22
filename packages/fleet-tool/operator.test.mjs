@@ -410,6 +410,26 @@ test("remembered device offline fails explicitly with no fallback", async () => 
   assert.equal(runs[0].body.device_id, "dead");
 });
 
+test("type with corr targets the job owner after set_computer", async () => {
+  const { rpc, calls } = mockRpc({
+    "/v1/run": () => ({ corr: "job-a", status: "running" }),
+    "/v1/type": () => ({ ok: true, status: "typed" }),
+  });
+  const op = createOperator({ rpc });
+  await op.callTool("run", { device_id: "host-a", command: "one", wait_ms: 0 });
+  await op.callTool("set_computer", { device_id: "host-b" });
+  const typed = await op.callTool("type", { corr: "job-a", keys: "x" });
+  assert.equal(typed.device_id, "host-a");
+  const typeCalls = calls.filter((c) => c.path === "/v1/type");
+  assert.equal(typeCalls.length, 1);
+  assert.equal(typeCalls[0].body.device_id, "host-a");
+  assert.equal(typeCalls[0].body.corr, "job-a");
+  await assert.rejects(
+    () => op.callTool("type", { device_id: "host-b", corr: "job-a", keys: "y" }),
+    /belongs to device/,
+  );
+});
+
 test("get_result / wait / read_screen refuse a different device than the job owner", async () => {
   const { rpc } = mockRpc({
     "/v1/run": () => ({ corr: "job-1", status: "running" }),
@@ -519,6 +539,26 @@ test("formatMcpText running is a corr ticket line", () => {
   assert.equal(text, "running corr=c-tui");
   assert.equal(text.includes("{"), false);
   assert.equal(formatMcpText("wait", { status: "pending", corr: "c2" }), "running corr=c2");
+});
+
+test("formatMcpText success with stderr stays stdout-first", () => {
+  const text = formatMcpText("run", {
+    status: "done",
+    ok: true,
+    exit_code: 0,
+    stdout: "out\n",
+    error: "warn",
+  });
+  assert.equal(text, "out\nwarn");
+  assert.equal(text.includes("exit_code"), false);
+  const onlyErr = formatMcpText("run", {
+    status: "done",
+    ok: true,
+    exit_code: 0,
+    stdout: "",
+    stderr: "note",
+  });
+  assert.equal(onlyErr, "note");
 });
 
 test("formatMcpText finished nonzero exit appends a short trailer", () => {

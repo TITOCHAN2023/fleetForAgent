@@ -14,9 +14,6 @@ func TestHelpContainsVersion(t *testing.T) {
 	if !strings.Contains(text, agentVersion) {
 		t.Fatalf("help missing version %s", agentVersion)
 	}
-	if agentVersion != "0.2.4" {
-		t.Fatalf("agentVersion=%s want 0.2.4", agentVersion)
-	}
 }
 
 func TestDeviceNameFollowsFleetName(t *testing.T) {

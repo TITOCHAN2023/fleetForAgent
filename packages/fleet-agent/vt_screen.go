@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"strings"
+	"sync"
 
 	"github.com/hinshun/vt10x"
 )
@@ -17,6 +18,7 @@ const (
 const daPrimary = "\x1b[?1;2c"
 
 type vtScreen struct {
+	mu            sync.Mutex
 	term          vt10x.Terminal
 	pending       []byte
 	replies       io.Writer
@@ -47,7 +49,12 @@ func sawAltEnter(p []byte) bool {
 }
 
 func (s *vtScreen) write(p []byte) {
-	if s == nil || s.term == nil || len(p) == 0 {
+	if s == nil || len(p) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.term == nil {
 		return
 	}
 	if s.term.Mode()&vt10x.ModeAltScreen != 0 || sawAltEnter(p) {
@@ -68,6 +75,8 @@ func (s *vtScreen) replay(p []byte) {
 	if s == nil || len(p) == 0 {
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	cols, rows := livePtyCols, livePtyRows
 	if s.term != nil {
 		if c, r := s.term.Size(); c > 0 && r > 0 {
@@ -80,11 +89,21 @@ func (s *vtScreen) replay(p []byte) {
 }
 
 func (s *vtScreen) altUsed() bool {
-	return s != nil && s.usedAlt
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.usedAlt
 }
 
 func (s *vtScreen) answered() bool {
-	return s != nil && s.answeredQuery
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.answeredQuery
 }
 
 // consumeQueries answers DA written by the slave. DSR/CPR stay with vt10x
@@ -133,7 +152,12 @@ func (s *vtScreen) consumeQueries(p []byte) [][]byte {
 // leaveAlt switches the emulator back to the primary screen. A TUI that
 // exits without CSI ?1049l leaves the last box on the alt buffer.
 func (s *vtScreen) leaveAlt() {
-	if s == nil || s.term == nil {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.term == nil {
 		return
 	}
 	if s.term.Mode()&vt10x.ModeAltScreen == 0 {
@@ -153,6 +177,8 @@ func (s *vtScreen) resetPrimary() {
 	if s == nil {
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	cols, rows := livePtyCols, livePtyRows
 	if s.term != nil {
 		if c, r := s.term.Size(); c > 0 && r > 0 {
@@ -184,19 +210,25 @@ func stripPromptRows(text string) string {
 }
 
 func (s *vtScreen) grid() (text string, row, col int) {
-	if s == nil || s.term == nil {
+	if s == nil {
 		return "", 0, 0
 	}
-	s.term.Lock()
-	defer s.term.Unlock()
-	cols, rows := s.term.Size()
-	cur := s.term.Cursor()
+	s.mu.Lock()
+	term := s.term
+	s.mu.Unlock()
+	if term == nil {
+		return "", 0, 0
+	}
+	term.Lock()
+	defer term.Unlock()
+	cols, rows := term.Size()
+	cur := term.Cursor()
 	lines := make([]string, rows)
 	last := -1
 	for y := 0; y < rows; y++ {
 		runes := make([]rune, cols)
 		for x := 0; x < cols; x++ {
-			ch := s.term.Cell(x, y).Char
+			ch := term.Cell(x, y).Char
 			if ch == 0 {
 				ch = ' '
 			}

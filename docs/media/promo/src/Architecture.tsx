@@ -8,7 +8,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from 'remotion';
-import {AMBER, BLUE, FONT, MINT, MUTED, TEXT, fadeInOut} from './theme';
+import {AMBER, BLUE, FONT, MINT, MUTED, ROSE, TEXT, fadeInOut} from './theme';
 
 const Background: React.FC = () => {
   const frame = useCurrentFrame();
@@ -21,39 +21,22 @@ const Background: React.FC = () => {
     >
       <svg width="1920" height="1080" style={{position: 'absolute', inset: 0, opacity: 0.18}}>
         {Array.from({length: 16}).map((_, i) => (
-          <line
-            key={`v${i}`}
-            x1={120 * i}
-            y1={0}
-            x2={120 * i}
-            y2={1080}
-            stroke="#6ea8ff"
-            strokeWidth="1"
-          />
+          <line key={`v${i}`} x1={120 * i} y1={0} x2={120 * i} y2={1080} stroke="#6ea8ff" strokeWidth="1" />
         ))}
         {Array.from({length: 10}).map((_, i) => (
-          <line
-            key={`h${i}`}
-            x1={0}
-            y1={108 * i}
-            x2={1920}
-            y2={108 * i}
-            stroke="#6ea8ff"
-            strokeWidth="1"
-          />
+          <line key={`h${i}`} x1={0} y1={108 * i} x2={1920} y2={108 * i} stroke="#6ea8ff" strokeWidth="1" />
         ))}
       </svg>
     </AbsoluteFill>
   );
 };
 
-const Wordmark: React.FC<{opacity?: number}> = ({opacity = 1}) => (
+const Wordmark: React.FC = () => (
   <div
     style={{
       position: 'absolute',
       top: 36,
       left: 56,
-      opacity,
       fontFamily: FONT,
       letterSpacing: 3,
       fontSize: 22,
@@ -88,22 +71,22 @@ const NodeCard: React.FC<{
         width: w,
         height: h,
         opacity: s,
-        transform: `translateY(${(1 - s) * 28}px) scale(${0.92 + s * 0.08})`,
-        borderRadius: 28,
+        transform: `translateY(${(1 - s) * 24}px) scale(${0.94 + s * 0.06})`,
+        borderRadius: 24,
         border: `2px solid ${color}`,
         background: `linear-gradient(165deg, ${color}40, #152033f2)`,
-        boxShadow: `0 18px 60px ${color}33, inset 0 1px 0 #ffffff22`,
-        padding: 28,
+        boxShadow: `0 18px 50px ${color}33`,
+        padding: 22,
         fontFamily: FONT,
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'center',
-        gap: 8,
+        gap: 6,
       }}
     >
-      <div style={{color, fontSize: 18, fontWeight: 700, letterSpacing: 2}}>{kicker}</div>
-      <div style={{color: TEXT, fontSize: 40, fontWeight: 800, lineHeight: 1.1}}>{title}</div>
-      <div style={{color: MUTED, fontSize: 22, fontWeight: 500}}>{sub}</div>
+      <div style={{color, fontSize: 16, fontWeight: 700, letterSpacing: 2}}>{kicker}</div>
+      <div style={{color: TEXT, fontSize: 32, fontWeight: 800, lineHeight: 1.15}}>{title}</div>
+      <div style={{color: MUTED, fontSize: 18, fontWeight: 500}}>{sub}</div>
     </div>
   );
 };
@@ -115,42 +98,22 @@ const Packet: React.FC<{
   y2: number;
   progress: number;
   color: string;
-  label?: string;
-}> = ({x1, y1, x2, y2, progress, color, label}) => {
+}> = ({x1, y1, x2, y2, progress, color}) => {
   const p = Math.max(0, Math.min(1, progress));
   if (p <= 0 || p >= 1) return null;
-  const x = x1 + (x2 - x1) * p;
-  const y = y1 + (y2 - y1) * p;
   return (
     <div
       style={{
         position: 'absolute',
-        left: x - 10,
-        top: y - 10,
-        width: 20,
-        height: 20,
+        left: x1 + (x2 - x1) * p - 8,
+        top: y1 + (y2 - y1) * p - 8,
+        width: 16,
+        height: 16,
         borderRadius: 999,
         background: color,
-        boxShadow: `0 0 22px ${color}`,
+        boxShadow: `0 0 18px ${color}`,
       }}
-    >
-      {label ? (
-        <div
-          style={{
-            position: 'absolute',
-            left: 24,
-            top: -18,
-            color,
-            fontFamily: FONT,
-            fontSize: 18,
-            fontWeight: 700,
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {label}
-        </div>
-      ) : null}
-    </div>
+    />
   );
 };
 
@@ -158,11 +121,8 @@ const SceneTitle: React.FC = () => {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
   const a = spring({frame, fps, config: {damping: 16}});
-  const b = spring({frame: frame - 12, fps, config: {damping: 16}});
-  const c = interpolate(frame, [28, 48], [0, 1], {
-    extrapolateLeft: 'clamp',
-    extrapolateRight: 'clamp',
-  });
+  const b = spring({frame: frame - 10, fps, config: {damping: 16}});
+  const c = interpolate(frame, [28, 48], [0, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'});
   return (
     <AbsoluteFill
       style={{
@@ -172,368 +132,213 @@ const SceneTitle: React.FC = () => {
         opacity: fadeInOut(frame, 90, 12),
       }}
     >
-      <div
-        style={{
-          fontSize: 28,
-          letterSpacing: 8,
-          color: MINT,
-          fontWeight: 700,
-          opacity: a,
-          marginBottom: 18,
-        }}
-      >
-        FLEET FOR AGENT
+      <div style={{fontSize: 26, letterSpacing: 6, color: MINT, fontWeight: 700, opacity: a, marginBottom: 16}}>
+        FLEET.GINFO.CC
       </div>
       <div
         style={{
-          fontSize: 92,
+          fontSize: 78,
           fontWeight: 900,
           color: TEXT,
           opacity: b,
           transform: `translateY(${(1 - b) * 24}px)`,
           textAlign: 'center',
-          lineHeight: 1.05,
+          lineHeight: 1.08,
         }}
       >
-        Your agent, on your machines.
+        One tool. Every computer.
+        <br />
+        Anywhere.
       </div>
-      <div
-        style={{
-          marginTop: 28,
-          fontSize: 36,
-          color: MUTED,
-          opacity: c,
-        }}
-      >
-        Devices dial out only. No inbound ports. No VPS required.
+      <div style={{marginTop: 28, fontSize: 32, color: MUTED, opacity: c}}>
+        Windows · Linux · macOS · any arch · one token
       </div>
     </AbsoluteFill>
   );
 };
 
-const SceneTopology: React.FC = () => {
+const FanLines: React.FC<{grow: number}> = ({grow}) => (
+  <svg width="1920" height="1080" style={{position: 'absolute', inset: 0}}>
+    <path d="M 430 540 H 700" stroke={AMBER} strokeWidth="5" pathLength={1} strokeDasharray={`${grow} ${1 - grow}`} fill="none" />
+    <path d="M 1120 420 L 1380 250" stroke={BLUE} strokeWidth="4" pathLength={1} strokeDasharray={`${grow} ${1 - grow}`} fill="none" />
+    <path d="M 1120 540 H 1380" stroke={MINT} strokeWidth="4" pathLength={1} strokeDasharray={`${grow} ${1 - grow}`} fill="none" />
+    <path d="M 1120 660 L 1380 830" stroke={ROSE} strokeWidth="4" pathLength={1} strokeDasharray={`${grow} ${1 - grow}`} fill="none" />
+  </svg>
+);
+
+const SceneFan: React.FC = () => {
   const frame = useCurrentFrame();
-  const line = interpolate(frame, [24, 52], [0, 1], {
+  const grow = interpolate(frame, [18, 55], [0, 1], {
     extrapolateLeft: 'clamp',
     extrapolateRight: 'clamp',
     easing: Easing.out(Easing.cubic),
   });
-  const caption = interpolate(frame, [60, 80], [0, 1], {
-    extrapolateLeft: 'clamp',
-    extrapolateRight: 'clamp',
-  });
   return (
-    <AbsoluteFill style={{opacity: fadeInOut(frame, 150, 12), fontFamily: FONT}}>
+    <AbsoluteFill style={{opacity: fadeInOut(frame, 180, 12), fontFamily: FONT}}>
       <Wordmark />
-      <div
-        style={{
-          position: 'absolute',
-          top: 110,
-          width: '100%',
-          textAlign: 'center',
-          color: TEXT,
-          fontSize: 42,
-          fontWeight: 800,
-        }}
-      >
-        Three pieces. One hub.
+      <div style={{position: 'absolute', top: 88, width: '100%', textAlign: 'center', color: TEXT, fontSize: 40, fontWeight: 800}}>
+        Tool → cloud hub → every OS over WebSocket
       </div>
-      <svg width="1920" height="1080" style={{position: 'absolute', inset: 0}}>
-        <defs>
-          <linearGradient id="g1" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor={AMBER} />
-            <stop offset="100%" stopColor={MINT} />
-          </linearGradient>
-          <linearGradient id="g2" x1="1" y1="0" x2="0" y2="0">
-            <stop offset="0%" stopColor={BLUE} />
-            <stop offset="100%" stopColor={MINT} />
-          </linearGradient>
-        </defs>
-        <path
-          d="M 520 540 H 770"
-          stroke="url(#g1)"
-          strokeWidth="5"
-          pathLength={1}
-          strokeDasharray={`${line} ${Math.max(0, 1 - line)}`}
-          fill="none"
-          opacity={0.95}
-        />
-        <path
-          d="M 1400 540 H 1150"
-          stroke="url(#g2)"
-          strokeWidth="5"
-          pathLength={1}
-          strokeDasharray={`${line} ${Math.max(0, 1 - line)}`}
-          fill="none"
-          opacity={0.95}
-        />
-      </svg>
-      <NodeCard
-        x={120}
-        y={400}
-        w={400}
-        h={280}
-        color={AMBER}
-        delay={8}
-        kicker="YOU"
-        title="Cursor / Claude"
-        sub="MCP operator · HTTPS + token"
-      />
-      <NodeCard
-        x={760}
-        y={360}
-        w={400}
-        h={360}
-        color={MINT}
-        delay={22}
-        kicker="HUB"
-        title="This website"
-        sub="Login · mint token · route jobs"
-      />
-      <NodeCard
-        x={1400}
-        y={400}
-        w={400}
-        h={280}
-        color={BLUE}
-        delay={36}
-        kicker="DEVICE"
-        title="Fleet Agent"
-        sub="Mac / Windows / Linux · outbound WSS"
-      />
-      <div
-        style={{
-          position: 'absolute',
-          bottom: 90,
-          width: '100%',
-          textAlign: 'center',
-          color: MUTED,
-          fontSize: 28,
-          opacity: caption,
-        }}
-      >
-        Website is the hub. Agents never open a port on your LAN.
+      <FanLines grow={grow} />
+      <NodeCard x={80} y={390} w={350} h={300} color={AMBER} delay={4} kicker="TOOL" title="Cursor / Claude" sub="MCP · HTTPS + token" />
+      <NodeCard x={720} y={360} w={400} h={360} color={MINT} delay={16} kicker="SERVER" title="fleet.ginfo.cc" sub="Cloud hub · WSS /v1/device" />
+      <NodeCard x={1380} y={150} w={460} h={180} color={BLUE} delay={28} kicker="WINDOWS" title="amd64 Agent" sub="outbound WebSocket" />
+      <NodeCard x={1380} y={400} w={460} h={180} color={MINT} delay={36} kicker="LINUX" title="amd64 / arm64 Agent" sub="outbound WebSocket" />
+      <NodeCard x={1380} y={650} w={460} h={180} color={ROSE} delay={44} kicker="MACOS" title="arm64 / amd64 Agent" sub="outbound WebSocket" />
+      <div style={{position: 'absolute', bottom: 48, width: '100%', textAlign: 'center', color: MUTED, fontSize: 26}}>
+        Devices only dial out. No inbound ports. Any arch that can run the Agent joins the same fleet.
       </div>
     </AbsoluteFill>
   );
 };
 
-const ScenePacket: React.FC = () => {
+const ScenePackets: React.FC = () => {
   const frame = useCurrentFrame();
-  const cycle = 90;
-  const t = frame % cycle;
-  const outbound = interpolate(t, [8, 40], [0, 1], {
-    extrapolateLeft: 'clamp',
-    extrapolateRight: 'clamp',
-  });
-  const inbound = interpolate(t, [48, 80], [0, 1], {
-    extrapolateLeft: 'clamp',
-    extrapolateRight: 'clamp',
-  });
-  const step = t < 45 ? 'run → hub → agent' : 'result ← hub ← agent';
+  const t = (frame % 70) / 70;
   return (
-    <AbsoluteFill style={{opacity: fadeInOut(frame, 210, 12), fontFamily: FONT}}>
+    <AbsoluteFill style={{opacity: fadeInOut(frame, 180, 12), fontFamily: FONT}}>
       <Wordmark />
-      <div
-        style={{
-          position: 'absolute',
-          top: 110,
-          width: '100%',
-          textAlign: 'center',
-          color: TEXT,
-          fontSize: 42,
-          fontWeight: 800,
-        }}
-      >
-        A command is just a round trip
+      <div style={{position: 'absolute', top: 88, width: '100%', textAlign: 'center', color: TEXT, fontSize: 40, fontWeight: 800}}>
+        Pick a machine. Run. Get the result. From anywhere.
       </div>
-      <svg width="1920" height="1080" style={{position: 'absolute', inset: 0, opacity: 0.9}}>
-        <path d="M 520 540 H 770" stroke={AMBER} strokeWidth="4" fill="none" opacity={0.55} />
-        <path d="M 1400 540 H 1150" stroke={BLUE} strokeWidth="4" fill="none" opacity={0.55} />
-      </svg>
-      <NodeCard
-        x={120}
-        y={400}
-        w={400}
-        h={280}
-        color={AMBER}
-        delay={0}
-        kicker="MCP"
-        title="list / run / type"
-        sub="FLEET_URL + FLEET_TOKEN"
-      />
-      <NodeCard
-        x={760}
-        y={380}
-        w={400}
-        h={320}
-        color={MINT}
-        delay={0}
-        kicker="HUB"
-        title="/v1/run"
-        sub="scopes every row by your account"
-      />
-      <NodeCard
-        x={1400}
-        y={400}
-        w={400}
-        h={280}
-        color={BLUE}
-        delay={0}
-        kicker="AGENT"
-        title="executes locally"
-        sub="WSS /v1/device · dial-out only"
-      />
-      <Packet
-        x1={520}
-        y1={540}
-        x2={770}
-        y2={540}
-        progress={outbound < 0.5 ? outbound * 2 : 1}
-        color={AMBER}
-        label={outbound > 0.05 && outbound < 0.5 ? 'run' : undefined}
-      />
-      <Packet
-        x1={1150}
-        y1={540}
-        x2={1400}
-        y2={540}
-        progress={outbound > 0.5 ? (outbound - 0.5) * 2 : 0}
-        color={MINT}
-        label={outbound > 0.55 && outbound < 0.95 ? 'job' : undefined}
-      />
-      <Packet
-        x1={1400}
-        y1={600}
-        x2={1150}
-        y2={600}
-        progress={inbound < 0.5 ? inbound * 2 : 1}
-        color={BLUE}
-        label={inbound > 0.05 && inbound < 0.5 ? 'stdout' : undefined}
-      />
-      <Packet
-        x1={770}
-        y1={600}
-        x2={520}
-        y2={600}
-        progress={inbound > 0.5 ? (inbound - 0.5) * 2 : 0}
-        color={MINT}
-        label={inbound > 0.55 && inbound < 0.95 ? 'result' : undefined}
-      />
-      <div
-        style={{
-          position: 'absolute',
-          bottom: 90,
-          width: '100%',
-          textAlign: 'center',
-          color: MINT,
-          fontSize: 30,
-          fontWeight: 700,
-        }}
-      >
-        {step}
-      </div>
+      <FanLines grow={1} />
+      <NodeCard x={80} y={390} w={350} h={300} color={AMBER} delay={0} kicker="TOOL" title="list / run / type" sub="FLEET_URL + FLEET_TOKEN" />
+      <NodeCard x={720} y={360} w={400} h={360} color={MINT} delay={0} kicker="HUB" title="relay" sub="one account · many hosts" />
+      <NodeCard x={1380} y={150} w={460} h={180} color={BLUE} delay={0} kicker="WIN" title="MySuperPC" sub="executes locally" />
+      <NodeCard x={1380} y={400} w={460} h={180} color={MINT} delay={0} kicker="LINUX" title="colo box" sub="executes locally" />
+      <NodeCard x={1380} y={650} w={460} h={180} color={ROSE} delay={0} kicker="MAC" title="888-test" sub="executes locally" />
+      <Packet x1={430} y1={540} x2={720} y2={540} progress={t < 0.28 ? t / 0.28 : 1} color={AMBER} />
+      <Packet x1={1120} y1={420} x2={1380} y2={250} progress={t > 0.18 && t < 0.48 ? (t - 0.18) / 0.3 : t >= 0.48 && t < 0.55 ? 1 : 0} color={BLUE} />
+      <Packet x1={1120} y1={540} x2={1380} y2={540} progress={t > 0.22 && t < 0.52 ? (t - 0.22) / 0.3 : t >= 0.52 && t < 0.58 ? 1 : 0} color={MINT} />
+      <Packet x1={1120} y1={660} x2={1380} y2={830} progress={t > 0.26 && t < 0.56 ? (t - 0.26) / 0.3 : t >= 0.56 && t < 0.62 ? 1 : 0} color={ROSE} />
+      <Packet x1={1380} y1={250} x2={1120} y2={420} progress={t > 0.55 && t < 0.82 ? (t - 0.55) / 0.27 : 0} color={BLUE} />
+      <Packet x1={1380} y1={540} x2={1120} y2={540} progress={t > 0.58 && t < 0.85 ? (t - 0.58) / 0.27 : 0} color={MINT} />
+      <Packet x1={1380} y1={830} x2={1120} y2={660} progress={t > 0.61 && t < 0.88 ? (t - 0.61) / 0.27 : 0} color={ROSE} />
+      <Packet x1={720} y1={540} x2={430} y2={540} progress={t > 0.78 ? (t - 0.78) / 0.22 : 0} color={AMBER} />
     </AbsoluteFill>
   );
 };
 
-const ScenePrinciple: React.FC = () => {
+const SceneKeys: React.FC = () => {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
-  const items = [
-    {t: 'No inbound ports on your machines', d: 0},
-    {t: 'No public IP / VPS required for agents', d: 10},
-    {t: 'Google / X login · Hub token per account', d: 20},
-    {t: 'Cursor, Claude, or any MCP client', d: 30},
-  ];
-  return (
-    <AbsoluteFill
-      style={{
-        justifyContent: 'center',
-        alignItems: 'center',
-        fontFamily: FONT,
-        opacity: fadeInOut(frame, 120, 12),
-        gap: 22,
-      }}
-    >
-      <div style={{fontSize: 52, fontWeight: 900, color: TEXT, marginBottom: 20}}>
-        Designed around outbound-only
-      </div>
-      {items.map((it) => {
-        const s = spring({frame: frame - it.d, fps, config: {damping: 14}});
-        return (
-          <div
-            key={it.t}
-            style={{
-              opacity: s,
-              transform: `translateX(${(1 - s) * -40}px)`,
-              width: 980,
-              padding: '20px 28px',
-              borderRadius: 16,
-              border: `1px solid ${MINT}44`,
-              borderLeft: `6px solid ${MINT}`,
-              background: '#ffffff08',
-              color: TEXT,
-              fontSize: 32,
-              fontWeight: 600,
-            }}
-          >
-            {it.t}
-          </div>
-        );
-      })}
-    </AbsoluteFill>
-  );
-};
-
-const SceneSetup: React.FC = () => {
-  const frame = useCurrentFrame();
-  const {fps} = useVideoConfig();
-  const steps = [
-    {n: '01', t: 'Log in', s: 'Google / X on the website'},
-    {n: '02', t: 'Mint a Hub token', s: 'Settings · shown once'},
-    {n: '03', t: 'Install Agent', s: 'Paste origin + token'},
-    {n: '04', t: 'Point MCP at it', s: 'FLEET_URL + FLEET_TOKEN'},
+  const keys = [
+    {n: '01', t: 'Domain URL', s: 'https://fleet.ginfo.cc'},
+    {n: '02', t: 'Hub token', s: 'flt_… from Settings'},
+    {n: '03', t: 'Agent on each PC', s: 'Windows / Linux / macOS'},
+    {n: '04', t: 'Import the tool', s: 'Cursor · Claude · MCP'},
   ];
   return (
     <AbsoluteFill
       style={{
         fontFamily: FONT,
-        opacity: fadeInOut(frame, 150, 14),
+        opacity: fadeInOut(frame, 150, 12),
         justifyContent: 'center',
         alignItems: 'center',
       }}
     >
-      <div style={{fontSize: 48, fontWeight: 900, color: TEXT, marginBottom: 48}}>
-        Four steps. Same origin, same token.
+      <div style={{fontSize: 44, fontWeight: 900, color: TEXT, marginBottom: 40}}>
+        Four values. Then every machine is reachable.
       </div>
-      <div style={{display: 'flex', gap: 22}}>
-        {steps.map((st, i) => {
-          const s = spring({frame: frame - i * 12, fps, config: {damping: 13}});
+      <div style={{display: 'flex', gap: 20}}>
+        {keys.map((st, i) => {
+          const s = spring({frame: frame - i * 10, fps, config: {damping: 13}});
           return (
             <div
               key={st.n}
               style={{
-                width: 340,
-                height: 280,
+                width: 400,
+                height: 260,
                 opacity: s,
-                transform: `translateY(${(1 - s) * 24}px)`,
-                borderRadius: 24,
+                transform: `translateY(${(1 - s) * 22}px)`,
+                borderRadius: 22,
                 background: '#101826',
-                border: `1px solid ${BLUE}55`,
-                padding: 28,
+                border: `1px solid ${MINT}55`,
+                padding: 26,
               }}
             >
-              <div style={{color: MINT, fontSize: 22, fontWeight: 800, letterSpacing: 2}}>
-                {st.n}
-              </div>
-              <div style={{color: TEXT, fontSize: 34, fontWeight: 800, marginTop: 18}}>
-                {st.t}
-              </div>
-              <div style={{color: MUTED, fontSize: 22, marginTop: 12}}>{st.s}</div>
+              <div style={{color: MINT, fontSize: 20, fontWeight: 800}}>{st.n}</div>
+              <div style={{color: TEXT, fontSize: 30, fontWeight: 800, marginTop: 16}}>{st.t}</div>
+              <div style={{color: MUTED, fontSize: 20, marginTop: 12}}>{st.s}</div>
             </div>
           );
         })}
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+const SceneCloud: React.FC = () => {
+  const frame = useCurrentFrame();
+  const {fps} = useVideoConfig();
+  const left = spring({frame, fps, config: {damping: 14}});
+  const right = spring({frame: frame - 12, fps, config: {damping: 14}});
+  return (
+    <AbsoluteFill style={{opacity: fadeInOut(frame, 150, 12), fontFamily: FONT, justifyContent: 'center', alignItems: 'center'}}>
+      <div style={{fontSize: 42, fontWeight: 900, color: TEXT, marginBottom: 48}}>
+        Local deploy cannot run a fleet. Cloud is the product.
+      </div>
+      <div style={{display: 'flex', gap: 36}}>
+        <div
+          style={{
+            width: 700,
+            height: 360,
+            opacity: left,
+            transform: `translateX(${(1 - left) * -30}px)`,
+            borderRadius: 24,
+            border: '2px solid #3a4558',
+            padding: 36,
+            background: '#0c1220',
+          }}
+        >
+          <div style={{color: MUTED, fontSize: 22, fontWeight: 800, letterSpacing: 2}}>LOCAL  npm run dev</div>
+          <div style={{color: TEXT, fontSize: 40, fontWeight: 800, marginTop: 20}}>At most a CLI</div>
+          <div style={{color: MUTED, fontSize: 24, marginTop: 16, lineHeight: 1.4}}>
+            127.0.0.1 only. Other OS cannot join. No “from anywhere.” Local hub never becomes the product.
+          </div>
+        </div>
+        <div
+          style={{
+            width: 700,
+            height: 360,
+            opacity: right,
+            transform: `translateX(${(1 - right) * 30}px)`,
+            borderRadius: 24,
+            border: `2px solid ${MINT}`,
+            padding: 36,
+            background: `${MINT}14`,
+          }}
+        >
+          <div style={{color: MINT, fontSize: 22, fontWeight: 800, letterSpacing: 2}}>CLOUD  fleet.ginfo.cc</div>
+          <div style={{color: TEXT, fontSize: 40, fontWeight: 800, marginTop: 20}}>This is where it works</div>
+          <div style={{color: MUTED, fontSize: 24, marginTop: 16, lineHeight: 1.4}}>
+            Deploy the hub in the cloud. Agents on Windows, Linux, and macOS dial out. One tool reaches every PC.
+          </div>
+        </div>
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+const SceneCta: React.FC = () => {
+  const frame = useCurrentFrame();
+  const {fps} = useVideoConfig();
+  const s = spring({frame, fps, config: {damping: 16}});
+  return (
+    <AbsoluteFill
+      style={{
+        justifyContent: 'center',
+        alignItems: 'center',
+        fontFamily: FONT,
+        opacity: fadeInOut(frame, 150, 14),
+      }}
+    >
+      <div style={{opacity: s, transform: `scale(${0.92 + s * 0.08})`, textAlign: 'center'}}>
+        <div style={{fontSize: 28, letterSpacing: 6, color: MINT, fontWeight: 700, marginBottom: 18}}>TRY IT FIRST</div>
+        <div style={{fontSize: 72, fontWeight: 900, color: TEXT}}>fleet.ginfo.cc</div>
+        <div style={{marginTop: 28, fontSize: 32, color: MUTED}}>
+          Log in · mint a token · install Agent · import the tool
+        </div>
       </div>
     </AbsoluteFill>
   );
@@ -546,17 +351,20 @@ export const Architecture: React.FC = () => {
       <Sequence from={0} durationInFrames={90}>
         <SceneTitle />
       </Sequence>
-      <Sequence from={90} durationInFrames={150}>
-        <SceneTopology />
+      <Sequence from={90} durationInFrames={180}>
+        <SceneFan />
       </Sequence>
-      <Sequence from={240} durationInFrames={210}>
-        <ScenePacket />
+      <Sequence from={270} durationInFrames={180}>
+        <ScenePackets />
       </Sequence>
-      <Sequence from={450} durationInFrames={120}>
-        <ScenePrinciple />
+      <Sequence from={450} durationInFrames={150}>
+        <SceneKeys />
       </Sequence>
-      <Sequence from={570} durationInFrames={150}>
-        <SceneSetup />
+      <Sequence from={600} durationInFrames={150}>
+        <SceneCloud />
+      </Sequence>
+      <Sequence from={750} durationInFrames={150}>
+        <SceneCta />
       </Sequence>
     </AbsoluteFill>
   );

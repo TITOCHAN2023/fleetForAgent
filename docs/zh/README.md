@@ -1,13 +1,14 @@
 # Fleet
 
-**让你的 Agent 跑在你自己的电脑上。**  
-设备只出网。网站本身就是中枢。设备侧不用开入站端口，也不需要 VPS。
+**一个 MCP 工具。Windows、Linux、macOS。随时随地。**
+
+先上线体验：**[https://fleet.ginfo.cc](https://fleet.ginfo.cc)**
 
 ![命令怎么走](../media/architecture-flow.gif)
 
-登录 → 生成 Hub token → 每台电脑装 Agent（填本站 origin + token）→ Cursor / Claude 的 MCP 填同一对。一台 Node 上可以有多个账号，SQL 按 `user_id` 隔离。
+每台电脑装一个 Agent，Tool 里导入 **域名 URL + Hub token**。Cursor / Claude 只连中枢；中枢已经握着每台 Windows / Linux / Mac 主动打出来的 WebSocket。哪种架构能跑 Agent，就能进同一支舰队。
 
-[最新安装包](https://github.com/TITOCHAN2023/fleetForAgent/releases/latest) · [部署](deploy.md) · [登录](auth.md) · [素材](../media/README.md)
+[打开 fleet.ginfo.cc](https://fleet.ginfo.cc) · [部署](deploy.md) · [登录](auth.md)
 
 English: [../en/README.md](../en/README.md)
 
@@ -15,38 +16,30 @@ English: [../en/README.md](../en/README.md)
 
 ![Fleet 架构](../media/architecture.svg)
 
-1. **你** — Cursor、Claude，或任何 MCP 客户端。`FLEET_URL` + `FLEET_TOKEN`。
-2. **中枢** — 这个网站。登录、发 token、在 `/v1/*` 上转发任务。
-3. **Agent** — Mac / Windows / Linux 上的小进程。它主动连出 WebSocket（`/v1/device`），从不接受入站连接。
+1. **Tool** — Cursor、Claude、MCP。`FLEET_URL` + `FLEET_TOKEN`。
+2. **Server** — [fleet.ginfo.cc](https://fleet.ginfo.cc)（或你自己的 Worker）。转发任务。
+3. **Agent** — Windows amd64、Linux amd64/arm64、macOS arm64/amd64 上主动连 `WSS /v1/device`。设备侧不开端口。
 
-一次命令就是一个来回：MCP → 中枢 → Agent → stdout/结果回来。
+讲解视频：[architecture.mp4](../media/architecture.mp4)
 
-24 秒无声讲解（后面配音用）：[architecture.mp4](../media/architecture.mp4)
+## 先用云端试
 
-## 新用户
-
-![四步](../media/setup.png)
-
-1. 打开网站，用 **Google / X** 登录（不是邮箱）。生产域名见 [auth.md](auth.md)。
-2. 设置页生成 Hub token（明文只显示一次；重置会使旧钥匙立刻作废）。
-3. 从 [Releases](https://github.com/TITOCHAN2023/fleetForAgent/releases/latest) 装 Agent。填本站 origin + token。
-4. 操作端 / MCP：
+1. 打开 [https://fleet.ginfo.cc](https://fleet.ginfo.cc)，Google / X 登录。
+2. 设置页生成 Hub token。
+3. 每台电脑装 [Agent](https://github.com/TITOCHAN2023/fleetForAgent/releases/latest)，中枢地址填 `https://fleet.ginfo.cc`。
+4. Tool 填同一对：
 
 ```bash
-FLEET_URL=http://127.0.0.1:8080 FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
+FLEET_URL=https://fleet.ginfo.cc FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
 ```
 
-macOS 安装包必须是 `hdiutil` 打出来的真 dmg，不能把 zip 改后缀 — [packaging.md](packaging.md)。
+完整步骤：[deploy.md](deploy.md) · [auth.md](auth.md)
 
-完整步骤：[deploy.md](deploy.md)
-
-## 本地控制台
+## 本地只是命令行
 
 ```bash
 npm install
 npm run dev
 ```
 
-http://127.0.0.1:8080 → 登录 → 设置 → 生成 token。Agent 和 tool 都用这个 origin + token。
-
-可选的独立中枢（Cloudflare Worker / `packages/fleet-hub`）写在 [deploy.md](deploy.md)。新用户不用填那些地址。
+http://127.0.0.1:8080 适合改代码。中枢跑在环回上，看不见 127.0.0.1 的 Windows / Linux / Mac 加不进来，**发挥不出多端互联**，最多是个命令行工具。要随时随地操作所有电脑，必须把 Server 部署到云端，或直接用 **[https://fleet.ginfo.cc](https://fleet.ginfo.cc)**。

@@ -1,22 +1,25 @@
 # Deploy FleetForAgent
 
-The website is the hub. Multiple accounts on one Node process; SQL scopes every row by `user_id`. Machines only dial out.
+Try the live hub first: **[https://fleet.ginfo.cc](https://fleet.ginfo.cc)**  
+Local `npm run dev` is a CLI on loopback — it cannot run a fleet. Cloud is where Windows / Linux / macOS join the same account.
 
 ```
-New user → log in → mint a Hub token
-Install Agent → paste this site's origin + token
-tool / Cursor → FLEET_URL=this site  FLEET_TOKEN=same key
+New user → https://fleet.ginfo.cc → mint a Hub token
+Install Agent on each PC → paste https://fleet.ginfo.cc + token
+Import the tool → FLEET_URL + FLEET_TOKEN
 ```
 
 ```
-[Mac / Windows / Linux Agent]
-        outbound only  WSS /v1/device
+[fleet-tool / Cursor / Claude]
+        HTTPS + Bearer flt_…
             │
             ▼
-   this site  (TanStack Start · /v1/*)
+   fleet.ginfo.cc  (cloud hub)
             ▲
-            │  HTTPS + Bearer flt_…
-   [fleet-tool / Cursor]
+            │  outbound WSS /v1/device
+   ┌────────┼────────┐
+Windows   Linux           macOS
+amd64     amd64/arm64     arm64/amd64
 ```
 
 Installers live on GitHub Releases, not in git:
@@ -27,16 +30,18 @@ https://github.com/TITOCHAN2023/fleetForAgent/releases/latest
 
 ## 0. New user (default path)
 
-1. Open the site, sign in.
+Start at **[https://fleet.ginfo.cc](https://fleet.ginfo.cc)**. Do not begin with `npm run dev` — a hub on 127.0.0.1 is at most a command-line tool.
+
+1. Open [https://fleet.ginfo.cc](https://fleet.ginfo.cc), sign in.
 2. Settings → generate a Hub token (plaintext shown once; reset invalidates the old key immediately).
-3. Install Agent on each computer. Hub address is **this site's origin** (for example `http://127.0.0.1:8080`), then paste the token.
+3. Install Agent on each computer. Hub address is **this site's origin** (`https://fleet.ginfo.cc`), then paste the token.
 4. Operator:
 
 ```bash
-FLEET_URL=http://127.0.0.1:8080 FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
+FLEET_URL=https://fleet.ginfo.cc FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
 ```
 
-A/B below are optional separate hub implementations. New users do not fill those URLs.
+A/B below are optional separate hub implementations. New users do not fill those URLs. Local `http://127.0.0.1:8080` is only for hacking the website.
 
 ## 1. Optional: separate hub (Worker or a Node process)
 
@@ -123,7 +128,8 @@ Download from [Releases](https://github.com/TITOCHAN2023/fleetForAgent/releases/
 | Windows | `FleetAgent-windows-amd64.exe` |
 | macOS Apple silicon | `FleetAgent-macos-arm64.dmg` (real disk image; do not rename a zip) |
 | macOS Intel | `FleetAgent-macos-amd64.dmg` |
-| Linux | `fleet-agent-linux-amd64.tar.gz` |
+| Linux amd64 | `fleet-agent-linux-amd64.tar.gz` |
+| Linux ARM64 | `fleet-agent-linux-arm64.tar.gz` |
 
 Then:
 

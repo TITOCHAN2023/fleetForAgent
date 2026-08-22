@@ -1,13 +1,14 @@
 # Fleet
 
-**Your coding agent, on your real machines.**  
-Devices only dial out. The website **is** the hub. No inbound ports, no VPS on the device side.
+**One MCP tool. Windows, Linux, and macOS. From anywhere.**
+
+Live hub: **[https://fleet.ginfo.cc](https://fleet.ginfo.cc)**
 
 ![How a command travels](../media/architecture-flow.gif)
 
-Log in → mint a Hub token → install Agent on each computer (this origin + token) → point Cursor / Claude MCP at the same pair. Multiple accounts share one Node process; SQL scopes every row by `user_id`.
+Install an Agent on each computer, then import the tool with **this URL + a hub token**. Cursor / Claude talks to the server; the server already has a WebSocket from every Windows, Linux, and Mac box that dialed out — any arch the Agent runs on.
 
-[Latest release](https://github.com/TITOCHAN2023/fleetForAgent/releases/latest) · [Deploy](deploy.md) · [Auth](auth.md) · [Media kit](../media/README.md)
+[Try fleet.ginfo.cc](https://fleet.ginfo.cc) · [Deploy](deploy.md) · [Auth](auth.md)
 
 中文：[../zh/README.md](../zh/README.md)
 
@@ -15,38 +16,30 @@ Log in → mint a Hub token → install Agent on each computer (this origin + to
 
 ![Fleet architecture](../media/architecture.svg)
 
-1. **You** — Cursor, Claude, or any MCP client. `FLEET_URL` + `FLEET_TOKEN`.
-2. **Hub** — this website. Login, mint tokens, route jobs on `/v1/*`.
-3. **Agent** — a small process on Mac / Windows / Linux. It opens an outbound WebSocket (`/v1/device`) and never accepts inbound connections.
+1. **Tool** — Cursor, Claude, MCP. `FLEET_URL` + `FLEET_TOKEN`.
+2. **Server** — [fleet.ginfo.cc](https://fleet.ginfo.cc) (or your own Worker). Relays jobs.
+3. **Agents** — outbound `WSS /v1/device` on Windows amd64, Linux amd64/arm64, macOS arm64/amd64. No inbound ports.
 
-A command is a round trip: MCP → hub → agent → stdout/result back.
+Explainer video: [architecture.mp4](../media/architecture.mp4)
 
-Silent 24s explainer (visual bed for a later VO video): [architecture.mp4](../media/architecture.mp4)
+## Try the cloud first
 
-## New user
-
-![Four steps](../media/setup.png)
-
-1. Open the site, sign in with **Google / X** (not email). Production domain: [auth.md](auth.md).
-2. Settings → generate a Hub token (plaintext shown once; reset invalidates the old key).
-3. Install Agent from [Releases](https://github.com/TITOCHAN2023/fleetForAgent/releases/latest). Paste this site's origin + the token.
-4. Operator / MCP:
+1. Sign in at [https://fleet.ginfo.cc](https://fleet.ginfo.cc) (Google / X).
+2. Settings → generate a Hub token.
+3. [Install Agent](https://github.com/TITOCHAN2023/fleetForAgent/releases/latest) on each PC. Hub address = `https://fleet.ginfo.cc`.
+4. Point the tool at the same pair:
 
 ```bash
-FLEET_URL=http://127.0.0.1:8080 FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
+FLEET_URL=https://fleet.ginfo.cc FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
 ```
 
-macOS installers must be real `hdiutil` dmg files, not renamed zips — [packaging.md](packaging.md).
+Details: [deploy.md](deploy.md) · [auth.md](auth.md)
 
-Full walkthrough: [deploy.md](deploy.md)
-
-## Quick start (console, local)
+## Local is a CLI
 
 ```bash
 npm install
 npm run dev
 ```
 
-http://127.0.0.1:8080 → log in → Settings → Generate token. Agent and tool both use that origin + token.
-
-Optional separate relays (Cloudflare Worker / `packages/fleet-hub`) are in [deploy.md](deploy.md). New users do not need them.
+http://127.0.0.1:8080 is for hacking. A hub on loopback cannot join Windows / Linux / macOS that cannot see that address — local deploy never becomes a fleet. At most you get a command-line tool. Put the hub in the cloud (or start at **[https://fleet.ginfo.cc](https://fleet.ginfo.cc)**) if you want the product.

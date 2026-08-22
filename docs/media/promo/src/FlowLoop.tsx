@@ -1,16 +1,18 @@
 import React from 'react';
 import {AbsoluteFill, interpolate, spring, useCurrentFrame, useVideoConfig} from 'remotion';
-import {AMBER, BLUE, FONT, MINT, MUTED, TEXT} from './theme';
+import {AMBER, BLUE, FONT, MINT, MUTED, ROSE, TEXT} from './theme';
 
 const Card: React.FC<{
   x: number;
   y: number;
+  w?: number;
+  h?: number;
   color: string;
   kicker: string;
   title: string;
   sub: string;
   delay: number;
-}> = ({x, y, color, kicker, title, sub, delay}) => {
+}> = ({x, y, w = 280, h = 150, color, kicker, title, sub, delay}) => {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
   const s = spring({frame: frame - delay, fps, config: {damping: 14}});
@@ -20,49 +22,45 @@ const Card: React.FC<{
         position: 'absolute',
         left: x,
         top: y,
-        width: 300,
-        height: 210,
-        opacity: Math.max(s, 0.15),
-        transform: `scale(${0.94 + s * 0.06})`,
-        borderRadius: 22,
+        width: w,
+        height: h,
+        opacity: 1,
+        transform: `scale(${0.96 + s * 0.04})`,
+        borderRadius: 18,
         border: `2.5px solid ${color}`,
-        background: `linear-gradient(165deg, ${color}55, #182236)`,
-        boxShadow: `0 12px 40px ${color}55`,
-        padding: 22,
+        background: `linear-gradient(165deg, ${color}aa, #24344c)`,
+        boxShadow: `0 12px 36px ${color}66`,
+        padding: 16,
         fontFamily: FONT,
       }}
     >
-      <div style={{color, fontSize: 14, fontWeight: 700, letterSpacing: 1.6}}>{kicker}</div>
-      <div style={{color: TEXT, fontSize: 28, fontWeight: 800, marginTop: 10}}>{title}</div>
-      <div style={{color: MUTED, fontSize: 16, marginTop: 8}}>{sub}</div>
+      <div style={{color, fontSize: 13, fontWeight: 700, letterSpacing: 1.4}}>{kicker}</div>
+      <div style={{color: TEXT, fontSize: 24, fontWeight: 800, marginTop: 6}}>{title}</div>
+      <div style={{color: '#c5d0e0', fontSize: 14, marginTop: 6}}>{sub}</div>
     </div>
   );
 };
 
 export const FlowLoop: React.FC = () => {
   const frame = useCurrentFrame();
-  const cycle = 80;
-  const t = frame % cycle;
-  const go = interpolate(t, [6, 36], [0, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'});
-  const back = interpolate(t, [42, 72], [0, 1], {
-    extrapolateLeft: 'clamp',
-    extrapolateRight: 'clamp',
-  });
+  const t = (frame % 80) / 80;
+  // Looping GIF: cards stay fully opaque so frame 0 is not a fade-in.
+  const go = interpolate(t, [0.05, 0.45], [0, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'});
+  const back = interpolate(t, [0.5, 0.9], [0, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'});
   const dot = (p: number, x1: number, y1: number, x2: number, y2: number, color: string) => {
     const u = Math.max(0, Math.min(1, p));
     if (u <= 0 || u >= 1) return null;
     return (
       <div
-        key={`${color}-${x1}-${y1}`}
         style={{
           position: 'absolute',
-          left: x1 + (x2 - x1) * u - 8,
-          top: y1 + (y2 - y1) * u - 8,
-          width: 16,
-          height: 16,
+          left: x1 + (x2 - x1) * u - 7,
+          top: y1 + (y2 - y1) * u - 7,
+          width: 14,
+          height: 14,
           borderRadius: 99,
           background: color,
-          boxShadow: `0 0 16px ${color}`,
+          boxShadow: `0 0 14px ${color}`,
         }}
       />
     );
@@ -77,64 +75,46 @@ export const FlowLoop: React.FC = () => {
       <div
         style={{
           position: 'absolute',
-          top: 36,
+          top: 28,
           width: '100%',
           textAlign: 'center',
           color: TEXT,
-          fontSize: 32,
+          fontSize: 28,
           fontWeight: 800,
         }}
       >
-        Devices dial out. The website is the hub.
+        One tool → fleet.ginfo.cc → Windows / Linux / macOS
       </div>
       <svg width="1280" height="720" style={{position: 'absolute', inset: 0}}>
-        <path d="M 350 345 H 490" stroke={AMBER} strokeWidth="5" fill="none" opacity={0.95} />
-        <path d="M 790 345 H 930" stroke={BLUE} strokeWidth="5" fill="none" opacity={0.95} />
-        <path d="M 930 415 H 790" stroke={MINT} strokeWidth="4" fill="none" opacity={0.7} />
-        <path d="M 490 415 H 350" stroke={MINT} strokeWidth="4" fill="none" opacity={0.7} />
+        <path d="M 310 360 H 470" stroke={AMBER} strokeWidth="4" fill="none" />
+        <path d="M 780 280 L 920 160" stroke={BLUE} strokeWidth="3" fill="none" />
+        <path d="M 780 360 H 920" stroke={MINT} strokeWidth="3" fill="none" />
+        <path d="M 780 440 L 920 560" stroke={ROSE} strokeWidth="3" fill="none" />
       </svg>
-      <Card
-        x={50}
-        y={250}
-        color={AMBER}
-        delay={0}
-        kicker="YOU"
-        title="Cursor / Claude"
-        sub="HTTPS + flt_ token"
-      />
-      <Card
-        x={490}
-        y={230}
-        color={MINT}
-        delay={0}
-        kicker="HUB"
-        title="This website"
-        sub="/v1  ·  account-scoped"
-      />
-      <Card
-        x={930}
-        y={250}
-        color={BLUE}
-        delay={0}
-        kicker="DEVICE"
-        title="Fleet Agent"
-        sub="Outbound WSS only"
-      />
-      {dot(go < 0.5 ? go * 2 : 1, 350, 345, 490, 345, AMBER)}
-      {dot(go > 0.5 ? (go - 0.5) * 2 : 0, 790, 345, 930, 345, MINT)}
-      {dot(back < 0.5 ? back * 2 : 1, 930, 415, 790, 415, BLUE)}
-      {dot(back > 0.5 ? (back - 0.5) * 2 : 0, 490, 415, 350, 415, MINT)}
+      <Card x={40} y={260} w={270} h={200} color={AMBER} delay={0} kicker="TOOL" title="Cursor / Claude" sub="HTTPS + token" />
+      <Card x={490} y={240} w={290} h={240} color={MINT} delay={0} kicker="SERVER" title="fleet.ginfo.cc" sub="WSS to every Agent" />
+      <Card x={920} y={80} color={BLUE} delay={0} kicker="WINDOWS" title="amd64" sub="dial-out WebSocket" />
+      <Card x={920} y={280} color={MINT} delay={0} kicker="LINUX" title="amd64 / arm64" sub="dial-out WebSocket" />
+      <Card x={920} y={480} color={ROSE} delay={0} kicker="MACOS" title="arm64 / amd64" sub="dial-out WebSocket" />
+      {dot(go < 0.35 ? go / 0.35 : 1, 310, 360, 490, 360, AMBER)}
+      {dot(go > 0.3 ? (go - 0.3) / 0.7 : 0, 780, 280, 920, 160, BLUE)}
+      {dot(go > 0.35 ? (go - 0.35) / 0.65 : 0, 780, 360, 920, 360, MINT)}
+      {dot(go > 0.4 ? (go - 0.4) / 0.6 : 0, 780, 440, 920, 560, ROSE)}
+      {dot(back, 920, 185, 780, 300, BLUE)}
+      {dot(back > 0.05 ? (back - 0.05) / 0.95 : 0, 920, 360, 780, 360, MINT)}
+      {dot(back > 0.1 ? (back - 0.1) / 0.9 : 0, 920, 560, 780, 420, ROSE)}
+      {dot(back > 0.45 ? (back - 0.45) / 0.55 : 0, 490, 360, 310, 360, AMBER)}
       <div
         style={{
           position: 'absolute',
-          bottom: 40,
+          bottom: 28,
           width: '100%',
           textAlign: 'center',
           color: MUTED,
-          fontSize: 20,
+          fontSize: 18,
         }}
       >
-        MCP → Hub → Agent → result. No inbound ports.
+        Import the tool with URL + token. Reach every Agent from anywhere.
       </div>
     </AbsoluteFill>
   );

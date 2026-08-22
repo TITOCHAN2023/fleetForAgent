@@ -1,22 +1,25 @@
 # 部署 FleetForAgent
 
-网站就是中枢。同一台 Node 上多个账号，SQL 按 `user_id` 隔离。机器只出网。
+先上线体验：**[https://fleet.ginfo.cc](https://fleet.ginfo.cc)**  
+本地 `npm run dev` 只是环回上的命令行，发挥不出多端互联。真正有用，要把中枢放到云上。
 
 ```
-新用户 → 登录网站 → 生成 Hub token
-电脑装 Agent → 填 本站 origin + token
-tool / Cursor → FLEET_URL=本站  FLEET_TOKEN=同一把
+新用户 → https://fleet.ginfo.cc → 生成 Hub token
+每台电脑装 Agent → 填 https://fleet.ginfo.cc + token
+导入 Tool → FLEET_URL + FLEET_TOKEN
 ```
 
 ```
-[Mac / Windows / Linux Agent]
-        只出网 WSS /v1/device
+[fleet-tool / Cursor / Claude]
+        HTTPS + Bearer flt_…
             │
             ▼
-   本站  (TanStack Start · /v1/*)
+   fleet.ginfo.cc  (云端中枢)
             ▲
-            │  HTTPS + Bearer flt_…
-   [fleet-tool / Cursor]
+            │  只出网 WSS /v1/device
+   ┌────────┼────────┐
+Windows   Linux           macOS
+amd64     amd64/arm64     arm64/amd64
 ```
 
 安装包在 GitHub Release，不在仓库里：
@@ -27,16 +30,18 @@ https://github.com/TITOCHAN2023/fleetForAgent/releases/latest
 
 ## 0. 新用户（默认路径）
 
-1. 打开网站，登录。
+从 **[https://fleet.ginfo.cc](https://fleet.ginfo.cc)** 开始。不要先 `npm run dev`：中枢跑在 127.0.0.1 上最多是个命令行工具，发挥不出多端互联。
+
+1. 打开 [https://fleet.ginfo.cc](https://fleet.ginfo.cc)，登录。
 2. 设置页生成 Hub token（只显示一次明文；可随时重置，旧钥匙立刻作废）。
-3. 每台电脑装 Agent，中枢地址填**这个网站的 origin**（例如 `http://127.0.0.1:8080`），再贴 token。
+3. 每台电脑装 Agent，中枢地址填**这个网站的 origin**（`https://fleet.ginfo.cc`），再贴 token。
 4. 操作端：
 
 ```bash
-FLEET_URL=http://127.0.0.1:8080 FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
+FLEET_URL=https://fleet.ginfo.cc FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
 ```
 
-下面 A/B 是可选的独立中枢实现，不是新用户要填的地址。
+下面 A/B 是可选的独立中枢实现，不是新用户要填的地址。本地 `http://127.0.0.1:8080` 只适合改网站代码。
 
 ## 1. 可选：独立中枢（Worker 或单独 Node 进程）
 
@@ -123,7 +128,8 @@ Restart=always
 | Windows | `FleetAgent-windows-amd64.exe` |
 | macOS Apple 芯片 | `FleetAgent-macos-arm64.dmg`（真磁盘映像；不要用 zip 改后缀） |
 | macOS Intel | `FleetAgent-macos-amd64.dmg` |
-| Linux | `fleet-agent-linux-amd64.tar.gz` |
+| Linux amd64 | `fleet-agent-linux-amd64.tar.gz` |
+| Linux ARM64 | `fleet-agent-linux-arm64.tar.gz` |
 
 然后：
 

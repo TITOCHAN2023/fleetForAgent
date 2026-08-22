@@ -7,7 +7,7 @@
     "studio": "remotion studio",
     "render": "remotion render Architecture out/architecture.mp4",
     "render:loop": "remotion render FlowLoop out/flow-loop.mp4",
-    "still": "remotion still Architecture out/architecture.png --frame=330"
+    "still": "remotion still Architecture out/architecture.png --frame=200"
   },
   "dependencies": {
     "@remotion/cli": "4.0.380",

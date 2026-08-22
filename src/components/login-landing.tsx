@@ -51,6 +51,14 @@ export function LoginLanding() {
             </h1>
             <p className="mt-6 max-w-sm text-sm leading-relaxed text-muted">{t("login.body")}</p>
             <p className="mt-4">
+              <a
+                href="https://fleet.ginfo.cc"
+                className="text-sm font-medium text-fg underline underline-offset-4 hover:opacity-80"
+              >
+                {t("login.try")}
+              </a>
+            </p>
+            <p className="mt-3">
               <Link to="/guide" className="text-sm text-muted underline underline-offset-4 hover:text-fg">
                 {t("login.guide")}
               </Link>

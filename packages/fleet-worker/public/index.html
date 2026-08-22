@@ -93,9 +93,12 @@
       .tab.on { background: var(--elevated); color: var(--fg); }
       .who { font-size: 14px; color: var(--muted); max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      .row > code.box { min-width: 0; flex: 1 1 12rem; }
       code, pre { font-family: var(--mono); font-size: 12px; }
       code.box, pre { background: var(--elevated); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; }
-      pre { overflow: auto; }
+      pre { overflow: auto; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all; }
+      .secret { display: flex; flex-direction: column; align-items: stretch; gap: 8px; max-width: 100%; }
+      .secret code.box { display: block; width: 100%; max-height: 9.5em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all; line-height: 1.45; }
       input { height: 44px; padding: 0 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); width: 100%; }
       .err { color: var(--bad); font-size: 13px; min-height: 1.2em; }
       .machine { border: 1px solid var(--border); border-radius: 12px; padding: 16px; background: var(--surface); }
@@ -112,6 +115,7 @@
   <body>
     <div id="app"></div>
     <script>
+      function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\"/g,"&quot;"); }
       const T = {
         zh: {
           help: "帮助", downloads: "下载", signOut: "退出", settings: "设置", fleet: "机器",
@@ -350,7 +354,7 @@
             <h2>${t("s3")}</h2>
             <p class="muted">${t("s3b")}</p>
             <pre>FLEET_URL=${origin}
-FLEET_TOKEN=flt_...
+FLEET_TOKEN=flt_1.…
 node packages/fleet-tool/index.mjs list</pre>
             <h2>${t("s4")}</h2>
             <p class="muted">${t("keysTitle")}</p>
@@ -373,14 +377,14 @@ node packages/fleet-tool/index.mjs list</pre>
             <h3 style="margin-top:20px">${t("s2")}</h3><p class="muted" style="margin-top:8px">${t("s2b")}</p>
             <h3 style="margin-top:20px">${t("s3")}</h3><p class="muted" style="margin-top:8px">${t("s3b")}</p>
             <pre style="margin-top:12px">FLEET_URL=${origin}
-FLEET_TOKEN=${state.secret || "flt_…"}
+FLEET_TOKEN=flt_1.…
 node packages/fleet-tool/index.mjs list</pre>
           </section>`;
       }
       function settingsView() {
         const origin = location.origin;
         const shown = state.secret
-          ? `<p class="warn">${t("secretOnce")}</p><div class="row"><code class="box" style="flex:1;word-break:break-all">${state.secret}</code><button class="btn" data-copy="${state.secret}">${t("copy")}</button></div>`
+          ? `<p class="warn">${t("secretOnce")}</p><div class="secret"><code class="box">${esc(state.secret)}</code><button class="btn" type="button" data-copy-secret="1">${t("copy")}</button></div>`
           : `<p class="muted" style="font-family:var(--mono)">${state.meta && state.meta.hasToken ? (state.meta.prefix + "…") : t("none")}</p>`;
         return `<section class="card">
           <h3>${t("hubTitle")}</h3>
@@ -401,7 +405,7 @@ node packages/fleet-tool/index.mjs list</pre>
           </div>
           <p class="muted" style="margin-top:16px">${t("toolHint")}</p>
           <pre style="margin-top:8px">FLEET_URL=${origin}
-FLEET_TOKEN=${state.secret || "flt_…"}
+FLEET_TOKEN=flt_1.…
 node packages/fleet-tool/index.mjs list</pre>
         </section>`;
       }
@@ -468,6 +472,7 @@ node packages/fleet-tool/index.mjs list</pre>
           render();
         };
         document.querySelectorAll("[data-copy]").forEach((b) => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy));
+        document.querySelectorAll("[data-copy-secret]").forEach((b) => b.onclick = () => { if (state.secret) navigator.clipboard.writeText(state.secret); });
       }
       window.addEventListener("popstate", render);
       window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {

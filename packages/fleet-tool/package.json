@@ -1,6 +1,7 @@
 {
   "name": "fleet-tool",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "bin": {
     "fleet-tool": "./index.mjs"

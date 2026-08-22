@@ -1,6 +1,7 @@
 {
   "name": "app-builder-workspace",
   "private": true,
+  "license": "MIT",
   "sideEffects": false,
   "type": "module",
   "overrides": {

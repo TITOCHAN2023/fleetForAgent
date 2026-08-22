@@ -63,6 +63,23 @@ func isLegacyFlt(raw string) bool {
 	return strings.HasPrefix(t, "flt_") && !strings.HasPrefix(t, tokenV1Prefix)
 }
 
+// hubTokenPublic is what /api/state may return. Never the pasted flt_1 secret.
+func hubTokenPublic(raw string) string {
+	t := strings.TrimSpace(raw)
+	if t == "" {
+		return ""
+	}
+	claims, err := verifyTokenV1(t)
+	if err == nil && claims != nil && claims.Kid != "" {
+		kid := claims.Kid
+		if len(kid) > 8 {
+			kid = kid[:8]
+		}
+		return tokenV1Prefix + kid
+	}
+	return "set"
+}
+
 func hubOrigin(raw string) string {
 	s := strings.TrimSpace(raw)
 	if s == "" {

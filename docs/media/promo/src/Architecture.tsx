@@ -22,12 +22,11 @@ const Wordmark: React.FC = () => (
       position: 'absolute',
       top: 36,
       left: 56,
-      fontFamily: FONT,
+      fontFamily: FONT_TITLE,
       letterSpacing: 3,
       fontSize: 22,
       fontWeight: 700,
       color: TEXT,
-      fontFamily: FONT_TITLE,
     }}
   >
     FLEET

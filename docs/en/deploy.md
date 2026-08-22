@@ -59,13 +59,7 @@ npx wrangler login
 npx wrangler deploy
 ```
 
-Success prints something like:
-
-```
-https://fleet-hub.<your-account>.workers.dev
-```
-
-That is the **hub URL** the Agent should use. You can also bind a custom domain (Cloudflare Dashboard → Workers → Triggers → Custom Domain).
+`wrangler.toml` sets `workers_dev = false`, so there is no `*.workers.dev` URL. Bind a custom domain (Cloudflare Dashboard → Workers → Triggers → Custom Domain) and paste that origin into the Agent. This repo's production host is `https://fleet.ginfo.cc`. Flip `workers_dev` back to `true` for a workers.dev preview.
 
 ### Token (recommended in production)
 
@@ -104,7 +98,7 @@ Local Agent: `http://127.0.0.1:8787`. On the public internet put Caddy / nginx i
 
 Control-plane paths match the Worker: `/v1/health`, `/v1/list_computers`, `/v1/run`, `/v1/get_result`, `/v1/read_screen`, `/v1/type`. Devices still use `WSS /v1/device`.
 
-Empty `HUB_TOKEN` is open — only for bring-up. Production must set it.
+This Node hub is a shared `HUB_TOKEN` relay: no `flt_1`, no per-account isolation. An empty `HUB_TOKEN` is **loopback-only** (`HOST=127.0.0.1`). Binding `0.0.0.0` or a public address requires a token.
 
 systemd example:
 
@@ -161,9 +155,9 @@ or `fleet install` to put `fleet` on PATH. The Linux tarball has both `fleet` an
 5. Mac/Windows: paste the hub origin (no path) and connect; Linux uses `FLEET_URL` above. Connected icon is `F•`.
 6. While enabled, the Agent blocks idle sleep (the screen may still lock). Closing the lid is not blocked. Linux uses `systemd-inhibit --what=idle:sleep`.
 7. Permission (settings page on Mac/Windows, tray right-click on all platforms):
-   - **Off**: run nothing
-   - **Ask**: someone at the machine must approve
-   - **Allow**: run (dangerous commands are still blocked)
+   - **Off**: refuse run and type (including existing panes)
+   - **Ask**: run and later keystrokes need approval at the machine
+   - **Allow**: run immediately. A coarse local filter still exists; it is not a security boundary
 
 The device only dials out. **No inbound ports, public IP, or VPN on the device side.** The Node machine in a plain deploy must of course be reachable (80/443 or the port you chose).
 
@@ -265,9 +259,8 @@ Any Node host, or Neon + your usual frontend host. Console and hub are separate:
 
 - Devices only dial out. Home routers need no port map.
 - Token goes in the `Authorization` header, not the URL.
-- The three local permission levels run on the device; the hub cannot change them.
-- Dangerous commands (`rm -rf`, `format`, shutdown, …) are refused by the Agent.
-- Production must set `HUB_TOKEN` (Worker: `wrangler secret put HUB_TOKEN`; Node: env).
+- The three local permission levels run on the device; the hub cannot change them. `off` / `ask` cover both run and type.
+- Worker `HUB_TOKEN` is an optional super operator. The Node hub requires `HUB_TOKEN` on a public bind (empty token is loopback-only).
 - Machines cannot ping each other. There is no LAN overlay.
 
 ---

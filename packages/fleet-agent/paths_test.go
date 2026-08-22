@@ -28,6 +28,21 @@ func TestDefaultListenAndHomeWhenEnvEmpty(t *testing.T) {
 	}
 }
 
+func TestLoopbackListenAddr(t *testing.T) {
+	ok := []string{"127.0.0.1:17890", "localhost:17890", "[::1]:17890", "127.0.0.1:0"}
+	for _, addr := range ok {
+		if !isLoopbackListenAddr(addr) {
+			t.Fatalf("%q should be loopback", addr)
+		}
+	}
+	bad := []string{"0.0.0.0:17890", ":17890", "192.168.1.5:17890", "10.0.0.2:9", "example.com:17890", "127.0.0.1"}
+	for _, addr := range bad {
+		if isLoopbackListenAddr(addr) {
+			t.Fatalf("%q must not bind", addr)
+		}
+	}
+}
+
 func TestListenAndHomeFollowEnv(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "fleet-test-home")
 	t.Setenv("FLEET_HOME", home)

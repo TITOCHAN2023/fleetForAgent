@@ -67,6 +67,9 @@ func TestVerifyTokenV1AndWrap(t *testing.T) {
 	if got.Kid != claims.Kid || got.Sec != claims.Sec || got.Aud != claims.Aud {
 		t.Fatalf("claims %+v", got)
 	}
+	if pub := hubTokenPublic(raw); pub != tokenV1Prefix+"11111111" || pub == raw {
+		t.Fatalf("public snapshot must be kid prefix, got %q", pub)
+	}
 	if isLegacyFlt(raw) {
 		t.Fatal("v1 token must not be legacy")
 	}

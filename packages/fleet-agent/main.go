@@ -47,11 +47,28 @@ type LogLine struct {
 	Msg   string `json:"msg"`
 }
 
+const (
+	pendingKindRun  = "run"
+	pendingKindType = "type"
+)
+
+type permitVerdict int
+
+const (
+	permitProceed permitVerdict = iota
+	permitRefuse
+	permitAsk
+)
+
 type Pending struct {
 	Corr        string `json:"corr"`
 	Command     string `json:"command"`
 	Requested   int64  `json:"requestedAt"`
+	Kind        string `json:"kind,omitempty"`
 	Fingerprint string `json:"-"`
+	PaneID      string `json:"-"`
+	Keys        string `json:"-"`
+	Key         string `json:"-"`
 }
 
 type Envelope struct {
@@ -121,6 +138,26 @@ func (a *Agent) snapshot() State {
 		Logs:     logs,
 		Pending:  a.pending,
 	}
+}
+
+func (a *Agent) publicSnapshot() State {
+	s := a.snapshot()
+	s.HubToken = hubTokenPublic(s.HubToken)
+	return s
+}
+
+// inputVerdict is called with a.mu held.
+func (a *Agent) inputVerdict() (permitVerdict, string) {
+	if !a.enabled || a.permit == PermitOff {
+		return permitRefuse, "fleet: permit=off — 本机不允许执行"
+	}
+	if a.permit == PermitAllow {
+		return permitProceed, ""
+	}
+	if a.pending != nil {
+		return permitRefuse, "fleet: another command is waiting for consent"
+	}
+	return permitAsk, ""
 }
 
 func (a *Agent) save() {
@@ -241,7 +278,7 @@ func (a *Agent) setPermit(p Permit) {
 
 func (a *Agent) pushUI() {
 	a.mu.Lock()
-	s := a.snapshot()
+	s := a.publicSnapshot()
 	a.mu.Unlock()
 	updateTray(s)
 }
@@ -478,10 +515,15 @@ func envelopeFingerprint(body map[string]any) string {
 
 func (a *Agent) handleRun(ctx context.Context, c *websocket.Conn, corr, cmd, fingerprint string) {
 	a.mu.Lock()
-	if !a.enabled || a.permit == PermitOff {
-		a.log("warn", "refused (off): "+cmd)
+	v, msg := a.inputVerdict()
+	if v == permitRefuse {
+		a.log("warn", "refused: "+cmd)
+		code := 126
+		if strings.Contains(msg, "waiting for consent") {
+			code = 1
+		}
 		a.mu.Unlock()
-		_ = wsjson.Write(ctx, c, resultEnv(corr, false, 126, "", "fleet: permit=off — 本机不允许执行"))
+		_ = wsjson.Write(ctx, c, resultEnv(corr, false, code, "", msg))
 		return
 	}
 	if destructive.MatchString(cmd) {
@@ -490,13 +532,8 @@ func (a *Agent) handleRun(ctx context.Context, c *websocket.Conn, corr, cmd, fin
 		_ = wsjson.Write(ctx, c, resultEnv(corr, false, 126, "", "fleet: refused by device policy"))
 		return
 	}
-	if a.permit == PermitAsk {
-		if a.pending != nil {
-			a.mu.Unlock()
-			_ = wsjson.Write(ctx, c, resultEnv(corr, false, 1, "", "fleet: another command is waiting for consent"))
-			return
-		}
-		a.pending = &Pending{Corr: corr, Command: cmd, Requested: time.Now().UnixMilli(), Fingerprint: fingerprint}
+	if v == permitAsk {
+		a.pending = &Pending{Kind: pendingKindRun, Corr: corr, Command: cmd, Requested: time.Now().UnixMilli(), Fingerprint: fingerprint}
 		a.log("warn", "waiting consent: "+cmd)
 		a.mu.Unlock()
 		notifyConsent(cmd)
@@ -546,17 +583,53 @@ func (a *Agent) spawnPane(ctx context.Context, c *websocket.Conn, corr, cmd, fin
 	}()
 }
 
+func typeConsentText(keys, key string) string {
+	if s := strings.TrimSpace(key); s != "" {
+		return "type " + s
+	}
+	return "type " + clip(keys, 80)
+}
+
+func typedEnv(corr string, ok bool, errMsg string) Envelope {
+	return Envelope{V: 1, Type: "typed", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"ok": ok, "error": errMsg}}
+}
+
 func (a *Agent) handleType(ctx context.Context, c *websocket.Conn, corr, id, keys, key, fingerprint string) {
+	a.mu.Lock()
+	v, msg := a.inputVerdict()
+	if v == permitRefuse {
+		a.log("warn", "refused type")
+		a.mu.Unlock()
+		_ = wsjson.Write(ctx, c, typedEnv(corr, false, msg))
+		return
+	}
+	if v == permitAsk {
+		label := typeConsentText(keys, key)
+		a.pending = &Pending{
+			Kind: pendingKindType, Corr: corr, Command: label, Requested: time.Now().UnixMilli(),
+			Fingerprint: fingerprint, PaneID: id, Keys: keys, Key: key,
+		}
+		a.log("warn", "waiting consent: "+label)
+		a.mu.Unlock()
+		notifyConsent(label)
+		a.pushUI()
+		return
+	}
+	a.mu.Unlock()
+	a.deliverType(ctx, c, corr, id, keys, key, fingerprint)
+}
+
+func (a *Agent) deliverType(ctx context.Context, c *websocket.Conn, corr, id, keys, key, fingerprint string) {
 	a.mu.Lock()
 	sup := a.panes
 	a.mu.Unlock()
 	if sup == nil {
-		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "typed", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"ok": false, "error": "no pane"}})
+		_ = wsjson.Write(ctx, c, typedEnv(corr, false, "no pane"))
 		return
 	}
 	p := sup.getFor(fingerprint, id)
 	if p == nil {
-		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "typed", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"ok": false, "error": "pane gone"}})
+		_ = wsjson.Write(ctx, c, typedEnv(corr, false, "pane gone"))
 		return
 	}
 	err := p.typeInput(keys, key)
@@ -565,7 +638,7 @@ func (a *Agent) handleType(ctx context.Context, c *websocket.Conn, corr, id, key
 	if err != nil {
 		msg = err.Error()
 	}
-	_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "typed", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"ok": ok, "error": msg}})
+	_ = wsjson.Write(ctx, c, typedEnv(corr, ok, msg))
 }
 
 func (a *Agent) handleScreen(ctx context.Context, c *websocket.Conn, corr, id string, fingerprint string) {
@@ -648,7 +721,11 @@ func (a *Agent) approve() {
 	if p == nil || ws == nil {
 		return
 	}
-	go a.spawnPane(context.Background(), ws, p.Corr, p.Command, p.Fingerprint)
+	if p.Kind == pendingKindType {
+		go a.deliverType(context.Background(), ws, p.Corr, p.PaneID, p.Keys, p.Key, p.Fingerprint)
+	} else {
+		go a.spawnPane(context.Background(), ws, p.Corr, p.Command, p.Fingerprint)
+	}
 	a.mu.Lock()
 	a.log("info", "approved: "+p.Command)
 	a.mu.Unlock()
@@ -664,7 +741,11 @@ func (a *Agent) deny() {
 	if p == nil || ws == nil {
 		return
 	}
-	_ = wsjson.Write(context.Background(), ws, resultEnv(p.Corr, false, 1, "", "fleet: denied at the machine"))
+	if p.Kind == pendingKindType {
+		_ = wsjson.Write(context.Background(), ws, typedEnv(p.Corr, false, "fleet: denied at the machine"))
+	} else {
+		_ = wsjson.Write(context.Background(), ws, resultEnv(p.Corr, false, 1, "", "fleet: denied at the machine"))
+	}
 	a.mu.Lock()
 	a.log("warn", "denied: "+p.Command)
 	a.mu.Unlock()
@@ -695,7 +776,7 @@ func main() {
 	})
 	mux.HandleFunc("/api/state", func(w http.ResponseWriter, r *http.Request) {
 		agent.mu.Lock()
-		s := agent.snapshot()
+		s := agent.publicSnapshot()
 		agent.mu.Unlock()
 		writeJSON(w, s)
 	})
@@ -706,7 +787,7 @@ func main() {
 		_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
 		agent.setEnabled(body.Enabled)
 		agent.mu.Lock()
-		s := agent.snapshot()
+		s := agent.publicSnapshot()
 		agent.mu.Unlock()
 		writeJSON(w, s)
 	})
@@ -717,7 +798,7 @@ func main() {
 		_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
 		agent.setPermit(body.Permit)
 		agent.mu.Lock()
-		s := agent.snapshot()
+		s := agent.publicSnapshot()
 		agent.mu.Unlock()
 		writeJSON(w, s)
 	})
@@ -728,7 +809,7 @@ func main() {
 		}
 		_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
 		agent.mu.Lock()
-		if body.Token != "" {
+		if body.Token != "" && body.Token != hubTokenPublic(agent.hubToken) && body.Token != "set" {
 			agent.hubToken = body.Token
 		}
 		hub := body.Hub
@@ -740,21 +821,21 @@ func main() {
 		go func() { _ = agent.connect(hub) }()
 		time.Sleep(80 * time.Millisecond)
 		agent.mu.Lock()
-		s := agent.snapshot()
+		s := agent.publicSnapshot()
 		agent.mu.Unlock()
 		writeJSON(w, s)
 	})
 	mux.HandleFunc("/api/approve", func(w http.ResponseWriter, r *http.Request) {
 		agent.approve()
 		agent.mu.Lock()
-		s := agent.snapshot()
+		s := agent.publicSnapshot()
 		agent.mu.Unlock()
 		writeJSON(w, s)
 	})
 	mux.HandleFunc("/api/deny", func(w http.ResponseWriter, r *http.Request) {
 		agent.deny()
 		agent.mu.Lock()
-		s := agent.snapshot()
+		s := agent.publicSnapshot()
 		agent.mu.Unlock()
 		writeJSON(w, s)
 	})
@@ -770,7 +851,11 @@ func main() {
 		}()
 	})
 
-	ln, err := net.Listen("tcp", settingsAddr())
+	addr := settingsAddr()
+	if !isLoopbackListenAddr(addr) {
+		log.Fatalf("FLEET_SETTINGS_ADDR must bind loopback (127.0.0.1 / ::1 / localhost), got %q", addr)
+	}
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		if runtime.GOOS == "linux" {
 			log.Println("already running")

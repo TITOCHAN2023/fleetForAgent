@@ -142,10 +142,10 @@
           consent: "Needs approval here", approve: "Allow", deny: "Deny", logs: "Logs",
         },
         zh: {
-          body: "填写中枢地址，连出去。用 https://fleet.ginfo.cc 或你自己的 Worker。不开放入站端口。",
+          body: "填中枢地址，Agent 会主动连出去。可以用 https://fleet.ginfo.cc，也可以是你自己的 Worker。不需要入站端口。",
           stay: "设置页关掉也没关系：Mac 在顶部时钟旁边，Windows 在右下角时钟旁边。右键图标可开关本机、切换执行权限。命令行和本页是同一份状态：fleet status / start / permit。开关打开时本机不会因空闲休眠，锁屏仍可继续跑。",
           allow: "允许在这台电脑上运行",
-          on: "已开", offsw: "打开",
+          on: "已开启", offsw: "已关闭",
           connect: "连接",
           help: "帮助",
           themeL: "浅色", themeD: "深色", themeS: "系统",
@@ -171,7 +171,7 @@
       }
       function applyLang() {
         const t = I18N[locale];
-        document.documentElement.lang = locale === "zh" ? "zh-Hant" : "en";
+        document.documentElement.lang = locale === "zh" ? "zh-CN" : "en";
         $("t-body").textContent = t.body;
         $("t-stay").textContent = t.stay;
         $("t-allow").textContent = t.allow;
@@ -215,7 +215,9 @@
         $("conn").className = "badge " + conn[1];
         $("enabled").textContent = s.enabled ? t.on : t.offsw;
         if (s.hubInput) $("hub").value = s.hubInput;
-        if (s.hubToken) $("token").value = s.hubToken;
+        if (s.hubToken) {
+          $("token").placeholder = "saved · " + s.hubToken;
+        }
         $("err").textContent = s.error || "";
         $("deviceId").textContent = s.deviceId || "—";
         document.querySelectorAll(".level").forEach((b) => b.classList.toggle("on", b.dataset.permit === s.permit));

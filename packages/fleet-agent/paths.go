@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,21 @@ func settingsAddr() string {
 	v = strings.TrimPrefix(v, "http://")
 	v = strings.TrimPrefix(v, "https://")
 	return v
+}
+
+// isLoopbackListenAddr is true only for localhost / 127.0.0.1 / ::1 with a port.
+// Empty host, 0.0.0.0, and LAN addresses are rejected so the unauthenticated
+// settings API cannot bind the network.
+func isLoopbackListenAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }
 
 // settingsURL follows settingsAddr. Defaults stay http://127.0.0.1:17890 when env is unset.

@@ -36,6 +36,8 @@ https://fleet.ginfo.cc/v1/auth/callback/x
 
 If these are unset, the buttons open an explicit error page. Do not add email/password login again. `/v1/register` and `/v1/login` are closed.
 
+Google must return a verified email (`verified_email: true`). X accounts are keyed by user id (`{id}@x.oauth.fleet`), so a renamed handle does not switch accounts.
+
 ## High-security hub token (`flt_1`)
 
 Settings mints a per-account RSA-2048 keypair. The string you copy is `flt_1.<payload>.<sig>`: it carries the public key and a secret, and is bound to `HUB_ORIGIN` (`https://fleet.ginfo.cc`), never the HTTP Host header.

@@ -4,23 +4,23 @@
   "scenes": [
     {
       "id": "01-pain",
-      "text": "你是不是也在 Codex 里遇到过，助手明明很强，可它出不去眼前这台电脑，官方远程软件也一样，往往只能盯住某一台，家里公司机房永远对不齐。",
+      "text": "你是不是也在 Codex 里遇到过，助手明明很强，可它出不去眼前这台电脑。官方远程软件也一样，只能管住一台。家里、公司、机房，永远对不齐。",
       "target_s": 15,
-      "audio_s": 17.54,
+      "audio_s": 18.42,
       "file": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\zhdy\\01-pain.wav"
     },
     {
       "id": "02-product",
-      "text": "我们不替代你的助手，随便哪个助手挂上一个工具，就能像本机上的 Claude 和 Codex 一样去用你名下每一台电脑，而且不限系统。",
+      "text": "我们不替代你的助手。随便哪个助手，挂上一个工具，就能像本机上的 Claude 和 Codex 一样，用你名下的每一台电脑，而且不限系统。",
       "target_s": 14,
-      "audio_s": 13.46,
+      "audio_s": 15.02,
       "file": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\zhdy\\02-product.wav"
     },
     {
       "id": "03-principle",
-      "text": "助手连到云上，每台电脑自己连出去，家里公司机房哪种电脑都行，你选哪台就在哪台干活，结果再回来。",
+      "text": "助手连到云上，每台电脑自己连出去。家里、公司、机房，哪种电脑都行。你选哪台，就在哪台干活，结果再传回来。",
       "target_s": 16,
-      "audio_s": 14.36,
+      "audio_s": 15.5,
       "file": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\zhdy\\03-principle.wav"
     },
     {
@@ -32,9 +32,9 @@
     },
     {
       "id": "05-setup",
-      "text": "四样东西，地址、令牌、每台电脑装上程序、再把工具导入助手，如果服务只装在自己这一台，别的电脑就加不进来，要随时随地就放到云上。",
+      "text": "四样东西。地址、令牌、每台电脑装个程序、再把工具导入助手。服务要是只装在自己这一台，别的电脑就加不进来。想随时随地用，就放到云上。",
       "target_s": 14,
-      "audio_s": 14.887,
+      "audio_s": 16.22,
       "file": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\zhdy\\05-setup.wav"
     },
     {
@@ -45,5 +45,5 @@
       "file": "G:\\project\\fleetForAgent\\docs\\media\\promo\\vo\\zhdy\\06-cta.wav"
     }
   ],
-  "full_s": 77.886
+  "full_s": 82.799
 }

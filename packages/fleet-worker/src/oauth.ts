@@ -1,5 +1,7 @@
 /** Google / X OAuth for the public site. Not the Grok sandbox broker. */
 
+import { googleProfileEmail, xAccountEmail } from "./oauth-account.mjs";
+
 export type OAuthEnv = {
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
@@ -108,9 +110,10 @@ async function finishGoogle(request: Request, env: OAuthEnv): Promise<Response> 
   const meRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
     headers: { authorization: `Bearer ${token.access_token}` },
   });
-  const me = (await meRes.json()) as { email?: string };
-  if (!me.email) return fail("google 未返回邮箱");
-  return finishUser(env, me.email.toLowerCase(), "google");
+  const me = (await meRes.json()) as { email?: string; verified_email?: boolean };
+  const got = googleProfileEmail(me);
+  if (!got.ok) return fail(got.error);
+  return finishUser(env, got.email, "google");
 }
 
 async function finishX(request: Request, env: OAuthEnv): Promise<Response> {
@@ -146,9 +149,9 @@ async function finishX(request: Request, env: OAuthEnv): Promise<Response> {
   });
   const me = (await meRes.json()) as { data?: { id?: string; username?: string } };
   const xid = me.data?.id;
-  const user = me.data?.username;
   if (!xid) return fail("x 未返回用户");
-  const email = `${user || xid}@x.oauth.fleet`;
+  const email = xAccountEmail(xid);
+  if (!email) return fail("x 未返回用户");
   return finishUser(env, email, "x");
 }
 

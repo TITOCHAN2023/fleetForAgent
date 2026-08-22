@@ -358,13 +358,13 @@ const SceneCollab: React.FC<{t: Copy; duration: number}> = ({t, duration}) => {
         <div style={{marginTop: 8, color: MUTED, fontSize: 16}}>{frame >= 210 ? t.sameCreds : ''}</div>
         <div style={{marginTop: 22, color: MUTED, fontSize: 22}}>&gt; list</div>
         <div style={{marginTop: 14, opacity: list, color: TEXT, fontSize: 26, lineHeight: 1.7, fontWeight: 600}}>
-          {t.home}-Win　　{t.online}
+          {t.home}-Win{'　　'}{t.online}
           <br />
-          {t.office}-Mac　　{t.online}
+          {t.office}-Mac{'　　'}{t.online}
           <br />
-          {t.colo}-Linux　{t.online}
+          {t.colo}-Linux{'　'}{t.online}
         </div>
-        <div style={{marginTop: 22, opacity: run, color: MUTED, fontSize: 20}}>&gt; run hostname　·　{t.home}-Win</div>
+        <div style={{marginTop: 22, opacity: run, color: MUTED, fontSize: 20}}>&gt; run hostname{'　'}·{'　'}{t.home}-Win</div>
         <div style={{marginTop: 10, opacity: run, color: TEXT, fontSize: 32, fontWeight: 800}}>MySuperPC</div>
       </div>
       <div
@@ -554,7 +554,7 @@ const SceneCta: React.FC<{t: Copy; duration: number}> = ({t, duration}) => {
 export const IntroPortrait: React.FC<IntroProps> = ({locale, sceneFrames}) => {
   const t = COPY[locale];
   const frames = sceneFrames?.length === 6 ? sceneFrames : DEFAULT_SCENE_FRAMES;
-  const starts = frames.reduce<number[]>((acc, d) => {
+  const starts = frames.reduce<number[]>((acc, _d) => {
     acc.push((acc.length ? acc[acc.length - 1] : 0) + (acc.length ? frames[acc.length - 1] : 0));
     return acc;
   }, []);

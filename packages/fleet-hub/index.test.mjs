@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { WebSocket } from "ws";
-import { createHub } from "./index.mjs";
+import { assertHubBind, createHub, isLoopbackHost } from "./index.mjs";
 
 async function listen(hub) {
   await new Promise((resolve) => hub.server.listen(0, "127.0.0.1", resolve));
@@ -50,6 +50,16 @@ async function waitType(inbox, type, ms = 1000) {
   }
   throw new Error(`timeout waiting for ${type}: ${JSON.stringify(inbox)}`);
 }
+
+test("empty HUB_TOKEN cannot bind a public interface", () => {
+  assert.equal(isLoopbackHost("127.0.0.1"), true);
+  assert.equal(isLoopbackHost("localhost"), true);
+  assert.equal(isLoopbackHost("::1"), true);
+  assert.equal(isLoopbackHost("0.0.0.0"), false);
+  assert.deepEqual(assertHubBind({ host: "127.0.0.1", token: "" }), { host: "127.0.0.1", token: "" });
+  assert.throws(() => assertHubBind({ host: "0.0.0.0", token: "" }), /HUB_TOKEN required/);
+  assert.deepEqual(assertHubBind({ host: "0.0.0.0", token: "secret" }), { host: "0.0.0.0", token: "secret" });
+});
 
 test("health is open and names the node backend", async (t) => {
   const hub = createHub({ token: "secret" });

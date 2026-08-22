@@ -438,13 +438,37 @@ function write(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
+export function isLoopbackHost(host) {
+  const h = String(host || "").trim().toLowerCase();
+  if (h.startsWith("[") && h.endsWith("]")) return isLoopbackHost(h.slice(1, -1));
+  return h === "localhost" || h === "127.0.0.1" || h === "::1";
+}
+
+/** Empty HUB_TOKEN is loopback-only. This Node hub has no per-account flt_1. */
+export function assertHubBind({ host, token } = {}) {
+  const t = String(token || "").trim();
+  const h = String(host || "0.0.0.0").trim() || "0.0.0.0";
+  if (!t && !isLoopbackHost(h)) {
+    throw new Error(
+      `HUB_TOKEN required when binding ${h} (empty token is loopback-only; this Node hub has no flt_1 multi-tenant)`,
+    );
+  }
+  return { host: h, token: t };
+}
+
 const here = fileURLToPath(import.meta.url);
 const isMain = Boolean(process.argv[1]) && path.resolve(process.argv[1]) === here;
 if (isMain) {
   const port = Number(process.env.PORT || 8787);
-  const host = process.env.HOST || "0.0.0.0";
-  const hub = createHub({ token: process.env.HUB_TOKEN || "" });
-  hub.server.listen(port, host, () => {
-    console.log(`fleet-hub http://${host}:${port}  (backend=node)`);
+  let bind;
+  try {
+    bind = assertHubBind({ host: process.env.HOST || "0.0.0.0", token: process.env.HUB_TOKEN || "" });
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : err);
+    process.exit(1);
+  }
+  const hub = createHub({ token: bind.token });
+  hub.server.listen(port, bind.host, () => {
+    console.log(`fleet-hub http://${bind.host}:${port}  (backend=node)`);
   });
 }

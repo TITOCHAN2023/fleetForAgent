@@ -10,10 +10,15 @@ export type LiveSlot = {
   ws: WsLike;
 };
 
+type ScreenSlot = {
+  last?: Record<string, unknown>;
+  byCorr: Map<string, Record<string, unknown>>;
+};
+
 type LiveStore = {
   byDevice: Map<string, LiveSlot>;
   byUser: Map<string, Set<string>>;
-  screens: Map<string, { last?: Record<string, unknown>; byCorr: Map<string, Record<string, unknown>> }>;
+  screens: Map<string, ScreenSlot>;
   results: Map<string, Map<string, Record<string, unknown>>>;
 };
 
@@ -89,7 +94,7 @@ export function ownerOf(deviceId: string): string | null {
 
 export function putScreen(deviceId: string, body: Record<string, unknown>, corr?: string) {
   const s = store();
-  const slot = s.screens.get(deviceId) ?? { byCorr: new Map() };
+  const slot: ScreenSlot = s.screens.get(deviceId) ?? { byCorr: new Map() };
   slot.last = body;
   if (corr) slot.byCorr.set(corr, body);
   s.screens.set(deviceId, slot);

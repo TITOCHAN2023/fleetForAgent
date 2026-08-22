@@ -1,6 +1,7 @@
 name = "fleet-hub"
 main = "src/index.ts"
 compatibility_date = "2026-04-07"
+workers_dev = false
 
 # Optional shared token. Leave unset for a first bring-up, then:
 #   npx wrangler secret put HUB_TOKEN

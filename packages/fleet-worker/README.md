@@ -18,4 +18,4 @@ npx wrangler deploy
 npx wrangler secret put HUB_TOKEN
 ```
 
-Worker URL looks like `https://fleet-hub.<account>.workers.dev`. Paste that domain into the agent.
+`workers_dev` is off. Bind a custom domain (this repo uses `fleet.ginfo.cc`) or set `workers_dev = true` for a `*.workers.dev` preview. Paste that origin into the agent.

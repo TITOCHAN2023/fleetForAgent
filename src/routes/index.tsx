@@ -4,7 +4,7 @@ import { FleetConsole } from "@/components/fleet-console";
 import { LoginLanding } from "@/components/login-landing";
 
 export const Route = createFileRoute("/")({
-  validateSearch: (search: Record<string, unknown>) => ({
+  validateSearch: (search: Record<string, unknown>): { tab?: string } => ({
     tab: typeof search.tab === "string" ? search.tab : undefined,
   }),
   component: Home,

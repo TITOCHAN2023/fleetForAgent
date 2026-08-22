@@ -36,9 +36,11 @@ https://fleet.ginfo.cc/v1/auth/callback/x
 
 未配置时按钮会打开明确错误页。不要再加邮箱密码登录。`/v1/register` 和 `/v1/login` 已关闭。
 
+Google 必须返回已验证邮箱（`verified_email: true`）。X 账号按用户 id 绑定（`{id}@x.oauth.fleet`），改用户名不会换号。
+
 ## 高安全 Hub token（`flt_1`）
 
-设置页为每个账号生成一对 RSA-2048。复制出来的字符串是 `flt_1.<payload>.<sig>`：里面带公钥和密钥，并且绑定 `HUB_ORIGIN`（`https://fleet.ginfo.cc`），不绑 HTTP Host。
+设置页为每个账号生成一对 RSA-2048 密钥。复制出来的字符串是 `flt_1.<payload>.<sig>`：里面装着公钥和一份 secret，并且绑定 `HUB_ORIGIN`（`https://fleet.ginfo.cc`），不绑 HTTP Host。
 
 Agent 和 MCP 不会把整串当 `Authorization: Bearer` 发出去。它们会：
 
@@ -46,6 +48,6 @@ Agent 和 MCP 不会把整串当 `Authorization: Bearer` 发出去。它们会�
 2. 用 token 里的公钥 OAEP 封装 `{sec, nonce}`。
 3. 在 WSS `/v1/device` 和每次操作 HTTPS 上发送 `Authorization: Fleet-OAEP <kid>.<wrap>`。
 
-刷新 token 会删掉旧密钥，并断开该账号下所有设备 WebSocket（`1008 token reset`）。旧的 `flt_` hex Bearer 会被拒绝，英文 `HIGH_SEC` 提示：更新 Agent / MCP 客户端，再签发新 token。
+重置 token 会删掉旧密钥，并断开该账号下所有设备的 WebSocket（`1008 token reset`）。旧的 `flt_` hex Bearer 会被拒绝，报 `HIGH_SEC` 错误（英文）：请升级 Agent / MCP 客户端，再重新签发 token。
 
-`HUB_ORIGIN` 写在 `packages/fleet-worker/wrangler.toml` 的 `[vars]`。可选的 `HUB_TOKEN` 仍只做 HTTP list/run 超级操作员，不能抢设备 WebSocket。
+`HUB_ORIGIN` 写在 `packages/fleet-worker/wrangler.toml` 的 `[vars]`。可选的 `HUB_TOKEN` 仍只是 HTTP list/run 的超级令牌，抢不走设备 WebSocket。

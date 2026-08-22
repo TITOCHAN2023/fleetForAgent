@@ -79,17 +79,131 @@ export function isFleetDev(env = {}) {
   return v === "1" || v === "true" || v === "yes";
 }
 
-export function formatDevTrailer(timing) {
-  if (!timing || typeof timing !== "object") return "";
-  const hops = Array.isArray(timing.hops) ? timing.hops : [];
-  const runMs = hops.filter((h) => h.path === "/v1/run").reduce((s, h) => s + Number(h.ms || 0), 0);
-  const getHops = hops.filter((h) => h.path === "/v1/get_result");
-  const getMs = getHops.reduce((s, h) => s + Number(h.ms || 0), 0);
-  const total = Number.isFinite(Number(timing.total_ms)) ? Number(timing.total_ms) : 0;
-  const parts = [`# fleet-dev  total=${total}ms`];
-  if (hops.some((h) => h.path === "/v1/run")) parts.push(`run=${runMs}ms`);
-  if (getHops.length) parts.push(`get_result=${getMs}ms x${getHops.length}`);
-  return parts.join("  ");
+function numOrZero(n) {
+  const v = Number(n);
+  return Number.isFinite(v) ? v : 0;
+}
+
+function stampOrNull(row, key) {
+  if (!row || typeof row !== "object" || row[key] == null) return null;
+  return row[key];
+}
+
+function rowTime(row) {
+  if (!row || typeof row !== "object") return null;
+  if (row.t != null && Number.isFinite(Number(row.t))) return Number(row.t);
+  if (row.T != null && Number.isFinite(Number(row.T))) return Number(row.T);
+  return null;
+}
+
+export function emptyDevStamps() {
+  return {
+    hub_recv_t: null,
+    hub_reply_t: null,
+    hub_ms: null,
+    device_enqueue_t: null,
+    device_done_t: null,
+    device_run_ms: null,
+  };
+}
+
+function isoOrNull(ms) {
+  return Number.isFinite(Number(ms)) ? new Date(Number(ms)).toISOString() : null;
+}
+
+export function finalizeHop(hop, path, row) {
+  const t_out = hop?.t_out;
+  const t_in = hop?.t_in;
+  const wait_ms = numOrZero(hop?.wait_ms ?? hop?.gap_ms);
+  return {
+    path: path || hop?.path || "?",
+    t_out,
+    t_in,
+    t_out_iso: hop?.t_out_iso || isoOrNull(t_out),
+    t_in_iso: hop?.t_in_iso || isoOrNull(t_in),
+    send_ms: numOrZero(hop?.send_ms),
+    wait_ms,
+    gap_ms: numOrZero(hop?.gap_ms ?? wait_ms),
+    recv_ms: numOrZero(hop?.recv_ms),
+    total_ms: numOrZero(
+      hop?.total_ms ?? (Number.isFinite(Number(t_in)) && Number.isFinite(Number(t_out)) ? Number(t_in) - Number(t_out) : 0),
+    ),
+    http_status: hop?.http_status ?? null,
+    split: hop?.split || "body",
+    status: hop?.status ?? hopStatus(row),
+  };
+}
+
+export function formatHopLine(h) {
+  const path = String(h?.path || "?").padEnd(16);
+  return `# hop ${path} out=${h.t_out} in=${h.t_in} send=${numOrZero(h.send_ms)}ms wait=${numOrZero(h.wait_ms)}ms recv=${numOrZero(h.recv_ms)}ms total=${numOrZero(h.total_ms)}ms`;
+}
+
+export function formatDevTrailer(dev) {
+  if (!dev || typeof dev !== "object") return "";
+  const hops = Array.isArray(dev.hops) ? dev.hops : [];
+  const lines = ["# fleet-dev"];
+  for (const h of hops) lines.push(formatHopLine(h));
+  const parts = [];
+  if (dev.run_ms != null) parts.push(`run_ms=${dev.run_ms}`);
+  if (dev.client_run_gap_ms != null) parts.push(`client_gap=${dev.client_run_gap_ms}ms`);
+  parts.push(`poll=${dev.poll_count ?? 0}`);
+  if (numOrZero(dev.sleep_ms) > 0) parts.push(`sleep=${dev.sleep_ms}ms`);
+  parts.push(`total=${numOrZero(dev.total_ms)}ms`);
+  lines.push(`# ${parts.join(" ")}`);
+  return lines.join("\n");
+}
+
+/**
+ * fetch split as tightly as undici allows.
+ * send_ms = JSON serialize only (write vs TTFB cannot be split).
+ * wait_ms / gap_ms = serialize-done → response headers (TTFB, includes the TCP write).
+ * recv_ms = headers → JSON parsed.
+ * split=headers.
+ */
+export async function measureHubFetch(url, init = {}, clocks = {}) {
+  const wall = clocks.wall || Date.now;
+  const perf =
+    clocks.perf ||
+    (() => (typeof performance !== "undefined" && performance.now ? performance.now() : Date.now()));
+  const t_out = wall();
+  const p0 = perf();
+  const serialized = init.body == null ? "" : typeof init.body === "string" ? init.body : JSON.stringify(init.body);
+  const pSent = perf();
+  const res = await fetch(url, { ...init, body: serialized === "" && init.body == null ? init.body : serialized });
+  const pHeaders = perf();
+  const json = await res.json();
+  const pEnd = perf();
+  const t_in = wall();
+  const wait_ms = Math.max(0, pHeaders - pSent);
+  return {
+    ok: res.ok,
+    status: res.status,
+    json,
+    hop: finalizeHop(
+      {
+        t_out,
+        t_in,
+        t_out_iso: isoOrNull(t_out),
+        t_in_iso: isoOrNull(t_in),
+        send_ms: Math.max(0, pSent - p0),
+        wait_ms,
+        gap_ms: wait_ms,
+        recv_ms: Math.max(0, pEnd - pHeaders),
+        total_ms: Math.max(0, t_in - t_out),
+        http_status: res.status,
+        split: "headers",
+      },
+      clocks.path,
+    ),
+  };
+}
+
+export function unwrapTimedRpc(raw) {
+  if (raw && typeof raw === "object" && raw.__fleetTimed) {
+    return { json: raw.json, hop: raw.hop };
+  }
+  return { json: raw, hop: null };
 }
 
 /** MCP content text. Shell tools (run / get_result / wait) are human output, not JSON.stringify of the envelope. */
@@ -99,7 +213,7 @@ export function formatMcpText(name, out, env = {}) {
     if (out == null) text = "";
     else if (typeof out === "string") text = out;
     else if (typeof out === "object") {
-      const { timing: _timing, ...rest } = out;
+      const { timing: _timing, dev: _dev, ...rest } = out;
       text = JSON.stringify(rest);
     } else text = JSON.stringify(out);
   } else if (!out || typeof out !== "object") {
@@ -123,7 +237,7 @@ export function formatMcpText(name, out, env = {}) {
     }
   }
   if (!isFleetDev(env)) return text;
-  const trailer = formatDevTrailer(out && typeof out === "object" ? out.timing : null);
+  const trailer = formatDevTrailer(out && typeof out === "object" ? out.dev : null);
   if (!trailer) return text;
   if (text === "") return trailer;
   return (text.endsWith("\n") ? text : text + "\n") + trailer;
@@ -276,26 +390,63 @@ export function createOperator({
   const tools = buildTools();
 
   function newTrace() {
-    return { hops: [], started: now() };
+    return { hops: [], started: now(), sleep_ms: 0, startedRow: null };
   }
 
   async function callRpc(trace, path, body) {
-    if (!trace) return rpc(path, body);
-    const t0 = now();
-    const row = await rpc(path, body);
-    trace.hops.push({ path, ms: Math.max(0, now() - t0), status: hopStatus(row) });
+    const payload = fleetDev && body && typeof body === "object" ? { ...body, dev: true } : body;
+    if (!trace) {
+      const raw = await rpc(path, payload);
+      return unwrapTimedRpc(raw).json;
+    }
+    const t_out = now();
+    const raw = await rpc(path, payload);
+    const t_in = now();
+    const { json: row, hop: measured } = unwrapTimedRpc(raw);
+    const hop = finalizeHop(
+      measured || {
+        t_out,
+        t_in,
+        send_ms: 0,
+        wait_ms: Math.max(0, t_in - t_out),
+        recv_ms: 0,
+        total_ms: Math.max(0, t_in - t_out),
+        http_status: null,
+        split: "body",
+      },
+      path,
+      row,
+    );
+    trace.hops.push(hop);
+    if (path === "/v1/run" && !trace.startedRow) trace.startedRow = row;
     return row;
   }
 
-  function withTiming(out, trace) {
+  function withDev(out, trace) {
     if (!fleetDev || !trace) return out;
-    const poll_count = trace.hops.filter((h) => h.path === "/v1/get_result").length;
+    const hops = trace.hops.slice();
+    const runHop = hops.find((h) => h.path === "/v1/run");
+    const getHops = hops.filter((h) => h.path === "/v1/get_result");
+    const startT = rowTime(trace.startedRow);
+    const doneT = rowTime(out);
+    const run_ms = startT != null && doneT != null ? doneT - startT : null;
+    const client_run_gap_ms = runHop && getHops[0] ? getHops[0].t_in - runHop.t_out : null;
     return {
       ...out,
-      timing: {
+      dev: {
+        hops,
+        poll_count: getHops.length,
+        sleep_ms: trace.sleep_ms || 0,
         total_ms: Math.max(0, now() - trace.started),
-        hops: trace.hops.slice(),
-        poll_count,
+        run_ms,
+        client_run_gap_ms,
+        ...emptyDevStamps(),
+        hub_recv_t: stampOrNull(out, "hub_recv_t"),
+        hub_reply_t: stampOrNull(out, "hub_reply_t"),
+        hub_ms: stampOrNull(out, "hub_ms"),
+        device_enqueue_t: startT,
+        device_done_t: doneT,
+        device_run_ms: run_ms,
       },
     };
   }
@@ -354,7 +505,9 @@ export function createOperator({
       if (isFinishedResult(snapshot)) return snapshot;
       const left = deadline - now();
       if (left <= 0) break;
-      await sleep(Math.min(WAIT_POLL_MS, left));
+      const sl = Math.min(WAIT_POLL_MS, left);
+      if (trace) trace.sleep_ms += sl;
+      await sleep(sl);
       snapshot = await peekResult(deviceId, corr, trace);
     }
     if (isFinishedResult(snapshot)) return snapshot;
@@ -367,7 +520,7 @@ export function createOperator({
 
     if (name === "list_computers") {
       const row = await callRpc(trace, "/v1/list_computers", {});
-      return withTiming(row, trace);
+      return withDev(row, trace);
     }
 
     if (name === "set_computer") {
@@ -397,8 +550,8 @@ export function createOperator({
       const corr = started?.corr;
       rememberCorr(corr, deviceId);
       const out = withDevice({ ...started, corr, status: started?.status ?? "running" }, deviceId);
-      if (waitMs <= 0) return withTiming(out, trace);
-      return withTiming(await waitForResult(deviceId, corr, waitMs, trace), trace);
+      if (waitMs <= 0) return withDev(out, trace);
+      return withDev(await waitForResult(deviceId, corr, waitMs, trace), trace);
     }
 
     if (name === "get_result") {
@@ -406,8 +559,8 @@ export function createOperator({
       if (!corr) throw new Error("corr required");
       const deviceId = resolveDevice(args, { corr });
       const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? WAIT_DEFAULT_MS);
-      if (waitMs <= 0) return withTiming(await peekResult(deviceId, corr, trace), trace);
-      return withTiming(await waitForResult(deviceId, corr, waitMs, trace), trace);
+      if (waitMs <= 0) return withDev(await peekResult(deviceId, corr, trace), trace);
+      return withDev(await waitForResult(deviceId, corr, waitMs, trace), trace);
     }
 
     if (name === "wait") {
@@ -415,7 +568,7 @@ export function createOperator({
       if (!corr) throw new Error("corr required");
       const deviceId = resolveDevice(args, { corr });
       const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? WAIT_TOOL_DEFAULT_MS);
-      return withTiming(await waitForResult(deviceId, corr, waitMs, trace), trace);
+      return withDev(await waitForResult(deviceId, corr, waitMs, trace), trace);
     }
 
     if (name === "read_screen") {
@@ -424,7 +577,7 @@ export function createOperator({
       const body = { device_id: deviceId };
       if (corr) body.corr = corr;
       const row = await callRpc(trace, "/v1/read_screen", body);
-      return withTiming(withDevice(row, deviceId), trace);
+      return withDev(withDevice(row, deviceId), trace);
     }
 
     if (name === "type") {
@@ -436,7 +589,7 @@ export function createOperator({
       if (body.keys == null && body.key) body.keys = body.key;
       if (args.corr != null && String(args.corr) !== "") body.corr = args.corr;
       const row = await callRpc(trace, "/v1/type", body);
-      return withTiming(withDevice(row, deviceId), trace);
+      return withDev(withDevice(row, deviceId), trace);
     }
 
     throw new Error(`unknown tool ${name}`);

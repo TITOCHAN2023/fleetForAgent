@@ -25,7 +25,7 @@ Existing tools stay. `device_id` is still on every mutating/read schema; it is o
 
 `wait_ms` is an MCP-call budget only, max **30s** (hosts cancel tools at ~60s). It never kills the remote command. `run` omitted defaults to **30s**; `get_result` omitted/0 is an instant snapshot; `wait` omitted defaults to **30s**. Explicit `run` `wait_ms: 0` is the ticket path. `status=running` is not an error — do not re-issue `run`; poll `get_result(wait_ms=...)` or `wait(wait_ms=...)`.
 
-MCP text for a finished `run` / `get_result` / `wait` is the command output (Desktop Commander style), not a JSON envelope. A still-running job is a one-line `running corr=<id>` ticket. `FLEET_DEV=1` (also `true`/`yes`) appends a `# fleet-dev` hop-timing trailer after that text and sets MCP `_meta.duration_ms`.
+MCP text for a finished `run` / `get_result` / `wait` is the command output (Desktop Commander style), not a JSON envelope. A still-running job is a one-line `running corr=<id>` ticket. `FLEET_DEV=1` (also `true`/`yes`) keeps that text first, then appends a `# fleet-dev` trailer with per-hop `out`/`in`/`send`/`wait`/`recv`/`total` (epoch-ms wall times plus durations). The tool result includes a `dev` object; MCP `_meta.duration_ms` is the overall total and `_meta.fleet_dev` is the full `dev` object. Default is off.
 
 ## Last-used (this process)
 

@@ -10,7 +10,7 @@
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createOperator, FLEET_VERSION, formatMcpText } from "./operator.mjs";
+import { createOperator, FLEET_VERSION, formatMcpText, isFleetDev, measureHubFetch } from "./operator.mjs";
 
 function loadDotEnv(path) {
   try {
@@ -48,9 +48,23 @@ if (argv.length) {
   mcp();
 }
 
-async function rpc(path, body) {
+async function hubRpc(path, body, { timed = false } = {}) {
   if (!url || !token) {
     throw new Error("Need FLEET_URL and FLEET_TOKEN (env or ~/.fleet/mcp.env)");
+  }
+  const payload = body ?? {};
+  if (timed && isFleetDev(process.env)) {
+    const measured = await measureHubFetch(`${url}${path}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "X-Fleet-Dev": "1",
+      },
+      body: { ...payload, dev: true },
+    });
+    if (!measured.ok) throw new Error(measured.json?.error || String(measured.status));
+    return { __fleetTimed: true, json: measured.json, hop: { ...measured.hop, path } };
   }
   const res = await fetch(`${url}${path}`, {
     method: "POST",
@@ -58,11 +72,15 @@ async function rpc(path, body) {
       authorization: `Bearer ${token}`,
       "content-type": "application/json",
     },
-    body: JSON.stringify(body ?? {}),
+    body: JSON.stringify(payload),
   });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || res.statusText);
   return json;
+}
+
+async function rpc(path, body) {
+  return hubRpc(path, body, { timed: false });
 }
 
 async function cli(args) {
@@ -89,7 +107,10 @@ async function cli(args) {
 }
 
 function mcp() {
-  const { tools, callTool } = createOperator({ rpc, env: process.env });
+  const { tools, callTool } = createOperator({
+    rpc: (path, body) => hubRpc(path, body, { timed: true }),
+    env: process.env,
+  });
 
   const rl = readline();
   void (async () => {
@@ -119,8 +140,8 @@ function mcp() {
         if (msg.method === "tools/call") {
           const out = await callTool(msg.params?.name, msg.params?.arguments ?? {});
           const payload = { content: [{ type: "text", text: formatMcpText(msg.params?.name, out, process.env) }] };
-          if (out && typeof out === "object" && out.timing && out.timing.total_ms != null) {
-            payload._meta = { duration_ms: out.timing.total_ms };
+          if (out && typeof out === "object" && out.dev && Number.isFinite(out.dev.total_ms)) {
+            payload._meta = { duration_ms: out.dev.total_ms, fleet_dev: out.dev };
           }
           reply(id, payload);
           continue;

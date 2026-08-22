@@ -16,6 +16,7 @@ import {
   formatMcpText,
   isFleetDev,
   isFinishedResult,
+  measureHubFetch,
   parseOptionalMs,
   shQuote,
   stripSessionMeta,
@@ -507,9 +508,23 @@ test("isFleetDev accepts 1/true/yes and is off by default", () => {
   assert.equal(isFleetDev({ FLEET_DEV: "YES" }), true);
 });
 
+function assertHopFields(h, extras = {}) {
+  assert.equal(typeof h.path, "string");
+  assert.equal(typeof h.t_out, "number");
+  assert.equal(typeof h.t_in, "number");
+  assert.equal(typeof h.send_ms, "number");
+  assert.equal(typeof h.wait_ms, "number");
+  assert.equal(typeof h.recv_ms, "number");
+  assert.equal(typeof h.total_ms, "number");
+  assert.equal(h.gap_ms, h.wait_ms);
+  assert.match(h.t_out_iso, /Z$/);
+  assert.match(h.t_in_iso, /Z$/);
+  for (const [k, v] of Object.entries(extras)) assert.equal(h[k], v);
+}
+
 test("FLEET_DEV off leaves formatMcpText unchanged and records no timing", async () => {
   const time = clock();
-  const { rpc } = mockRpc({
+  const { rpc, calls } = mockRpc({
     "/v1/run": async () => {
       await time.sleep(10);
       return { corr: "c-off", status: "running" };
@@ -522,35 +537,137 @@ test("FLEET_DEV off leaves formatMcpText unchanged and records no timing", async
   const op = createOperator({ rpc, now: time.now, sleep: time.sleep });
   const out = await op.callTool("run", { device_id: "mac-1", command: "pwd" });
   assert.equal(out.timing, undefined);
+  assert.equal(out.dev, undefined);
+  assert.equal(calls[0].body.dev, undefined);
   const text = formatMcpText("run", out);
   assert.equal(text, "hi");
   assert.equal(text.includes("fleet-dev"), false);
 });
 
-test("FLEET_DEV on records hop ms and appends trailer after stdout", async () => {
+test("FLEET_DEV on records hop wall times and appends trailer after stdout", async () => {
   const time = clock();
-  const { rpc } = mockRpc({
+  const { rpc, calls } = mockRpc({
     "/v1/run": async () => {
       await time.sleep(336);
-      return { corr: "c-dev", status: "running" };
+      return { corr: "c-dev", status: "running", t: 1000 };
     },
     "/v1/get_result": async () => {
       await time.sleep(323);
-      return { status: "done", corr: "c-dev", ok: true, exit_code: 0, stdout: "hi" };
+      return { status: "done", corr: "c-dev", ok: true, exit_code: 0, stdout: "hi", t: 1012 };
     },
   });
   const env = { FLEET_DEV: "1" };
   const op = createOperator({ rpc, now: time.now, sleep: time.sleep, env });
   const out = await op.callTool("run", { device_id: "mac-1", command: "pwd" });
-  assert.ok(out.timing);
-  assert.equal(out.timing.poll_count, 1);
-  assert.equal(out.timing.hops.find((h) => h.path === "/v1/run")?.ms, 336);
-  assert.equal(out.timing.hops.find((h) => h.path === "/v1/get_result")?.ms, 323);
-  assert.ok(out.timing.total_ms >= 336 + 323);
+  assert.equal(out.timing, undefined);
+  assert.ok(out.dev);
+  assert.equal(out.dev.poll_count, 1);
+  assert.equal(out.dev.sleep_ms, 0);
+  assert.equal(out.dev.run_ms, 12);
+  assert.equal(out.dev.client_run_gap_ms, 659);
+  assert.ok(out.dev.total_ms >= 336 + 323);
+  assert.equal(out.dev.hub_recv_t, null);
+  assert.equal(out.dev.hub_reply_t, null);
+  assert.equal(out.dev.hub_ms, null);
+  assert.equal(out.dev.device_enqueue_t, 1000);
+  assert.equal(out.dev.device_done_t, 1012);
+  assert.equal(out.dev.device_run_ms, 12);
+  const runHop = out.dev.hops.find((h) => h.path === "/v1/run");
+  const getHop = out.dev.hops.find((h) => h.path === "/v1/get_result");
+  assertHopFields(runHop, { send_ms: 0, wait_ms: 336, recv_ms: 0, total_ms: 336, split: "body", http_status: null });
+  assertHopFields(getHop, { send_ms: 0, wait_ms: 323, recv_ms: 0, total_ms: 323, split: "body", http_status: null });
+  assert.equal(calls.find((c) => c.path === "/v1/run")?.body.dev, true);
   const text = formatMcpText("run", out, env);
-  assert.ok(text.startsWith("hi\n"));
-  assert.match(text, /# fleet-dev  total=\d+ms  run=336ms  get_result=323ms x1/);
+  assert.ok(text.startsWith("hi\n# fleet-dev\n"));
+  assert.match(text, /# hop \/v1\/run\s+out=\d+ in=\d+ send=0ms wait=336ms recv=0ms total=336ms/);
+  assert.match(text, /# hop \/v1\/get_result\s+out=\d+ in=\d+ send=0ms wait=323ms recv=0ms total=323ms/);
+  assert.match(text, /# run_ms=12 client_gap=659ms poll=1 total=\d+ms/);
   assert.equal(text.includes("{"), false);
+});
+
+test("FLEET_DEV running ticket is still one corr line plus trailer", async () => {
+  const time = clock();
+  const { rpc } = mockRpc({
+    "/v1/run": async () => {
+      await time.sleep(40);
+      return { corr: "c-tui", status: "running" };
+    },
+  });
+  const env = { FLEET_DEV: "1" };
+  const op = createOperator({ rpc, now: time.now, sleep: time.sleep, env });
+  const out = await op.callTool("run", { device_id: "mac-1", command: "htop", wait_ms: 0 });
+  assert.equal(out.status, "running");
+  assert.equal(out.dev.poll_count, 0);
+  assert.equal(out.dev.hops.length, 1);
+  assertHopFields(out.dev.hops[0], { path: "/v1/run", wait_ms: 40, split: "body" });
+  const text = formatMcpText("run", out, env);
+  const lines = text.split("\n");
+  assert.equal(lines[0], "running corr=c-tui");
+  assert.equal(lines[1], "# fleet-dev");
+  assert.match(lines[2], /# hop \/v1\/run\s+out=\d+ in=\d+ send=0ms wait=40ms recv=0ms total=40ms/);
+  assert.match(text, /# poll=0 total=\d+ms/);
+});
+
+test("measureHubFetch splits send/wait/recv at headers", async () => {
+  const orig = globalThis.fetch;
+  globalThis.fetch = async () => {
+    await new Promise((r) => setTimeout(r, 8));
+    return {
+      ok: true,
+      status: 200,
+      json: async () => {
+        await new Promise((r) => setTimeout(r, 8));
+        return { corr: "c1", status: "running" };
+      },
+    };
+  };
+  try {
+    const measured = await measureHubFetch("http://example.test/v1/run", {
+      method: "POST",
+      body: { command: "pwd" },
+    });
+    assert.equal(measured.ok, true);
+    assert.equal(measured.hop.split, "headers");
+    assert.equal(measured.hop.http_status, 200);
+    assert.ok(measured.hop.send_ms >= 0);
+    assert.ok(measured.hop.wait_ms >= 0);
+    assert.ok(measured.hop.recv_ms >= 0);
+    assert.equal(measured.hop.gap_ms, measured.hop.wait_ms);
+    assert.ok(measured.hop.t_in >= measured.hop.t_out);
+  } finally {
+    globalThis.fetch = orig;
+  }
+});
+
+test("timed rpc hop keeps the headers split", async () => {
+  const { rpc } = mockRpc({
+    "/v1/run": () => ({
+      __fleetTimed: true,
+      json: { corr: "c-hdr", status: "running" },
+      hop: {
+        t_out: 1_700_000_000_000,
+        t_in: 1_700_000_000_100,
+        send_ms: 1,
+        wait_ms: 80,
+        recv_ms: 19,
+        total_ms: 100,
+        http_status: 200,
+        split: "headers",
+      },
+    }),
+  });
+  const env = { FLEET_DEV: "1" };
+  const op = createOperator({ rpc, env });
+  const out = await op.callTool("run", { device_id: "mac-1", command: "pwd", wait_ms: 0 });
+  assertHopFields(out.dev.hops[0], {
+    path: "/v1/run",
+    send_ms: 1,
+    wait_ms: 80,
+    recv_ms: 19,
+    total_ms: 100,
+    http_status: 200,
+    split: "headers",
+  });
 });
 
 test("MCP version is 0.2.7", () => {

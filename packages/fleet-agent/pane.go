@@ -76,6 +76,7 @@ func (s *streamBuf) render() string {
 
 type pane struct {
 	id, corr, command string
+	fingerprint       string
 	mu                sync.Mutex
 	lines             []string
 	stdout            *streamBuf
@@ -89,14 +90,20 @@ type pane struct {
 	dirty             bool
 }
 
-type supervisor struct {
-	mu      sync.Mutex
-	panes   map[string]*pane
-	order   []string
+type liveSlot struct {
 	live    *liveShell
 	pending *liveJob
 	queue   []*liveJob
 	pumping bool
+}
+
+type supervisor struct {
+	mu    sync.Mutex
+	panes map[string]*pane
+	order []string
+	// live is the anonymous (empty fingerprint) slot. Tests and 0.2.7 hubs.
+	live  *liveShell
+	slots map[string]*liveSlot
 }
 
 func newSupervisor() *supervisor {
@@ -104,15 +111,57 @@ func newSupervisor() *supervisor {
 }
 
 func (s *supervisor) spawn(corr, command string) (*pane, error) {
+	return s.spawnFor("", corr, command)
+}
+
+func (s *supervisor) spawnFor(fingerprint, corr, command string) (*pane, error) {
 	// Live login PTY is POSIX-only (cwd/env persist across jobs).
 	// Windows keeps cmd /C oneshot so old clients and this agent stay compatible.
 	if runtime.GOOS != "windows" {
-		return s.enqueueLive(corr, command)
+		return s.enqueueLiveFor(fingerprint, corr, command)
 	}
-	return s.spawnOneshot(corr, command)
+	return s.spawnOneshotFor(fingerprint, corr, command)
 }
 
 func (s *supervisor) spawnOneshot(corr, command string) (*pane, error) {
+	return s.spawnOneshotFor("", corr, command)
+}
+
+func (s *supervisor) slotLocked(fp string) *liveSlot {
+	if s.slots == nil {
+		s.slots = map[string]*liveSlot{}
+	}
+	sl := s.slots[fp]
+	if sl == nil {
+		sl = &liveSlot{}
+		s.slots[fp] = sl
+		if fp == "" {
+			sl.live = s.live
+		}
+	}
+	return sl
+}
+
+func (s *supervisor) liveFor(fp string) *liveShell {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.slotLocked(fp).live
+}
+
+func (s *supervisor) killAllLive() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.live != nil {
+		s.live.kill()
+	}
+	for _, sl := range s.slots {
+		if sl.live != nil {
+			sl.live.kill()
+		}
+	}
+}
+
+func (s *supervisor) spawnOneshotFor(fingerprint, corr, command string) (*pane, error) {
 	ctx := context.Background()
 	cmd := exec.CommandContext(ctx, "cmd", "/C", command)
 	stdout, err := cmd.StdoutPipe()
@@ -131,15 +180,16 @@ func (s *supervisor) spawnOneshot(corr, command string) (*pane, error) {
 		return nil, err
 	}
 	p := &pane{
-		id:      "pane-" + corr,
-		corr:    corr,
-		command: command,
-		running: true,
-		stdin:   stdin,
-		cmd:     cmd,
-		lines:   []string{""},
-		stdout:  newStreamBuf(),
-		stderr:  newStreamBuf(),
+		id:          "pane-" + corr,
+		corr:        corr,
+		command:     command,
+		fingerprint: fingerprint,
+		running:     true,
+		stdin:       stdin,
+		cmd:         cmd,
+		lines:       []string{""},
+		stdout:      newStreamBuf(),
+		stderr:      newStreamBuf(),
 	}
 	s.mu.Lock()
 	s.panes[p.id] = p
@@ -237,7 +287,7 @@ func (s *supervisor) paneSnapshot(p *pane) (text string, running bool, code, seq
 		return "", false, 0, 0, 0, 0
 	}
 	s.mu.Lock()
-	live := s.live
+	live := s.slotLocked(p.fingerprint).live
 	s.mu.Unlock()
 	if live != nil && live.screen != nil {
 		text, row, col = live.screen.grid()
@@ -308,21 +358,37 @@ func (p *pane) typeInput(keys, named string) error {
 }
 
 func (s *supervisor) get(id string) *pane {
+	return s.getFor("", id)
+}
+
+func (s *supervisor) getFor(fingerprint, id string) *pane {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var p *pane
 	if id == "" {
-		if len(s.order) == 0 {
-			return nil
+		for i := len(s.order) - 1; i >= 0; i-- {
+			cand := s.panes[s.order[i]]
+			if cand == nil {
+				continue
+			}
+			if fingerprint == "" || cand.fingerprint == fingerprint {
+				p = cand
+				break
+			}
 		}
-		p = s.panes[s.order[len(s.order)-1]]
 	} else {
 		p = s.panes[id]
+		if p != nil && fingerprint != "" && p.fingerprint != fingerprint {
+			return nil
+		}
 	}
-	if p != nil && s.live != nil && s.live.stdin != nil {
-		p.mu.Lock()
-		p.stdin = s.live.stdin
-		p.mu.Unlock()
+	if p != nil {
+		live := s.slotLocked(p.fingerprint).live
+		if live != nil && live.stdin != nil {
+			p.mu.Lock()
+			p.stdin = live.stdin
+			p.mu.Unlock()
+		}
 	}
 	return p
 }

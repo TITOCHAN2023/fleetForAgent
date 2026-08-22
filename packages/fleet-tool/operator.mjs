@@ -5,6 +5,9 @@
 
 export const FLEET_VERSION = "0.2.8";
 
+/** MCP-process fingerprint. HTTP header only — never a tool argument. */
+export const FLEET_OPERATOR_HEADER = "X-Fleet-Operator";
+
 /** MCP-call wait budget only. Not a kill timeout. Hosts cancel tools at ~60s. */
 export const WAIT_MAX_MS = 30_000;
 /** get_result omitted/0: instant snapshot. */
@@ -72,6 +75,21 @@ const SHELL_RESULT_TOOLS = new Set(["run", "get_result", "wait"]);
 function nonemptyText(value) {
   if (value == null) return "";
   return String(value);
+}
+
+/** One UUID per MCP stdio process. Do not read FLEET_OPERATOR or any model-filled env. */
+export function newOperatorFingerprint() {
+  return crypto.randomUUID();
+}
+
+export function fleetHubHeaders({ token, fingerprint, extra } = {}) {
+  const headers = {
+    authorization: `Bearer ${token}`,
+    "content-type": "application/json",
+    ...extra,
+  };
+  if (fingerprint) headers[FLEET_OPERATOR_HEADER] = fingerprint;
+  return headers;
 }
 
 export function isFleetDev(env = {}) {
@@ -231,8 +249,7 @@ export function formatMcpText(name, out, env = {}) {
   } else if (!out || typeof out !== "object") {
     text = out == null ? "" : String(out);
   } else if (!isFinishedResult(out)) {
-    const corr = nonemptyText(out.corr).trim();
-    text = corr ? `running corr=${corr}` : "running";
+    text = "still running";
   } else {
     const stdout = nonemptyText(out.stdout);
     const err = nonemptyText(out.error) || nonemptyText(out.stderr);
@@ -284,7 +301,7 @@ function waitMsSchema({ defaultMs, role }) {
     minimum: 0,
     maximum: WAIT_MAX_MS,
     description:
-      `${role} MCP-call wait budget in milliseconds. Default ${defaultMs}. Capped at ${WAIT_MAX_MS} (30s) so the host cannot cancel with -32001 (clients ~60s). wait_ms never kills the remote command. status=running is not an error — do not re-issue run; long-poll with get_result(wait_ms) or wait(wait_ms). Do not spam wait_ms=0.`,
+      `${role} MCP-call wait budget in milliseconds. Default ${defaultMs}. Capped at ${WAIT_MAX_MS} (30s) so the host cannot cancel with -32001 (clients ~60s). wait_ms never kills the remote command. A still-running reply is not an error — do not re-issue run; long-poll with get_result(wait_ms) or wait(wait_ms). Do not spam wait_ms=0.`,
   };
 }
 
@@ -299,7 +316,7 @@ export function buildTools() {
     {
       name: "run",
       description:
-        "Start a command on a device and wait for the result (default wait_ms 30000). If it finishes in time, return the same payload get_result would. Explicit wait_ms=0 is the fire-and-forget ticket: immediate {corr,status:\"running\"} (TUIs / long jobs). POST /v1/run is held only when this client sends wait_ms>0; omitted/old clients still get an immediate ticket. If the budget expires, return {corr,status:\"running\"} — the command continues. Never kill on wait expiry. Never re-issue run after status=running; poll get_result(wait_ms) or wait(wait_ms).",
+        "Start a command on a device and wait for the result (default wait_ms 30000). If it finishes in time, return the same payload get_result would. Explicit wait_ms=0 starts the job and returns immediately (TUIs / long jobs). POST /v1/run is held only when this client sends wait_ms>0; omitted/old clients still return immediately if the command is still going. If the budget expires, the command continues — the text is a plain still-running notice. Never kill on wait expiry. Never re-issue run after a still-running reply; poll get_result(wait_ms) or wait(wait_ms).",
       inputSchema: {
         type: "object",
         required: ["command"],
@@ -316,13 +333,11 @@ export function buildTools() {
     {
       name: "get_result",
       description:
-        "Peek a previous run by corr. wait_ms omitted/0 is an instant snapshot. wait_ms>0 long-polls until completion or the budget expires (max 30s). status=running is not an error and does not mean the process died. Never re-issue run after status=running; poll again with get_result(wait_ms=...) or wait(wait_ms). Do not spam wait_ms=0.",
+        "Peek this process's live session on the device. wait_ms omitted/0 is an instant snapshot. wait_ms>0 long-polls until completion or the budget expires (max 30s). A still-running reply is not an error and does not mean the process died. Never re-issue run after a still-running reply; poll again with get_result(wait_ms=...) or wait(wait_ms). Do not spam wait_ms=0.",
       inputSchema: {
         type: "object",
-        required: ["corr"],
         properties: {
           device_id: deviceId,
-          corr: { type: "string" },
           wait_ms: waitMsSchema({ defaultMs: WAIT_DEFAULT_MS, role: "Optional." }),
         },
       },
@@ -330,12 +345,10 @@ export function buildTools() {
     {
       name: "wait",
       description:
-        "Explicit block: wait until a run finishes or wait_ms elapses (default 30s cap, max 30s). Long-polls get_result. wait_ms never kills the remote command. If still going: {corr,status:\"running\"} — not an error. Never re-issue run after status=running; poll with wait(wait_ms) or get_result(wait_ms). Do not spam wait_ms=0.",
+        "Explicit block: wait until this process's live session finishes or wait_ms elapses (default 30s cap, max 30s). Long-polls get_result. wait_ms never kills the remote command. If still going: a plain still-running notice — not an error. Never re-issue run after that; poll with wait(wait_ms) or get_result(wait_ms). Do not spam wait_ms=0.",
       inputSchema: {
         type: "object",
-        required: ["corr"],
         properties: {
-          corr: { type: "string" },
           device_id: deviceId,
           wait_ms: waitMsSchema({ defaultMs: WAIT_TOOL_DEFAULT_MS, role: "Explicit block." }),
         },
@@ -343,23 +356,22 @@ export function buildTools() {
     },
     {
       name: "read_screen",
-      description: "Snapshot the pane current frame (rendered grid on a live PTY). Does not attach or stream.",
+      description: "Snapshot this process's pane current frame (rendered grid on a live PTY). Does not attach or stream.",
       inputSchema: {
         type: "object",
-        properties: { device_id: deviceId, corr: { type: "string" } },
+        properties: { device_id: deviceId },
       },
     },
     {
       name: "type",
       description:
-        "Fire-and-forget keystrokes into the pane stdin. keys is a string (newlines become Enter/CR on the live PTY). Optional key is a named press like ssh_press: enter, ctrl+c, up. ctrl+c sends 0x03 and SIGINT to the foreground process group.",
+        "Fire-and-forget keystrokes into this process's pane stdin. keys is a string (newlines become Enter/CR on the live PTY). Optional key is a named press like ssh_press: enter, ctrl+c, up. ctrl+c sends 0x03 and SIGINT to the foreground process group.",
       inputSchema: {
         type: "object",
         properties: {
           device_id: deviceId,
           keys: { type: "string", description: "Literal keystrokes. Still accepted. Newlines become CR on the live PTY." },
           key: { type: "string", description: "Named key (enter, ctrl+c, up, f5, ...). Optional; do not invent a sixth tool." },
-          corr: { type: "string" },
         },
       },
     },
@@ -400,8 +412,6 @@ export function createOperator({
   let lastCwd = null;
   const envDefault = trimId(env.FLEET_DEVICE_ID) || null;
   const fleetDev = isFleetDev(env);
-  /** @type {Map<string, string>} */
-  const corrOwner = new Map();
   const tools = buildTools();
 
   function newTrace() {
@@ -472,22 +482,12 @@ export function createOperator({
     return { device_id: null, source: "none" };
   }
 
-  function rememberCorr(corr, deviceId) {
-    if (corr && deviceId) corrOwner.set(corr, deviceId);
-  }
-
-  function resolveDevice(args = {}, { corr } = {}) {
+  function resolveDevice(args = {}) {
     const explicit = trimId(args.device_id);
-    const owner = corr ? corrOwner.get(corr) : undefined;
-
     if (explicit) {
-      if (owner && explicit !== owner) {
-        throw new Error(deviceMismatchMessage(corr, owner, explicit));
-      }
       lastUsed = explicit;
       return explicit;
     }
-    if (owner) return owner;
     if (lastUsed) return lastUsed;
     if (envDefault) return envDefault;
     throw new Error(MISSING_DEVICE_MESSAGE);
@@ -504,18 +504,18 @@ export function createOperator({
     return out;
   }
 
-  async function peekResult(deviceId, corr, trace, waitMs = 0) {
-    const body = { device_id: deviceId, corr };
+  async function peekResult(deviceId, trace, waitMs = 0) {
+    const body = { device_id: deviceId };
     if (waitMs > 0) body.wait_ms = waitMs;
     const row = await callRpc(trace, "/v1/get_result", body);
     return decorateResult(row, deviceId);
   }
 
-  async function waitForResult(deviceId, corr, timeoutMs, trace) {
+  async function waitForResult(deviceId, timeoutMs, trace, corr) {
     const budget = clampWaitMs(timeoutMs);
     const startedAt = now();
     const deadline = startedAt + budget;
-    let snapshot = await peekResult(deviceId, corr, trace, budget);
+    let snapshot = await peekResult(deviceId, trace, budget);
     if (isFinishedResult(snapshot) || budget <= 0) {
       return isFinishedResult(snapshot) ? snapshot : runningSnapshot(snapshot, corr, deviceId);
     }
@@ -526,7 +526,7 @@ export function createOperator({
       const sl = Math.min(WAIT_POLL_MS, left);
       if (trace) trace.sleep_ms += sl;
       await sleep(sl);
-      snapshot = await peekResult(deviceId, corr, trace, Math.max(0, deadline - now()));
+      snapshot = await peekResult(deviceId, trace, Math.max(0, deadline - now()));
     }
     if (isFinishedResult(snapshot)) return snapshot;
     return runningSnapshot(snapshot, corr, deviceId);
@@ -569,7 +569,6 @@ export function createOperator({
       const t0 = now();
       const started = await callRpc(trace, "/v1/run", body);
       const corr = started?.corr;
-      rememberCorr(corr, deviceId);
       if (waitMs <= 0) {
         return withDev(withDevice({ ...started, corr, status: started?.status ?? "running" }, deviceId), trace);
       }
@@ -579,44 +578,36 @@ export function createOperator({
       }
       const left = waitMs - Math.max(0, now() - t0);
       if (left <= 0) return withDev(runningSnapshot(started, corr, deviceId), trace);
-      return withDev(await waitForResult(deviceId, corr, left, trace), trace);
+      return withDev(await waitForResult(deviceId, left, trace, corr), trace);
     }
 
     if (name === "get_result") {
-      const corr = trimId(args.corr);
-      if (!corr) throw new Error("corr required");
-      const deviceId = resolveDevice(args, { corr });
+      const deviceId = resolveDevice(args);
       const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? WAIT_DEFAULT_MS);
-      if (waitMs <= 0) return withDev(await peekResult(deviceId, corr, trace), trace);
-      return withDev(await waitForResult(deviceId, corr, waitMs, trace), trace);
+      if (waitMs <= 0) return withDev(await peekResult(deviceId, trace), trace);
+      return withDev(await waitForResult(deviceId, waitMs, trace), trace);
     }
 
     if (name === "wait") {
-      const corr = trimId(args.corr);
-      if (!corr) throw new Error("corr required");
-      const deviceId = resolveDevice(args, { corr });
+      const deviceId = resolveDevice(args);
       const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? WAIT_TOOL_DEFAULT_MS);
-      return withDev(await waitForResult(deviceId, corr, waitMs, trace), trace);
+      return withDev(await waitForResult(deviceId, waitMs, trace), trace);
     }
 
     if (name === "read_screen") {
-      const corr = trimId(args.corr) || undefined;
-      const deviceId = resolveDevice(args, { corr });
+      const deviceId = resolveDevice(args);
       const body = { device_id: deviceId };
-      if (corr) body.corr = corr;
       const row = await callRpc(trace, "/v1/read_screen", body);
       return withDev(withDevice(row, deviceId), trace);
     }
 
     if (name === "type") {
       if (args.keys == null && args.key == null) throw new Error("keys or key required");
-      const corr = trimId(args.corr) || undefined;
-      const deviceId = resolveDevice(args, { corr });
+      const deviceId = resolveDevice(args);
       const body = { device_id: deviceId };
       if (args.keys != null) body.keys = args.keys;
       if (args.key != null && String(args.key) !== "") body.key = String(args.key);
       if (body.keys == null && body.key) body.keys = body.key;
-      if (corr) body.corr = corr;
       const row = await callRpc(trace, "/v1/type", body);
       return withDev(withDevice(row, deviceId), trace);
     }
@@ -629,6 +620,6 @@ export function createOperator({
     callTool,
     resolveDevice,
     currentDevice,
-    getState: () => ({ lastUsed, lastCwd, envDefault, corrOwner }),
+    getState: () => ({ lastUsed, lastCwd, envDefault }),
   };
 }

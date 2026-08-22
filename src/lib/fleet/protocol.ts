@@ -51,20 +51,20 @@ export const TOOLS = [
   },
   {
     name: "get_result",
-    description: "Fetch a previous run by corr id. Pending if the pane is still alive.",
-    input: { corr: "string" },
+    description: "Peek this operator's live session. Pending if the pane is still alive.",
+    input: {},
   },
   {
     name: "read_screen",
     description:
-      "Snapshot the pane current frame. Does not attach, does not stream. Latest-wins on the device.",
-    input: { corr: "string?" },
+      "Snapshot this operator's pane current frame. Does not attach, does not stream.",
+    input: {},
   },
   {
     name: "type",
     description:
-      "Fire-and-forget keystrokes into the pane stdin. Never waits for the process.",
-    input: { keys: "string?", key: "string?", corr: "string?" },
+      "Fire-and-forget keystrokes into this operator's pane stdin. Never waits for the process.",
+    input: { keys: "string?", key: "string?" },
   },
   {
     name: "list_panes",

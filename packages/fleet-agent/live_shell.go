@@ -55,9 +55,10 @@ func scanPrompt(buf string) bool {
 }
 
 type liveJob struct {
-	pane      *pane
-	command   string
-	finishing bool
+	pane        *pane
+	command     string
+	fingerprint string
+	finishing   bool
 }
 
 type liveShell struct {
@@ -551,14 +552,19 @@ func (ls *liveShell) kill() {
 }
 
 func (s *supervisor) enqueueLive(corr, command string) (*pane, error) {
+	return s.enqueueLiveFor("", corr, command)
+}
+
+func (s *supervisor) enqueueLiveFor(fingerprint, corr, command string) (*pane, error) {
 	p := &pane{
-		id:      "pane-" + corr,
-		corr:    corr,
-		command: command,
-		running: true,
-		lines:   []string{""},
-		stdout:  newStreamBuf(),
-		stderr:  newStreamBuf(),
+		id:          "pane-" + corr,
+		corr:        corr,
+		command:     command,
+		fingerprint: fingerprint,
+		running:     true,
+		lines:       []string{""},
+		stdout:      newStreamBuf(),
+		stderr:      newStreamBuf(),
 	}
 	s.mu.Lock()
 	s.panes[p.id] = p
@@ -566,45 +572,48 @@ func (s *supervisor) enqueueLive(corr, command string) (*pane, error) {
 		s.panes[corr] = p
 	}
 	s.order = append(s.order, p.id)
-	s.queue = append(s.queue, &liveJob{pane: p, command: command})
+	sl := s.slotLocked(fingerprint)
+	sl.queue = append(sl.queue, &liveJob{pane: p, command: command, fingerprint: fingerprint})
 	s.mu.Unlock()
-	go s.pumpLive()
+	go s.pumpLive(fingerprint)
 	return p, nil
 }
 
-func (s *supervisor) pumpLive() {
+func (s *supervisor) pumpLive(fp string) {
 	s.mu.Lock()
-	if s.pumping {
+	sl := s.slotLocked(fp)
+	if sl.pumping {
 		s.mu.Unlock()
 		return
 	}
-	s.pumping = true
+	sl.pumping = true
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
-		s.pumping = false
+		s.slotLocked(fp).pumping = false
 		s.mu.Unlock()
 	}()
 
 	for {
 		s.mu.Lock()
-		if s.pending != nil {
+		sl := s.slotLocked(fp)
+		if sl.pending != nil {
 			s.mu.Unlock()
 			return
 		}
-		if len(s.queue) == 0 {
+		if len(sl.queue) == 0 {
 			s.mu.Unlock()
 			return
 		}
-		job := s.queue[0]
-		s.queue = s.queue[1:]
+		job := sl.queue[0]
+		sl.queue = sl.queue[1:]
 		s.mu.Unlock()
 
-		if err := s.ensureLive(); err != nil {
+		if err := s.ensureLive(fp); err != nil {
 			s.failLiveJob(job, err.Error())
 			continue
 		}
-		if err := s.startLiveJob(job); err != nil {
+		if err := s.startLiveJob(fp, job); err != nil {
 			s.failLiveJob(job, err.Error())
 			continue
 		}
@@ -612,9 +621,10 @@ func (s *supervisor) pumpLive() {
 	}
 }
 
-func (s *supervisor) ensureLive() error {
+func (s *supervisor) ensureLive(fp string) error {
 	s.mu.Lock()
-	live := s.live
+	sl := s.slotLocked(fp)
+	live := sl.live
 	s.mu.Unlock()
 	if live != nil && live.alive() && !live.idleExpired() {
 		return nil
@@ -625,22 +635,30 @@ func (s *supervisor) ensureLive() error {
 	next, err := startLiveShell()
 	if err != nil {
 		s.mu.Lock()
-		s.live = nil
+		sl := s.slotLocked(fp)
+		sl.live = nil
+		if fp == "" {
+			s.live = nil
+		}
 		s.mu.Unlock()
 		return err
 	}
-	next.onStdout = func(chunk string) { s.onLiveStdout(chunk) }
-	next.onExit = func() { s.onLiveExit() }
+	next.onStdout = func(chunk string) { s.onLiveStdout(fp, chunk) }
+	next.onExit = func() { s.onLiveExit(fp) }
 	time.Sleep(50 * time.Millisecond)
 	s.mu.Lock()
-	s.live = next
+	sl = s.slotLocked(fp)
+	sl.live = next
+	if fp == "" {
+		s.live = next
+	}
 	s.mu.Unlock()
 	return nil
 }
 
-func (s *supervisor) startLiveJob(job *liveJob) error {
+func (s *supervisor) startLiveJob(fp string, job *liveJob) error {
 	s.mu.Lock()
-	live := s.live
+	live := s.slotLocked(fp).live
 	s.mu.Unlock()
 	if live == nil {
 		return fmt.Errorf("live shell gone")
@@ -664,7 +682,7 @@ func (s *supervisor) startLiveJob(job *liveJob) error {
 		live.screen.resetPrimary()
 	}
 	s.mu.Lock()
-	s.pending = job
+	s.slotLocked(fp).pending = job
 	if live.stdin != nil {
 		job.pane.mu.Lock()
 		job.pane.stdin = live.stdin
@@ -674,13 +692,13 @@ func (s *supervisor) startLiveJob(job *liveJob) error {
 	// Only the user command. Completion is the PS1 prompt, not a printf on stdin.
 	if err := live.write(cmd); err != nil {
 		s.mu.Lock()
-		if s.pending == job {
-			s.pending = nil
+		if s.slotLocked(fp).pending == job {
+			s.slotLocked(fp).pending = nil
 		}
 		s.mu.Unlock()
 		return err
 	}
-	go s.watchLiveJob(job, live)
+	go s.watchLiveJob(fp, job, live)
 	if _, isExit := exitCommandCode(job.command); isExit {
 		go func() {
 			deadline := time.Now().Add(1500 * time.Millisecond)
@@ -698,16 +716,17 @@ func (s *supervisor) startLiveJob(job *liveJob) error {
 	return nil
 }
 
-func (s *supervisor) onLiveStdout(chunk string) {
-	s.feedLive(chunk)
+func (s *supervisor) onLiveStdout(fp, chunk string) {
+	s.feedLive(fp, chunk)
 }
 
 // feedLive records PTY output (stdout+stderr on one pts) and completes
 // when PS1 reappears. MCP error stays empty for command output.
-func (s *supervisor) feedLive(chunk string) {
+func (s *supervisor) feedLive(fp, chunk string) {
 	s.mu.Lock()
-	job := s.pending
-	live := s.live
+	sl := s.slotLocked(fp)
+	job := sl.pending
+	live := sl.live
 	s.mu.Unlock()
 	if job == nil || live == nil {
 		return
@@ -715,7 +734,7 @@ func (s *supervisor) feedLive(chunk string) {
 	live.mu.Lock()
 	live.rawOut = appendCappedRaw(live.rawOut, chunk)
 	live.mu.Unlock()
-	if s.tryFinishLive(job, live, false) {
+	if s.tryFinishLive(fp, job, live, false) {
 		return
 	}
 	cleaned := stripCompletionText(chunk)
@@ -727,7 +746,7 @@ func (s *supervisor) feedLive(chunk string) {
 // tryFinishLive completes the pending corr when the live shell is back at
 // PS1 (raw or CSI-stripped, or the VT grid) or when force is set (child
 // died and the stream went quiet — ssh-pty-mcp / mcp-ssh-terminal).
-func (s *supervisor) tryFinishLive(job *liveJob, live *liveShell, force bool) bool {
+func (s *supervisor) tryFinishLive(fp string, job *liveJob, live *liveShell, force bool) bool {
 	if job == nil || live == nil {
 		return false
 	}
@@ -768,8 +787,8 @@ func (s *supervisor) tryFinishLive(job *liveJob, live *liveShell, force bool) bo
 	}
 
 	s.mu.Lock()
-	if s.pending == job {
-		s.pending = nil
+	if s.slotLocked(fp).pending == job {
+		s.slotLocked(fp).pending = nil
 	}
 	s.mu.Unlock()
 
@@ -793,11 +812,11 @@ func (s *supervisor) tryFinishLive(job *liveJob, live *liveShell, force bool) bo
 	if _, isExit := exitCommandCode(job.command); isExit && live.alive() {
 		live.kill()
 	}
-	go s.pumpLive()
+	go s.pumpLive(fp)
 	return true
 }
 
-func (s *supervisor) watchLiveJob(job *liveJob, live *liveShell) {
+func (s *supervisor) watchLiveJob(fp string, job *liveJob, live *liveShell) {
 	if job == nil || live == nil {
 		return
 	}
@@ -809,7 +828,7 @@ func (s *supervisor) watchLiveJob(job *liveJob, live *liveShell) {
 	var quietAt time.Time
 	lastRaw := ""
 	for job.pane.stillRunning() && live.alive() {
-		if s.tryFinishLive(job, live, false) {
+		if s.tryFinishLive(fp, job, live, false) {
 			return
 		}
 		pgid := foregroundPgid(live.stdin)
@@ -826,7 +845,7 @@ func (s *supervisor) watchLiveJob(job *liveJob, live *liveShell) {
 				lastRaw = raw
 				quietAt = time.Now()
 			} else if time.Since(quietAt) >= childQuietFor {
-				s.tryFinishLive(job, live, true)
+				s.tryFinishLive(fp, job, live, true)
 				return
 			}
 		}
@@ -834,11 +853,13 @@ func (s *supervisor) watchLiveJob(job *liveJob, live *liveShell) {
 	}
 }
 
-func (s *supervisor) onLiveExit() {
+func (s *supervisor) onLiveExit(fp string) {
 	s.mu.Lock()
-	job := s.pending
-	s.pending = nil
-	if s.live != nil {
+	sl := s.slotLocked(fp)
+	job := sl.pending
+	sl.pending = nil
+	sl.live = nil
+	if fp == "" {
 		s.live = nil
 	}
 	s.mu.Unlock()
@@ -849,7 +870,7 @@ func (s *supervisor) onLiveExit() {
 		}
 		job.pane.finishCommand("", code)
 	}
-	go s.pumpLive()
+	go s.pumpLive(fp)
 }
 
 func (s *supervisor) failLiveJob(job *liveJob, msg string) {

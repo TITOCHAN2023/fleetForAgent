@@ -9,6 +9,12 @@
  */
 
 import { handleOAuth } from "./oauth";
+import {
+  ANON_FINGERPRINT,
+  FLEET_OPERATOR_HEADER,
+  fingerprintFromHeaders,
+  resolveTicket,
+} from "./session.mjs";
 
 export interface Env {
   DEVICE: DurableObjectNamespace;
@@ -92,7 +98,7 @@ type UserRow = {
 const CORS: Record<string, string> = {
   "access-control-allow-origin": "*",
   "access-control-allow-headers":
-    "authorization, content-type, x-device-id, x-device-name, x-device-os, x-fleet-proto",
+    "authorization, content-type, x-device-id, x-device-name, x-device-os, x-fleet-proto, x-fleet-operator",
   "access-control-allow-methods": "GET, POST, OPTIONS",
 };
 
@@ -174,11 +180,12 @@ export default {
       }
       if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
       const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+      const fp = fingerprintFromHeaders(request.headers);
       return stub.fetch(
         new Request("https://device/run", {
           method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ command: body.command, wait_ms: body.wait_ms }),
+          headers: operatorHeaders(request),
+          body: JSON.stringify({ command: body.command, wait_ms: body.wait_ms, fingerprint: fp }),
         }),
       );
     }
@@ -188,11 +195,12 @@ export default {
       if (!body.device_id || (body.keys == null && body.key == null)) return json({ error: "device_id and keys or key required" }, 400);
       if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
       const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+      const fp = fingerprintFromHeaders(request.headers);
       return stub.fetch(
         new Request("https://device/type", {
           method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ keys: body.keys, key: body.key, corr: body.corr }),
+          headers: operatorHeaders(request),
+          body: JSON.stringify({ keys: body.keys, key: body.key, corr: body.corr, fingerprint: fp }),
         }),
       );
     }
@@ -203,7 +211,7 @@ export default {
       if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
       const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
       const q = body.corr ? `?corr=${encodeURIComponent(body.corr)}` : "";
-      return stub.fetch(new Request(`https://device/screen${q}`));
+      return stub.fetch(new Request(`https://device/screen${q}`, { headers: operatorHeaders(request) }));
     }
 
     if (url.pathname === "/v1/list_panes" && request.method === "POST") {
@@ -216,13 +224,15 @@ export default {
 
     if (url.pathname === "/v1/get_result" && request.method === "POST") {
       const body = (await request.json()) as { device_id?: string; corr?: string; wait_ms?: number };
-      if (!body.device_id || !body.corr) return json({ error: "device_id and corr required" }, 400);
+      if (!body.device_id) return json({ error: "device_id required" }, 400);
       if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
       const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
-      const q = new URLSearchParams({ corr: body.corr });
+      const q = new URLSearchParams();
+      if (body.corr) q.set("corr", body.corr);
       const waitMs = clampHubWaitMs(body.wait_ms);
       if (waitMs > 0) q.set("wait_ms", String(waitMs));
-      return stub.fetch(new Request(`https://device/result?${q}`));
+      const suffix = q.toString() ? `?${q}` : "";
+      return stub.fetch(new Request(`https://device/result${suffix}`, { headers: operatorHeaders(request) }));
     }
 
     return json({ error: "not found" }, 404);
@@ -457,9 +467,11 @@ export class DeviceDO implements DurableObject {
     if (url.pathname === "/run" && request.method === "POST") {
       const sockets = this.ctx.getWebSockets();
       if (sockets.length === 0) return json({ error: "offline" }, 409);
-      const body = (await request.json()) as { command: string; wait_ms?: number };
+      const body = (await request.json()) as { command: string; wait_ms?: number; fingerprint?: string };
+      const fp = deviceFingerprint(request, body.fingerprint);
       const corr = crypto.randomUUID();
-      sockets[0]!.send(JSON.stringify(envelope("run", { command: body.command, mode: "pane" }, corr)));
+      await this.claimSession(fp, corr);
+      sockets[0]!.send(JSON.stringify(envelope("run", withFingerprint({ command: body.command, mode: "pane" }, fp), corr)));
       const waitMs = clampHubWaitMs(body.wait_ms);
       if (waitMs <= 0) return json({ corr, status: "running" });
       const row = await waitDeviceResult(() => this.ctx.storage.get<Record<string, unknown>>(`res:${corr}`), waitMs);
@@ -469,21 +481,28 @@ export class DeviceDO implements DurableObject {
     if (url.pathname === "/type" && request.method === "POST") {
       const sockets = this.ctx.getWebSockets();
       if (sockets.length === 0) return json({ error: "offline" }, 409);
-      const body = (await request.json()) as { keys?: string; key?: string; corr?: string };
-      sockets[0]!.send(JSON.stringify(envelope("type", { keys: body.keys, key: body.key, corr: body.corr })));
+      const body = (await request.json()) as { keys?: string; key?: string; corr?: string; fingerprint?: string };
+      const fp = deviceFingerprint(request, body.fingerprint);
+      const resolved = await this.resolveSession(fp, body.corr);
+      if (resolved.drop) return json({ ok: true, status: "typed" });
+      sockets[0]!.send(
+        JSON.stringify(envelope("type", withFingerprint({ keys: body.keys, key: body.key, corr: resolved.corr }, fp))),
+      );
       return json({ ok: true, status: "typed" });
     }
 
     if (url.pathname === "/screen") {
       const sockets = this.ctx.getWebSockets();
-      const corr = url.searchParams.get("corr") ?? "";
+      const ticket = url.searchParams.get("corr") ?? "";
+      const fp = deviceFingerprint(request);
+      const resolved = await this.resolveSession(fp, ticket);
+      if (resolved.drop || !resolved.corr) return json({ status: "empty", screen: null });
+      const corr = resolved.corr;
       if (sockets.length) {
-        sockets[0]!.send(JSON.stringify(envelope("read_screen", { corr }, corr || undefined)));
+        sockets[0]!.send(JSON.stringify(envelope("read_screen", withFingerprint({ corr }, fp), corr)));
       }
-      const key = corr ? `screen:${corr}` : "screen:last";
-      const row = (await this.ctx.storage.get<Record<string, unknown>>(key)) ??
-        (await this.ctx.storage.get<Record<string, unknown>>("screen:last"));
-      return json({ status: row ? "ok" : "empty", screen: row ?? null });
+      const owned = (await this.ctx.storage.get<Record<string, unknown>>(`screen:${corr}`)) ?? null;
+      return json({ status: owned ? "ok" : "empty", screen: owned });
     }
 
     if (url.pathname === "/panes" && request.method === "POST") {
@@ -494,7 +513,11 @@ export class DeviceDO implements DurableObject {
     }
 
     if (url.pathname === "/result") {
-      const corr = url.searchParams.get("corr") ?? "";
+      const ticket = url.searchParams.get("corr") ?? "";
+      const fp = deviceFingerprint(request);
+      const resolved = await this.resolveSession(fp, ticket);
+      if (resolved.drop || !resolved.corr) return json({ status: "pending" });
+      const corr = resolved.corr;
       const waitMs = clampHubWaitMs(url.searchParams.get("wait_ms"));
       const row = waitMs > 0
         ? await waitDeviceResult(() => this.ctx.storage.get<Record<string, unknown>>(`res:${corr}`), waitMs)
@@ -570,6 +593,7 @@ export class DeviceDO implements DurableObject {
         stdout: parsed.body.stdout ?? "",
         t: parsed.t,
       });
+      await this.finishSession(parsed.corr);
     }
   }
 
@@ -596,6 +620,31 @@ export class DeviceDO implements DurableObject {
 
   private fleet() {
     return this.env.FLEET.get(this.env.FLEET.idFromName("fleet"));
+  }
+
+  private async claimSession(fp: string, corr: string) {
+    await this.ctx.storage.put(`own:${corr}`, fp);
+    await this.ctx.storage.put(`live:${fp}`, corr);
+    const alive = (await this.ctx.storage.get<string[]>(`alive:${fp}`)) ?? [];
+    if (!alive.includes(corr)) alive.push(corr);
+    await this.ctx.storage.put(`alive:${fp}`, alive);
+  }
+
+  private async finishSession(corr: string) {
+    const fp = await this.ctx.storage.get<string>(`own:${corr}`);
+    if (fp === undefined) return;
+    const alive = (await this.ctx.storage.get<string[]>(`alive:${fp}`)) ?? [];
+    await this.ctx.storage.put(
+      `alive:${fp}`,
+      alive.filter((c) => c !== corr),
+    );
+  }
+
+  private async resolveSession(fp: string, ticket?: string | null) {
+    const corr = ticket == null ? "" : String(ticket).trim();
+    const owner = corr ? await this.ctx.storage.get<string>(`own:${corr}`) : undefined;
+    const live = (await this.ctx.storage.get<string>(`live:${fp}`)) ?? "";
+    return resolveTicket({ fingerprint: fp, ticket: corr, owner, live });
   }
 
   private async mark(
@@ -693,6 +742,24 @@ function envelope(type: string, body: Record<string, unknown> = {}, corr?: strin
   const env: Envelope = { v: 1, type, id: crypto.randomUUID(), t: Date.now(), body };
   if (corr) env.corr = corr;
   return env;
+}
+
+function operatorHeaders(request: Request): Headers {
+  const headers = new Headers({ "content-type": "application/json" });
+  const fp = fingerprintFromHeaders(request.headers);
+  if (fp) headers.set(FLEET_OPERATOR_HEADER, fp);
+  return headers;
+}
+
+function deviceFingerprint(request: Request, bodyFp?: string): string {
+  const headerFp = fingerprintFromHeaders(request.headers);
+  if (headerFp) return headerFp;
+  return bodyFp == null ? ANON_FINGERPRINT : String(bodyFp).trim();
+}
+
+function withFingerprint(body: Record<string, unknown>, fp: string): Record<string, unknown> {
+  if (fp) return { ...body, fingerprint: fp };
+  return body;
 }
 
 function json(data: unknown, status = 200) {

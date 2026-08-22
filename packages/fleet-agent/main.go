@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	agentVersion = "0.2.7"
+	agentVersion = "0.2.8"
 )
 
 //go:embed ui/index.html
@@ -48,9 +48,10 @@ type LogLine struct {
 }
 
 type Pending struct {
-	Corr      string `json:"corr"`
-	Command   string `json:"command"`
-	Requested int64  `json:"requestedAt"`
+	Corr        string `json:"corr"`
+	Command     string `json:"command"`
+	Requested   int64  `json:"requestedAt"`
+	Fingerprint string `json:"-"`
 }
 
 type Envelope struct {
@@ -431,7 +432,7 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 			_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "pong", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: env.ID, T: time.Now().UnixMilli(), Body: map[string]any{}})
 		case "run":
 			cmd, _ := env.Body["command"].(string)
-			go a.handleRun(ctx, c, env.Corr, cmd)
+			go a.handleRun(ctx, c, env.Corr, cmd, envelopeFingerprint(env.Body))
 		case "type":
 			keys, _ := env.Body["keys"].(string)
 			key, _ := env.Body["key"].(string)
@@ -439,13 +440,13 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 			if id == "" {
 				id, _ = env.Body["corr"].(string)
 			}
-			go a.handleType(ctx, c, env.Corr, id, keys, key)
+			go a.handleType(ctx, c, env.Corr, id, keys, key, envelopeFingerprint(env.Body))
 		case "read_screen":
 			id, _ := env.Body["pane_id"].(string)
 			if id == "" {
 				id, _ = env.Body["corr"].(string)
 			}
-			a.handleScreen(ctx, c, env.Corr, id)
+			a.handleScreen(ctx, c, env.Corr, id, envelopeFingerprint(env.Body))
 		case "list_panes":
 			a.mu.Lock()
 			list := a.panes.list()
@@ -455,7 +456,15 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 	}
 }
 
-func (a *Agent) handleRun(ctx context.Context, c *websocket.Conn, corr, cmd string) {
+func envelopeFingerprint(body map[string]any) string {
+	if body == nil {
+		return ""
+	}
+	s, _ := body["fingerprint"].(string)
+	return strings.TrimSpace(s)
+}
+
+func (a *Agent) handleRun(ctx context.Context, c *websocket.Conn, corr, cmd, fingerprint string) {
 	a.mu.Lock()
 	if !a.enabled || a.permit == PermitOff {
 		a.log("warn", "refused (off): "+cmd)
@@ -475,7 +484,7 @@ func (a *Agent) handleRun(ctx context.Context, c *websocket.Conn, corr, cmd stri
 			_ = wsjson.Write(ctx, c, resultEnv(corr, false, 1, "", "fleet: another command is waiting for consent"))
 			return
 		}
-		a.pending = &Pending{Corr: corr, Command: cmd, Requested: time.Now().UnixMilli()}
+		a.pending = &Pending{Corr: corr, Command: cmd, Requested: time.Now().UnixMilli(), Fingerprint: fingerprint}
 		a.log("warn", "waiting consent: "+cmd)
 		a.mu.Unlock()
 		notifyConsent(cmd)
@@ -483,17 +492,17 @@ func (a *Agent) handleRun(ctx context.Context, c *websocket.Conn, corr, cmd stri
 		return
 	}
 	a.mu.Unlock()
-	a.spawnPane(ctx, c, corr, cmd)
+	a.spawnPane(ctx, c, corr, cmd, fingerprint)
 }
 
-func (a *Agent) spawnPane(ctx context.Context, c *websocket.Conn, corr, cmd string) {
+func (a *Agent) spawnPane(ctx context.Context, c *websocket.Conn, corr, cmd, fingerprint string) {
 	a.mu.Lock()
 	if a.panes == nil {
 		a.panes = newSupervisor()
 	}
 	sup := a.panes
 	a.mu.Unlock()
-	p, err := sup.spawn(corr, cmd)
+	p, err := sup.spawnFor(fingerprint, corr, cmd)
 	if err != nil {
 		_ = wsjson.Write(ctx, c, resultEnv(corr, false, 1, "", err.Error()))
 		return
@@ -525,7 +534,7 @@ func (a *Agent) spawnPane(ctx context.Context, c *websocket.Conn, corr, cmd stri
 	}()
 }
 
-func (a *Agent) handleType(ctx context.Context, c *websocket.Conn, corr, id, keys, key string) {
+func (a *Agent) handleType(ctx context.Context, c *websocket.Conn, corr, id, keys, key, fingerprint string) {
 	a.mu.Lock()
 	sup := a.panes
 	a.mu.Unlock()
@@ -533,7 +542,7 @@ func (a *Agent) handleType(ctx context.Context, c *websocket.Conn, corr, id, key
 		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "typed", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"ok": false, "error": "no pane"}})
 		return
 	}
-	p := sup.get(id)
+	p := sup.getFor(fingerprint, id)
 	if p == nil {
 		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "typed", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"ok": false, "error": "pane gone"}})
 		return
@@ -547,7 +556,7 @@ func (a *Agent) handleType(ctx context.Context, c *websocket.Conn, corr, id, key
 	_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "typed", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"ok": ok, "error": msg}})
 }
 
-func (a *Agent) handleScreen(ctx context.Context, c *websocket.Conn, corr, id string) {
+func (a *Agent) handleScreen(ctx context.Context, c *websocket.Conn, corr, id string, fingerprint string) {
 	a.mu.Lock()
 	sup := a.panes
 	a.mu.Unlock()
@@ -555,7 +564,7 @@ func (a *Agent) handleScreen(ctx context.Context, c *websocket.Conn, corr, id st
 		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"text": "", "running": false}})
 		return
 	}
-	p := sup.get(id)
+	p := sup.getFor(fingerprint, id)
 	if p == nil {
 		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"text": "", "running": false}})
 		return
@@ -627,7 +636,7 @@ func (a *Agent) approve() {
 	if p == nil || ws == nil {
 		return
 	}
-	go a.spawnPane(context.Background(), ws, p.Corr, p.Command)
+	go a.spawnPane(context.Background(), ws, p.Corr, p.Command, p.Fingerprint)
 	a.mu.Lock()
 	a.log("info", "approved: "+p.Command)
 	a.mu.Unlock()

@@ -9,8 +9,8 @@ async function listen(hub) {
   return { port, http: `http://127.0.0.1:${port}`, ws: `ws://127.0.0.1:${port}/v1/device` };
 }
 
-async function post(http, path, body, token) {
-  const headers = { "content-type": "application/json" };
+async function post(http, path, body, token, extraHeaders = {}) {
+  const headers = { "content-type": "application/json", ...extraHeaders };
   if (token) headers.authorization = `Bearer ${token}`;
   const res = await fetch(`${http}${path}`, {
     method: "POST",
@@ -297,6 +297,72 @@ test("device ping updates lastSeen, replies pong, list follows live socket", asy
   await closed;
   const after = await post(http, "/v1/list_computers", {});
   assert.equal(after.json.computers[0].online, false);
+});
+
+test("hub rejects a ticket owned by another fingerprint", async (t) => {
+  const hub = createHub();
+  t.after(() => hub.close());
+  const { http, ws: wsUrl } = await listen(hub);
+  const dev = connectDevice(wsUrl, { id: "mac-1" });
+  t.after(() => dev.ws.close());
+  await dev.opened;
+  await waitType(dev.inbox, "hello_ok");
+
+  const runA = await post(http, "/v1/run", { device_id: "mac-1", command: "sleep 30" }, undefined, {
+    "X-Fleet-Operator": "fp-a",
+  });
+  assert.equal(runA.status, 200);
+  const down = await waitType(dev.inbox, "run");
+  assert.equal(down.body.fingerprint, "fp-a");
+  assert.equal(down.corr, runA.json.corr);
+
+  const foreign = await post(
+    http,
+    "/v1/get_result",
+    { device_id: "mac-1", corr: runA.json.corr },
+    undefined,
+    { "X-Fleet-Operator": "fp-b" },
+  );
+  assert.equal(foreign.json.status, "pending");
+  assert.equal("stdout" in foreign.json, false);
+  assert.equal(foreign.json.corr, undefined);
+
+  const typed = await post(
+    http,
+    "/v1/type",
+    { device_id: "mac-1", corr: runA.json.corr, keys: "secret\n" },
+    undefined,
+    { "X-Fleet-Operator": "fp-b" },
+  );
+  assert.equal(typed.status, 200);
+  assert.equal(
+    dev.inbox.some((m) => m.type === "type"),
+    false,
+    "foreign type must not reach the agent",
+  );
+
+  const mine = await post(http, "/v1/get_result", { device_id: "mac-1" }, undefined, {
+    "X-Fleet-Operator": "fp-a",
+  });
+  assert.equal(mine.json.status, "pending");
+  assert.equal(mine.json.corr, runA.json.corr);
+});
+
+test("headerless 0.2.7 clients share one anonymous fingerprint", async (t) => {
+  const hub = createHub();
+  t.after(() => hub.close());
+  const { http, ws: wsUrl } = await listen(hub);
+  const dev = connectDevice(wsUrl, { id: "mac-1" });
+  t.after(() => dev.ws.close());
+  await dev.opened;
+  await waitType(dev.inbox, "hello_ok");
+
+  const run = await post(http, "/v1/run", { device_id: "mac-1", command: "pwd" });
+  const down = await waitType(dev.inbox, "run");
+  assert.equal(down.body.fingerprint, undefined);
+  const peek = await post(http, "/v1/get_result", { device_id: "mac-1", corr: run.json.corr });
+  assert.equal(peek.json.status, "pending");
+  assert.equal(peek.json.corr, run.json.corr);
 });
 
 test("new socket kicks the old one", async (t) => {

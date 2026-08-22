@@ -933,3 +933,40 @@ func TestLiveShellReadScreenEmptyAfterTypedChild(t *testing.T) {
 		t.Fatalf("read_screen after pwd=%q want to contain %q", text2, want)
 	}
 }
+
+func TestLiveShellKeyedByFingerprint(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("live shell is POSIX-only")
+	}
+	s := newSupervisor()
+	t.Cleanup(s.killAllLive)
+
+	pA, err := s.spawnFor("fp-a", "a1", "sleep 30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pB, err := s.spawnFor("fp-b", "b1", "sleep 30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitPaneTypable(t, pA)
+	waitPaneTypable(t, pB)
+
+	liveA := s.liveFor("fp-a")
+	liveB := s.liveFor("fp-b")
+	if liveA == nil || liveB == nil {
+		t.Fatal("both fingerprints need a live PTY")
+	}
+	if liveA == liveB {
+		t.Fatal("two fingerprints must not share a PTY")
+	}
+	if s.getFor("fp-a", "") != pA || s.getFor("fp-b", "") != pB {
+		t.Fatal("empty ticket must stay on this fingerprint's pane")
+	}
+	if s.getFor("fp-a", "b1") != nil || s.getFor("fp-b", "a1") != nil {
+		t.Fatal("foreign ticket must not resolve")
+	}
+	if pA.stdin == nil || pB.stdin == nil || pA.stdin == pB.stdin {
+		t.Fatal("type must not share stdin across fingerprints")
+	}
+}

@@ -11,7 +11,18 @@
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { applyCliDevFlag, createOperator, FLEET_VERSION, formatMcpText, isFleetDev, measureHubFetch } from "./operator.mjs";
+import {
+  applyCliDevFlag,
+  createOperator,
+  FLEET_VERSION,
+  fleetHubHeaders,
+  formatMcpText,
+  isFleetDev,
+  measureHubFetch,
+  newOperatorFingerprint,
+} from "./operator.mjs";
+
+const operatorFingerprint = newOperatorFingerprint();
 
 function loadDotEnv(path) {
   try {
@@ -57,11 +68,11 @@ async function hubRpc(path, body, { timed = false } = {}) {
   if (timed && isFleetDev(process.env)) {
     const measured = await measureHubFetch(`${url}${path}`, {
       method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-        "X-Fleet-Dev": "1",
-      },
+      headers: fleetHubHeaders({
+        token,
+        fingerprint: operatorFingerprint,
+        extra: { "X-Fleet-Dev": "1" },
+      }),
       body: { ...payload, dev: true },
     });
     if (!measured.ok) throw new Error(measured.json?.error || String(measured.status));
@@ -69,10 +80,7 @@ async function hubRpc(path, body, { timed = false } = {}) {
   }
   const res = await fetch(`${url}${path}`, {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-    },
+    headers: fleetHubHeaders({ token, fingerprint: operatorFingerprint }),
     body: JSON.stringify(payload),
   });
   const json = await res.json();

@@ -6,7 +6,7 @@ Same protocol as `packages/fleet-hub` (plain Node). Pick one backend.
 
 Jobs do **not** run on the Worker. The device keeps a pane buffer (tmux-style snapshot). The wire is latest-wins at ~4 Hz. `POST /v1/run` returns `accepted` immediately.
 
-Full steps: [docs/DEPLOY.md](../../docs/DEPLOY.md)
+Full steps: [English](../../docs/en/deploy.md) · [中文](../../docs/zh/deploy.md)
 
 ```bash
 cd packages/fleet-worker

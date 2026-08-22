@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AgentRouteImport } from './routes/agent'
+import { Route as GuideRouteImport } from './routes/guide'
 import { Route as LabRouteImport } from './routes/lab'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ReleasesRouteImport } from './routes/releases'
@@ -25,6 +26,11 @@ const IndexRoute = IndexRouteImport.update({
 const AgentRoute = AgentRouteImport.update({
   id: '/agent',
   path: '/agent',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const GuideRoute = GuideRouteImport.update({
+  id: '/guide',
+  path: '/guide',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LabRoute = LabRouteImport.update({
@@ -56,6 +62,7 @@ const V1SplatRoute = V1SplatRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/agent': typeof AgentRoute
+  '/guide': typeof GuideRoute
   '/lab': typeof LabRoute
   '/login': typeof LoginRoute
   '/releases': typeof ReleasesRoute
@@ -65,6 +72,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/agent': typeof AgentRoute
+  '/guide': typeof GuideRoute
   '/lab': typeof LabRoute
   '/login': typeof LoginRoute
   '/releases': typeof ReleasesRoute
@@ -75,6 +83,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/agent': typeof AgentRoute
+  '/guide': typeof GuideRoute
   '/lab': typeof LabRoute
   '/login': typeof LoginRoute
   '/releases': typeof ReleasesRoute
@@ -83,13 +92,14 @@ export interface FileRoutesById {
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/agent' | '/lab' | '/login' | '/releases' | '/api/auth/$' | '/v1/$'
+  fullPaths: '/' | '/agent' | '/guide' | '/lab' | '/login' | '/releases' | '/api/auth/$' | '/v1/$'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/agent' | '/lab' | '/login' | '/releases' | '/api/auth/$' | '/v1/$'
+  to: '/' | '/agent' | '/guide' | '/lab' | '/login' | '/releases' | '/api/auth/$' | '/v1/$'
   id:
     | '__root__'
     | '/'
     | '/agent'
+    | '/guide'
     | '/lab'
     | '/login'
     | '/releases'
@@ -100,6 +110,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AgentRoute: typeof AgentRoute
+  GuideRoute: typeof GuideRoute
   LabRoute: typeof LabRoute
   LoginRoute: typeof LoginRoute
   ReleasesRoute: typeof ReleasesRoute
@@ -121,6 +132,13 @@ declare module '@tanstack/react-router' {
       path: '/agent'
       fullPath: '/agent'
       preLoaderRoute: typeof AgentRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/guide': {
+      id: '/guide'
+      path: '/guide'
+      fullPath: '/guide'
+      preLoaderRoute: typeof GuideRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/lab': {
@@ -164,6 +182,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AgentRoute: AgentRoute,
+  GuideRoute: GuideRoute,
   LabRoute: LabRoute,
   LoginRoute: LoginRoute,
   ReleasesRoute: ReleasesRoute,

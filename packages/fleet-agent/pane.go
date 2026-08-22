@@ -104,6 +104,8 @@ func newSupervisor() *supervisor {
 }
 
 func (s *supervisor) spawn(corr, command string) (*pane, error) {
+	// Live login PTY is POSIX-only (cwd/env persist across jobs).
+	// Windows keeps cmd /C oneshot so old clients and this agent stay compatible.
 	if runtime.GOOS != "windows" {
 		return s.enqueueLive(corr, command)
 	}

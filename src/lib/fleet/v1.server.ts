@@ -269,6 +269,16 @@ async function onDeviceMessage(userId: string, deviceId: string, ws: WebSocket, 
     });
     return;
   }
+  if (parsed.type === "ping" || parsed.type === "heartbeat") {
+    const sql = await getSql();
+    await sql`
+      update devices
+      set status = ${"online"}, last_seen = now()
+      where id = ${deviceId} and user_id = ${userId}
+    `;
+    ws.send(JSON.stringify(envelope("pong", {}, parsed.id)));
+    return;
+  }
   if (parsed.type === "screen") {
     putScreen(deviceId, parsed.body ?? {}, parsed.corr);
     return;

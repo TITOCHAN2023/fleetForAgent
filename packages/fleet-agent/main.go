@@ -92,6 +92,7 @@ type Agent struct {
 	cancel   context.CancelFunc
 	cfgPath  string
 	panes    *supervisor
+	hb       time.Duration
 }
 
 func (a *Agent) log(level, msg string) {
@@ -331,6 +332,7 @@ func (a *Agent) connect(hub string) error {
 	_ = wsjson.Write(ctx, c, hello)
 	go a.readLoop(ctx, c)
 	go a.coalesceLoop(ctx, c)
+	go a.heartbeatLoop(ctx, c)
 	return nil
 }
 
@@ -419,6 +421,12 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 			return
 		}
 		switch env.Type {
+		case "hello_ok":
+			a.mu.Lock()
+			a.hb = heartbeatEvery(env.Body)
+			a.mu.Unlock()
+		case "pong":
+			// hub ack of our ping; liveness is the websocket Ping below
 		case "ping":
 			_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "pong", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: env.ID, T: time.Now().UnixMilli(), Body: map[string]any{}})
 		case "run":

@@ -28,3 +28,12 @@ test("interpolation", () => {
   setLocale("en");
   assert.equal(tr("login.continue", { label: "Google" }), "Continue with Google");
 });
+
+test("guide architecture sentence is explicit", () => {
+  setLocale("en");
+  assert.match(tr("guide.arch"), /dial out/);
+  assert.match(tr("guide.arch"), /lists and relays/);
+  setLocale("zh");
+  assert.match(tr("guide.arch"), /只连出/);
+  setLocale("en");
+});

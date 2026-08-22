@@ -50,6 +50,11 @@ export function LoginLanding() {
               {t("login.hero3")}
             </h1>
             <p className="mt-6 max-w-sm text-sm leading-relaxed text-muted">{t("login.body")}</p>
+            <p className="mt-4">
+              <Link to="/guide" className="text-sm text-muted underline underline-offset-4 hover:text-fg">
+                {t("login.guide")}
+              </Link>
+            </p>
           </div>
           <dl className="mt-12 grid gap-4 font-mono text-xs text-subtle">
             <div>
@@ -82,7 +87,10 @@ export function LoginLanding() {
             ) : (
               <p className="text-sm text-muted">{t("login.authOff")}</p>
             )}
-            <Link to="/lab" className="mt-2 text-center text-sm text-muted hover:text-fg">
+            <Link to="/guide" className="mt-2 text-center text-sm text-muted hover:text-fg">
+              {t("login.guide")}
+            </Link>
+            <Link to="/lab" className="text-center text-sm text-muted hover:text-fg">
               {t("login.lab")}
             </Link>
             <Link to="/releases" className="text-center text-sm text-muted hover:text-fg">

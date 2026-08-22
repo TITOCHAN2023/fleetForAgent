@@ -22,6 +22,17 @@ func TestNextHeartbeatAtNextClockHour(t *testing.T) {
 	}
 }
 
+func TestPresenceEnvelopeIncludesAgentVer(t *testing.T) {
+	env := presenceEnvelope()
+	if env.V != 1 || env.Type != "ping" {
+		t.Fatalf("presence envelope %+v", env)
+	}
+	got, _ := env.Body["agent_ver"].(string)
+	if got != agentVersion || got == "" {
+		t.Fatalf("agent_ver=%q want %q", got, agentVersion)
+	}
+}
+
 func TestNextHeartbeatAtOnTheHour(t *testing.T) {
 	after := time.Date(2026, 8, 22, 6, 0, 0, 0, time.UTC)
 	start := time.Date(2026, 8, 22, 7, 0, 0, 0, time.UTC)

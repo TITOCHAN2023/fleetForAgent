@@ -314,6 +314,24 @@ export function buildTools() {
       inputSchema: { type: "object", properties: {} },
     },
     {
+      name: "get_computer",
+      description:
+        "Status of one machine from the same catalog as list_computers: online, lastSeen, agentVer, name, os. Never returns IPs. Optional device_id after set_computer or a prior explicit device_id in this process.",
+      inputSchema: {
+        type: "object",
+        properties: { device_id: deviceId },
+      },
+    },
+    {
+      name: "heartbeat",
+      description:
+        "Ask a connected agent to report presence now. The hub stores lastSeen and agentVer from the reply so a just-upgraded client shows the new version. 409 if the device is offline or does not heartbeat. Optional device_id after set_computer. Do not invent a device id.",
+      inputSchema: {
+        type: "object",
+        properties: { device_id: deviceId },
+      },
+    },
+    {
       name: "run",
       description:
         "Start a command on a device and wait for the result (default wait_ms 30000). If it finishes in time, return the same payload get_result would. Explicit wait_ms=0 starts the job and returns immediately (TUIs / long jobs). POST /v1/run is held only when this client sends wait_ms>0; omitted/old clients still return immediately if the command is still going. If the budget expires, the command continues — the text is a plain still-running notice. Never kill on wait expiry. Never re-issue run after a still-running reply; poll get_result(wait_ms) or wait(wait_ms).",
@@ -539,6 +557,18 @@ export function createOperator({
     if (name === "list_computers") {
       const row = await callRpc(trace, "/v1/list_computers", {});
       return withDev(row, trace);
+    }
+
+    if (name === "get_computer") {
+      const deviceId = resolveDevice(args);
+      const row = await callRpc(trace, "/v1/get_computer", { device_id: deviceId });
+      return withDev(withDevice(row, deviceId), trace);
+    }
+
+    if (name === "heartbeat") {
+      const deviceId = resolveDevice(args);
+      const row = await callRpc(trace, "/v1/heartbeat", { device_id: deviceId });
+      return withDev(withDevice(row, deviceId), trace);
     }
 
     if (name === "set_computer") {

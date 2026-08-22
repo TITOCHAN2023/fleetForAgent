@@ -428,6 +428,10 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 			a.mu.Unlock()
 		case "pong":
 			// hub ack of our ping; liveness is the websocket Ping below
+		case "ask_heartbeat":
+			if !a.sendPresence(ctx, c) {
+				return
+			}
 		case "ping":
 			_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "pong", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: env.ID, T: time.Now().UnixMilli(), Body: map[string]any{}})
 		case "run":

@@ -2,13 +2,18 @@
  * Fleet hub — Cloudflare Worker + Durable Objects.
  *
  * Devices (Windows / Mac / Linux agents) dial OUT over WSS to /v1/device.
- * Operators call HTTPS: list_computers / select_computer / run / get_result.
+ * Operators call HTTPS: list_computers / get_computer / heartbeat / select_computer / run / get_result.
  * No inbound ports on the machines. No intranet overlay.
  *
  * Auth: set secret HUB_TOKEN (wrangler secret put HUB_TOKEN). Empty = open (dev only).
  */
 
 import { handleOAuth } from "./oauth";
+import {
+  agentVerFromBody,
+  clampHeartbeatWaitMs,
+  computerPublic,
+} from "./presence.mjs";
 import {
   ANON_FINGERPRINT,
   FLEET_OPERATOR_HEADER,
@@ -165,6 +170,30 @@ export default {
     if (url.pathname === "/v1/list_computers" && request.method === "POST") {
       const q = actor.super ? "" : `?user=${encodeURIComponent(actor.id)}`;
       return fleet.fetch(new Request(`https://fleet/list${q}`));
+    }
+
+    if (url.pathname === "/v1/get_computer" && request.method === "POST") {
+      const body = (await request.json()) as { device_id?: string };
+      if (!body.device_id) return json({ error: "device_id required" }, 400);
+      if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
+      const res = await fleet.fetch(new Request(`https://fleet/device?id=${encodeURIComponent(body.device_id)}`));
+      const row = computerPublic(await res.json());
+      if (!row) return json({ error: "not found" }, 404);
+      return json(row);
+    }
+
+    if (url.pathname === "/v1/heartbeat" && request.method === "POST") {
+      const body = (await request.json()) as { device_id?: string; wait_ms?: number };
+      if (!body.device_id) return json({ error: "device_id required" }, 400);
+      if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
+      const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+      return stub.fetch(
+        new Request("https://device/heartbeat", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ device_id: body.device_id, wait_ms: body.wait_ms }),
+        }),
+      );
     }
 
     if (url.pathname === "/v1/select_computer" && request.method === "POST") {
@@ -431,6 +460,8 @@ export class FleetDO implements DurableObject {
 export class DeviceDO implements DurableObject {
   ctx: DurableObjectState;
   env: Env;
+  private beatSeq = 0;
+  private beatWaiters: Array<() => void> = [];
 
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
@@ -525,6 +556,23 @@ export class DeviceDO implements DurableObject {
       return json(hubResultPayload(corr, row));
     }
 
+    if (url.pathname === "/heartbeat" && request.method === "POST") {
+      const sockets = this.ctx.getWebSockets();
+      if (sockets.length === 0) return json({ error: "offline" }, 409);
+      const body = (await request.json().catch(() => ({}))) as { device_id?: string; wait_ms?: number };
+      const att = (sockets[0]!.deserializeAttachment() ?? {}) as { deviceId?: string };
+      const id = body.device_id || att.deviceId || "unknown";
+      const waitMs = clampHeartbeatWaitMs(body.wait_ms);
+      const pending = this.waitNextBeat(waitMs);
+      sockets[0]!.send(JSON.stringify(envelope("ask_heartbeat", {})));
+      const got = await pending;
+      if (!got) return json({ error: "no heartbeat" }, 409);
+      const res = await this.fleet().fetch(new Request(`https://fleet/device?id=${encodeURIComponent(id)}`));
+      const row = computerPublic(await res.json());
+      if (!row) return json({ error: "not found" }, 404);
+      return json(row);
+    }
+
     return json({ ok: true });
   }
 
@@ -561,12 +609,15 @@ export class DeviceDO implements DurableObject {
     }
 
     if (parsed.type === "ping" || parsed.type === "heartbeat") {
+      const agentVer = agentVerFromBody(parsed.body);
       await this.mark(att.deviceId ?? "unknown", {
         name: att.name ?? att.deviceId ?? "device",
         os: att.os ?? "linux",
         online: true,
         userId: att.userId,
+        ...(agentVer !== undefined ? { agentVer } : {}),
       });
+      this.noteBeat();
       ws.send(JSON.stringify(envelope("pong", {}, parsed.id)));
       return;
     }
@@ -620,6 +671,28 @@ export class DeviceDO implements DurableObject {
 
   private fleet() {
     return this.env.FLEET.get(this.env.FLEET.idFromName("fleet"));
+  }
+
+  private noteBeat() {
+    this.beatSeq += 1;
+    const waiters = this.beatWaiters.splice(0);
+    for (const w of waiters) w();
+  }
+
+  private waitNextBeat(waitMs: number): Promise<boolean> {
+    const start = this.beatSeq;
+    if (this.beatSeq > start) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const onBeat = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      const timer = setTimeout(() => {
+        this.beatWaiters = this.beatWaiters.filter((w) => w !== onBeat);
+        resolve(this.beatSeq > start);
+      }, waitMs);
+      this.beatWaiters.push(onBeat);
+    });
   }
 
   private async claimSession(fp: string, corr: string) {

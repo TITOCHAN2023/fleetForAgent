@@ -10,6 +10,8 @@ const TOOL_PATH = "/absolute/path/to/packages/fleet-tool/index.mjs";
 
 const MCP_TOOLS: { name: string; key: MessageKey }[] = [
   { name: "list_computers", key: "guide.tool.list_computers" },
+  { name: "get_computer", key: "guide.tool.get_computer" },
+  { name: "heartbeat", key: "guide.tool.heartbeat" },
   { name: "run", key: "guide.tool.run" },
   { name: "get_result", key: "guide.tool.get_result" },
   { name: "wait", key: "guide.tool.wait" },

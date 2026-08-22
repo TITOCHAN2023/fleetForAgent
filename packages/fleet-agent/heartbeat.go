@@ -80,21 +80,28 @@ func (a *Agent) livenessPing(ctx context.Context, c *websocket.Conn) bool {
 	return true
 }
 
-func (a *Agent) reportBeat(ctx context.Context, c *websocket.Conn) bool {
-	if !a.livenessPing(ctx, c) {
-		return false
-	}
-	env := Envelope{
+func presenceEnvelope() Envelope {
+	return Envelope{
 		V:    1,
 		Type: "ping",
 		ID:   fmt.Sprintf("%d", time.Now().UnixNano()),
 		T:    time.Now().UnixMilli(),
-		Body: map[string]any{},
+		Body: map[string]any{"agent_ver": agentVersion},
 	}
-	if err := wsjson.Write(ctx, c, env); err != nil {
+}
+
+func (a *Agent) sendPresence(ctx context.Context, c *websocket.Conn) bool {
+	if err := wsjson.Write(ctx, c, presenceEnvelope()); err != nil {
 		a.log("warn", "heartbeat send: "+err.Error())
 		_ = c.Close(websocket.StatusGoingAway, "heartbeat send")
 		return false
 	}
 	return true
+}
+
+func (a *Agent) reportBeat(ctx context.Context, c *websocket.Conn) bool {
+	if !a.livenessPing(ctx, c) {
+		return false
+	}
+	return a.sendPresence(ctx, c)
 }

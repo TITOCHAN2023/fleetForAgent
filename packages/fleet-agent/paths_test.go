@@ -29,7 +29,8 @@ func TestDefaultListenAndHomeWhenEnvEmpty(t *testing.T) {
 }
 
 func TestListenAndHomeFollowEnv(t *testing.T) {
-	t.Setenv("FLEET_HOME", "/tmp/fleet-test-home")
+	home := filepath.Join(t.TempDir(), "fleet-test-home")
+	t.Setenv("FLEET_HOME", home)
 	t.Setenv("FLEET_SETTINGS_ADDR", "127.0.0.1:17901")
 	if got := settingsAddr(); got != "127.0.0.1:17901" {
 		t.Fatalf("settingsAddr=%q", got)
@@ -37,10 +38,10 @@ func TestListenAndHomeFollowEnv(t *testing.T) {
 	if got := settingsURL(); got != "http://127.0.0.1:17901" {
 		t.Fatalf("settingsURL=%q", got)
 	}
-	if got := fleetHome(); got != "/tmp/fleet-test-home" {
-		t.Fatalf("fleetHome=%q", got)
+	if got := fleetHome(); got != home {
+		t.Fatalf("fleetHome=%q want %q", got, home)
 	}
-	if got := configPath(); got != "/tmp/fleet-test-home/config.json" {
+	if got := configPath(); got != filepath.Join(home, "config.json") {
 		t.Fatalf("configPath=%q", got)
 	}
 }

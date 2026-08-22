@@ -8,6 +8,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // Internal double-fork stage. Not a restarter protocol; only --daemon uses it.
@@ -107,13 +109,13 @@ func reopenStdio() {
 	if err != nil {
 		return
 	}
-	_ = syscall.Dup2(int(null.Fd()), 0)
+	_ = unix.Dup2(int(null.Fd()), 0)
 	out := null
 	if logf, err := openDaemonLog(); err == nil {
 		out = logf
 	}
-	_ = syscall.Dup2(int(out.Fd()), 1)
-	_ = syscall.Dup2(int(out.Fd()), 2)
+	_ = unix.Dup2(int(out.Fd()), 1)
+	_ = unix.Dup2(int(out.Fd()), 2)
 	os.Stdin = os.NewFile(0, os.DevNull)
 	os.Stdout = os.NewFile(1, "daemon-stdout")
 	os.Stderr = os.NewFile(2, "daemon-stderr")

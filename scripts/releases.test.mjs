@@ -40,6 +40,7 @@ test("mac zip is actually zip", () => {
 
 test("linux tarball exists", () => {
   assert.ok(statSync(join(dl, "fleet-agent-linux-amd64.tar.gz")).size > 100_000);
+  assert.ok(statSync(join(dl, "fleet-agent-linux-arm64.tar.gz")).size > 100_000);
 });
 
 test("checksums cover every installer", () => {
@@ -49,6 +50,7 @@ test("checksums cover every installer", () => {
     "FleetAgent-macos-arm64.dmg",
     "FleetAgent-macos-amd64.dmg",
     "fleet-agent-linux-amd64.tar.gz",
+    "fleet-agent-linux-arm64.tar.gz",
   ]) {
     assert.ok(txt.includes(name), name);
   }

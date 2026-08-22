@@ -31,6 +31,7 @@ build windows amd64 .exe
 build darwin arm64 ""
 build darwin amd64 ""
 build linux amd64 ""
+build linux arm64 ""
 
 cp dist/windows-amd64.exe "$OUT/FleetAgent-windows-amd64.exe"
 
@@ -113,6 +114,12 @@ cp dist/linux-amd64 dist/linuxpack/fleet
 chmod +x dist/linuxpack/fleet-agent dist/linuxpack/fleet
 tar -C dist/linuxpack -czf "$OUT/fleet-agent-linux-amd64.tar.gz" fleet-agent fleet
 
+mkdir -p dist/linuxpack-arm64
+cp dist/linux-arm64 dist/linuxpack-arm64/fleet-agent
+cp dist/linux-arm64 dist/linuxpack-arm64/fleet
+chmod +x dist/linuxpack-arm64/fleet-agent dist/linuxpack-arm64/fleet
+tar -C dist/linuxpack-arm64 -czf "$OUT/fleet-agent-linux-arm64.tar.gz" fleet-agent fleet
+
 (
   cd "$OUT"
   if command -v sha256sum >/dev/null 2>&1; then
@@ -120,13 +127,13 @@ tar -C dist/linuxpack -czf "$OUT/fleet-agent-linux-amd64.tar.gz" fleet-agent fle
       FleetAgent-windows-amd64.exe \
       FleetAgent-macos-arm64.dmg FleetAgent-macos-amd64.dmg \
       FleetAgent-macos-arm64.zip FleetAgent-macos-amd64.zip \
-      fleet-agent-linux-amd64.tar.gz > checksums.txt
+      fleet-agent-linux-amd64.tar.gz fleet-agent-linux-arm64.tar.gz > checksums.txt
   else
     shasum -a 256 \
       FleetAgent-windows-amd64.exe \
       FleetAgent-macos-arm64.dmg FleetAgent-macos-amd64.dmg \
       FleetAgent-macos-arm64.zip FleetAgent-macos-amd64.zip \
-      fleet-agent-linux-amd64.tar.gz > checksums.txt
+      fleet-agent-linux-amd64.tar.gz fleet-agent-linux-arm64.tar.gz > checksums.txt
   fi
 )
 

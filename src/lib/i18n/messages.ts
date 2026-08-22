@@ -143,6 +143,8 @@ export const messages = {
     "rel.macIntelHint": "Use this build on Intel Macs. Drag to Applications, then open.",
     "rel.linux": "Linux",
     "rel.linuxHint": "Extract and run ./fleet-agent. Listens on 127.0.0.1:17890.",
+    "rel.linuxArm": "Linux ARM64",
+    "rel.linuxArmHint": "Extract and run ./fleet-agent. Listens on 127.0.0.1:17890.",
 
     "join.code": "One-time join code",
     "join.codeBody": "Valid 15 minutes, single use. The device trades it for a long-lived key.",
@@ -364,6 +366,8 @@ export const messages = {
     "rel.macIntelHint": "Intel Mac 用这一份。同样拖到应用程序后打开。",
     "rel.linux": "Linux",
     "rel.linuxHint": "解压后运行 ./fleet-agent。监听 127.0.0.1:17890。",
+    "rel.linuxArm": "Linux ARM64",
+    "rel.linuxArmHint": "解压后运行 ./fleet-agent。监听 127.0.0.1:17890。",
 
     "join.code": "一次性接入码",
     "join.codeBody": "15 分钟有效，用过即废。设备拿它换长期钥匙，身份以服务端为准。",

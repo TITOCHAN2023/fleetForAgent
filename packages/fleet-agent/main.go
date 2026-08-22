@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	agentVersion = "0.2.6"
+	agentVersion = "0.2.7"
 )
 
 //go:embed ui/index.html

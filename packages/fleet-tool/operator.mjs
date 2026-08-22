@@ -3,11 +3,14 @@
  * Do not write hub_sessions, ~/.fleet, or a workspace file.
  */
 
-export const FLEET_VERSION = "0.2.4";
+export const FLEET_VERSION = "0.2.5";
 
 /** MCP-call wait budget only. Not a kill timeout. Hosts cancel tools at ~60s. */
-export const WAIT_DEFAULT_MS = 0;
 export const WAIT_MAX_MS = 30_000;
+/** get_result omitted/0: instant snapshot. */
+export const WAIT_DEFAULT_MS = 0;
+/** run omitted wait_ms: block like other exec MCPs, then ticket if still going. */
+export const RUN_WAIT_DEFAULT_MS = WAIT_MAX_MS;
 export const WAIT_TOOL_DEFAULT_MS = WAIT_MAX_MS;
 export const WAIT_POLL_MS = 100;
 
@@ -105,14 +108,17 @@ export function buildTools() {
     {
       name: "run",
       description:
-        "Start a command on a device. wait_ms default 0: returns {corr,status:\"running\"} immediately (POST /v1/run is not held). If wait_ms>0 and the job finishes in time, return the same payload get_result would. If the budget expires, return {corr,status:\"running\"} — the command continues. Never kill on wait expiry. Never re-issue run after status=running; poll get_result(wait_ms) or wait(wait_ms).",
+        "Start a command on a device and wait for the result (default wait_ms 30000). If it finishes in time, return the same payload get_result would. Explicit wait_ms=0 is the fire-and-forget ticket: immediate {corr,status:\"running\"} (TUIs / long jobs). POST /v1/run is never held. If the budget expires, return {corr,status:\"running\"} — the command continues. Never kill on wait expiry. Never re-issue run after status=running; poll get_result(wait_ms) or wait(wait_ms).",
       inputSchema: {
         type: "object",
         required: ["command"],
         properties: {
           device_id: deviceId,
           command: { type: "string" },
-          wait_ms: waitMsSchema({ defaultMs: WAIT_DEFAULT_MS, role: "Optional." }),
+          wait_ms: waitMsSchema({
+            defaultMs: RUN_WAIT_DEFAULT_MS,
+            role: "Optional. Omitted waits up to 30s; 0 is the immediate ticket.",
+          }),
         },
       },
     },
@@ -289,7 +295,7 @@ export function createOperator({
       const command = args.command == null ? "" : String(args.command);
       if (!command) throw new Error("command required");
       const deviceId = resolveDevice(args);
-      const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? WAIT_DEFAULT_MS);
+      const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? RUN_WAIT_DEFAULT_MS);
       const started = await rpc("/v1/run", { device_id: deviceId, command });
       const corr = started?.corr;
       rememberCorr(corr, deviceId);

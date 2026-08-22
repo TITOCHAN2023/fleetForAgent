@@ -4,6 +4,7 @@ import {
   CWD_MARK,
   FLEET_VERSION,
   MISSING_DEVICE_MESSAGE,
+  RUN_WAIT_DEFAULT_MS,
   WAIT_DEFAULT_MS,
   WAIT_MAX_MS,
   WAIT_POLL_MS,
@@ -13,6 +14,7 @@ import {
   createOperator,
   deviceMismatchMessage,
   isFinishedResult,
+  parseOptionalMs,
   shQuote,
   stripSessionMeta,
   wrapSessionCommand,
@@ -51,6 +53,7 @@ function clock() {
 
 test("clampWaitMs is 0–30s (MCP-call budget, not a kill timeout)", () => {
   assert.equal(WAIT_DEFAULT_MS, 0);
+  assert.equal(RUN_WAIT_DEFAULT_MS, WAIT_MAX_MS);
   assert.equal(WAIT_MAX_MS, 30_000);
   assert.equal(clampWaitMs(0), 0);
   assert.equal(clampWaitMs(-5), 0);
@@ -59,6 +62,17 @@ test("clampWaitMs is 0–30s (MCP-call budget, not a kill timeout)", () => {
   assert.equal(clampWaitMs(60_000), WAIT_MAX_MS);
   assert.equal(clampWaitMs(5 * 60 * 1000), WAIT_MAX_MS);
   assert.equal(clampWaitMs("nope"), 0);
+});
+
+test("parseOptionalMs keeps omitted and 0 distinct", () => {
+  assert.equal(parseOptionalMs(undefined, "wait_ms"), null);
+  assert.equal(parseOptionalMs(null, "wait_ms"), null);
+  assert.equal(parseOptionalMs("", "wait_ms"), null);
+  assert.equal(parseOptionalMs(0, "wait_ms"), 0);
+  assert.equal(parseOptionalMs("0", "wait_ms"), 0);
+  assert.equal(clampWaitMs(parseOptionalMs(undefined, "wait_ms") ?? RUN_WAIT_DEFAULT_MS), WAIT_MAX_MS);
+  assert.equal(clampWaitMs(parseOptionalMs(0, "wait_ms") ?? RUN_WAIT_DEFAULT_MS), 0);
+  assert.equal(clampWaitMs(parseOptionalMs(undefined, "wait_ms") ?? WAIT_DEFAULT_MS), 0);
 });
 
 test("isFinishedResult treats pending/running as not done", () => {
@@ -95,43 +109,59 @@ test("existing five tools remain; device_id stays in schemas and is optional", (
     assert.match(w.description, /30000|30s/, n);
     assert.match(w.description, /never kills/i, n);
   }
-  assert.equal(tools.find((x) => x.name === "run").inputSchema.properties.wait_ms.default, 0);
-  assert.equal(tools.find((x) => x.name === "get_result").inputSchema.properties.wait_ms.default, 0);
+  assert.equal(tools.find((x) => x.name === "run").inputSchema.properties.wait_ms.default, RUN_WAIT_DEFAULT_MS);
+  assert.equal(tools.find((x) => x.name === "get_result").inputSchema.properties.wait_ms.default, WAIT_DEFAULT_MS);
   assert.equal(tools.find((x) => x.name === "wait").inputSchema.properties.wait_ms.default, WAIT_TOOL_DEFAULT_MS);
 });
 
-test("run wait_ms omitted or 0 is immediate corr and does not poll get_result", async () => {
+test("run wait_ms omitted waits and returns the finished payload", async () => {
+  const time = clock();
+  let peeks = 0;
   const { rpc, calls } = mockRpc({
     "/v1/run": () => ({ corr: "c1", status: "running" }),
+    "/v1/get_result": () => {
+      peeks += 1;
+      if (peeks < 3) return { status: "pending", corr: "c1" };
+      return { status: "done", corr: "c1", ok: true, exit_code: 0, stdout: "/Users/bytedance" };
+    },
   });
-  const op = createOperator({ rpc });
-  const t0 = Date.now();
-  const out = await op.callTool("run", { device_id: "mac-1", command: "uname" });
-  assert.ok(Date.now() - t0 < 50);
+  const op = createOperator({ rpc, now: time.now, sleep: time.sleep });
+  const out = await op.callTool("run", { device_id: "mac-1", command: "pwd" });
   assert.equal(out.corr, "c1");
-  assert.equal(out.status, "running");
+  assert.equal(out.status, "done");
+  assert.equal(out.stdout, "/Users/bytedance");
+  assert.equal(out.ok, true);
   assert.equal(out.device_id, "mac-1");
+  assert.ok(peeks >= 3);
   assert.deepEqual(
-    calls.map((c) => c.path),
+    calls.filter((c) => c.path === "/v1/run").map((c) => c.path),
     ["/v1/run"],
   );
-  assert.equal(calls[0].body.device_id, "mac-1");
-  assertSentCommand(calls[0].body.command, "uname");
+  assert.ok(calls.some((c) => c.path === "/v1/get_result"));
   assert.equal("wait_ms" in calls[0].body, false);
+  assertSentCommand(calls[0].body.command, "pwd");
+});
 
-  const { rpc: rpc0, calls: calls0 } = mockRpc({
+test("run wait_ms=0 is immediate corr and does not poll get_result", async () => {
+  const { rpc, calls } = mockRpc({
     "/v1/run": () => ({ corr: "c1b", status: "running" }),
   });
-  const zero = await createOperator({ rpc: rpc0 }).callTool("run", {
+  const t0 = Date.now();
+  const zero = await createOperator({ rpc }).callTool("run", {
     device_id: "mac-1",
     command: "uname",
     wait_ms: 0,
   });
+  assert.ok(Date.now() - t0 < 50);
+  assert.equal(zero.corr, "c1b");
   assert.equal(zero.status, "running");
+  assert.equal(zero.device_id, "mac-1");
   assert.deepEqual(
-    calls0.map((c) => c.path),
+    calls.map((c) => c.path),
     ["/v1/run"],
   );
+  assert.equal("wait_ms" in calls[0].body, false);
+  assertSentCommand(calls[0].body.command, "uname");
 });
 
 test("run wait_ms returns the full result when get_result finishes", async () => {
@@ -229,7 +259,7 @@ test("explicit device_id updates last-used; later calls can omit it", async () =
     "/v1/get_result": (body) => ({ status: "pending", corr: body.corr }),
   });
   const op = createOperator({ rpc });
-  await op.callTool("run", { device_id: "mac-1", command: "true" });
+  await op.callTool("run", { device_id: "mac-1", command: "true", wait_ms: 0 });
   assert.equal((await op.callTool("get_current_computer")).device_id, "mac-1");
   assert.equal((await op.callTool("get_current_computer")).source, "last_used");
 
@@ -264,7 +294,7 @@ test("set_computer and get_current_computer are process memory only", async () =
   assert.equal(set.device_id, "mac-1");
   assert.ok(!calls.some((c) => c.path === "/v1/select_computer"));
 
-  const run = await op.callTool("run", { command: "uname" });
+  const run = await op.callTool("run", { command: "uname", wait_ms: 0 });
   assert.equal(run.device_id, "mac-1");
   const sent = calls.find((c) => c.path === "/v1/run").body;
   assert.equal(sent.device_id, "mac-1");
@@ -283,13 +313,13 @@ test("FLEET_DEVICE_ID is a start default and is not written back", async () => {
   assert.equal(before.last_used, null);
   assert.equal(before.env_default, "env-box");
 
-  await op.callTool("run", { command: "true" });
+  await op.callTool("run", { command: "true", wait_ms: 0 });
   const still = await op.callTool("get_current_computer");
   assert.equal(still.last_used, null);
   assert.equal(still.env_default, "env-box");
   assert.equal(still.source, "env");
 
-  await op.callTool("run", { device_id: "mac-2", command: "true" });
+  await op.callTool("run", { device_id: "mac-2", command: "true", wait_ms: 0 });
   const after = await op.callTool("get_current_computer");
   assert.equal(after.device_id, "mac-2");
   assert.equal(after.last_used, "mac-2");
@@ -341,7 +371,7 @@ test("get_result / wait / read_screen refuse a different device than the job own
     "/v1/read_screen": () => ({ status: "ok", screen: { text: "x" } }),
   });
   const op = createOperator({ rpc });
-  await op.callTool("run", { device_id: "mac-1", command: "sleep 1" });
+  await op.callTool("run", { device_id: "mac-1", command: "sleep 1", wait_ms: 0 });
 
   await assert.rejects(
     () => op.callTool("get_result", { device_id: "mac-2", corr: "job-1" }),
@@ -363,7 +393,7 @@ test("corr owner wins over a later last-used so the job is not peeked on the wro
     "/v1/get_result": (body) => ({ status: "pending", corr: body.corr, seen: body.device_id }),
   });
   const op = createOperator({ rpc });
-  await op.callTool("run", { device_id: "host-a", command: "one" });
+  await op.callTool("run", { device_id: "host-a", command: "one", wait_ms: 0 });
   await op.callTool("set_computer", { device_id: "host-b" });
   const peek = await op.callTool("get_result", { corr: "job-a" });
   assert.equal(peek.device_id, "host-a");
@@ -410,13 +440,13 @@ test("run sends the raw command — no __FLEET_META__ wrap", async () => {
     "/v1/run": () => ({ corr: "c-raw", status: "running" }),
   });
   const op = createOperator({ rpc });
-  await op.callTool("run", { device_id: "mac-1", command: "cd /tmp" });
-  await op.callTool("run", { device_id: "mac-1", command: "pwd" });
+  await op.callTool("run", { device_id: "mac-1", command: "cd /tmp", wait_ms: 0 });
+  await op.callTool("run", { device_id: "mac-1", command: "pwd", wait_ms: 0 });
   const sent = calls.filter((c) => c.path === "/v1/run").map((c) => c.body.command);
   assert.deepEqual(sent, ["cd /tmp", "pwd"]);
   assert.ok(sent.every((c) => !String(c).includes(CWD_MARK)));
 });
 
-test("MCP version is 0.2.4", () => {
-  assert.equal(FLEET_VERSION, "0.2.4");
+test("MCP version is 0.2.5", () => {
+  assert.equal(FLEET_VERSION, "0.2.5");
 });

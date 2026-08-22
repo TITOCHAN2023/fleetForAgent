@@ -16,14 +16,14 @@ Existing tools stay. `device_id` is still on every mutating/read schema; it is o
 | Tool | Notes |
 |---|---|
 | `list_computers` | Account fleet. Never returns IPs. |
-| `run` | `command` required. Optional `device_id`, optional `wait_ms` (**default 0**). **Default is still immediate `{corr,status:"running"}`** — `POST /v1/run` is not held. |
+| `run` | `command` required. Optional `device_id`, optional `wait_ms` (**default 30000**). Omitted `wait_ms` long-polls `get_result` and returns the finished payload when it lands. Explicit **`wait_ms: 0`** is the fire-and-forget ticket (`{corr,status:"running"}`) for TUIs and long jobs. `POST /v1/run` is never held. |
 | `get_result` | Snapshot by `corr` when `wait_ms` is omitted/0. Optional `wait_ms` long-polls until done or the budget expires. |
 | `wait` | Explicit block: `{corr, device_id?, wait_ms?}`. Default `wait_ms` is the 30s cap. Long-polls `get_result`. |
 | `read_screen` / `type` | Same optional `device_id` fill. POSIX live PTY: `read_screen` is the current VT grid (not a raw byte dump; `__FLEET_PROMPT__` rows are stripped). After a corr finishes the grid is reset so the next command does not paint on leftover TUI chrome. `type` still takes `keys`; optional `key` is a named press (`enter`, `ctrl+c`). Enter is CR; a single `keys` write of `text\\r` flushes the text then CR (ssh_send). `ctrl+c` is 0x03 plus SIGINT to the fg process group. |
 | `set_computer` | Remember a device for later calls **in this MCP process only**. |
 | `get_current_computer` | Show last-used, last `cwd`, and the `FLEET_DEVICE_ID` start default. |
 
-`wait_ms` is an MCP-call budget only: default **0**, max **30s** (hosts cancel tools at ~60s). It never kills the remote command. `status=running` is not an error — do not re-issue `run`; poll `get_result(wait_ms=...)` or `wait(wait_ms=...)`. Do not spam `wait_ms=0`.
+`wait_ms` is an MCP-call budget only, max **30s** (hosts cancel tools at ~60s). It never kills the remote command. `run` omitted defaults to **30s**; `get_result` omitted/0 is an instant snapshot; `wait` omitted defaults to **30s**. Explicit `run` `wait_ms: 0` is the ticket path. `status=running` is not an error — do not re-issue `run`; poll `get_result(wait_ms=...)` or `wait(wait_ms=...)`.
 
 ## Last-used (this process)
 

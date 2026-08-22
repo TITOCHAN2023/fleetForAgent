@@ -47,11 +47,15 @@ const TABS: { id: Tab; label: MessageKey }[] = [
   { id: "spec", label: "tab.spec" },
 ];
 
-export function FleetConsole() {
+function isTab(value: string | undefined): value is Tab {
+  return TABS.some((item) => item.id === value);
+}
+
+export function FleetConsole({ initialTab }: { initialTab?: string } = {}) {
   const { t } = useI18n();
   const user = useCurrentUser();
   const qc = useQueryClient();
-  const [tab, setTab] = useState<Tab>("console");
+  const [tab, setTab] = useState<Tab>(() => (isTab(initialTab) ? initialTab : "console"));
   const [running, setRunning] = useState(false);
 
   const devicesQ = useQuery({

@@ -48,9 +48,23 @@ const LINUX_ENV = `export FLEET_URL=${HUB}
 export FLEET_TOKEN=flt_...
 ./fleet-agent`;
 
-const FLEET_START = `fleet start --hub ${HUB} --token flt_...
-fleet status
-fleet permit ask`;
+const MAC_BIN = `"/Applications/Fleet Agent.app/Contents/MacOS/FleetAgent"`;
+
+const MAC_CLI = `${MAC_BIN} start --hub ${HUB} --token flt_...
+${MAC_BIN} status
+${MAC_BIN} permit ask
+${MAC_BIN} install
+# often sudo; then fleet is on PATH`;
+
+const WIN_CLI = `FleetAgent.exe start --hub ${HUB} --token flt_...
+FleetAgent.exe status
+FleetAgent.exe permit ask
+FleetAgent.exe install
+# copies to %LOCALAPPDATA%\\Fleet\\fleet.exe — add that folder to PATH`;
+
+const LINUX_CLI = `./fleet start --hub ${HUB} --token flt_...
+./fleet status
+./fleet permit ask`;
 
 const CLI_LIST = `node packages/fleet-tool/index.mjs list`;
 
@@ -99,7 +113,9 @@ export function GuidePanel() {
         <p className="mt-3 max-w-2xl text-sm leading-relaxed text-fg">{t("guide.arch")}</p>
         <div className="mt-5 flex flex-wrap gap-2">
           <Button asChild variant="secondary">
-            <Link to="/">{t("guide.openHub")}</Link>
+            <Link to="/" search={{ tab: "agent" }}>
+              {t("guide.openHub")}
+            </Link>
           </Button>
           <Button asChild variant="ghost">
             <Link to="/releases">{t("nav.downloads")}</Link>
@@ -154,7 +170,9 @@ export function GuidePanel() {
         <CodeBlock label="Linux env" text={LINUX_ENV} />
         <h3 className="mt-6 text-sm font-medium">{t("guide.s2Cli")}</h3>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">{t("guide.s2CliBody")}</p>
-        <CodeBlock label="fleet start --hub --token" text={FLEET_START} />
+        <CodeBlock label="macOS" text={MAC_CLI} />
+        <CodeBlock label="Windows" text={WIN_CLI} />
+        <CodeBlock label="Linux" text={LINUX_CLI} />
         <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted">{t("guide.s2Ui")}</p>
       </section>
 
@@ -170,7 +188,7 @@ export function GuidePanel() {
         <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted">{t("guide.s3EnvAlt")}</p>
         <CodeBlock label="mcp.json env" text={CURSOR_MCP_ENV} />
         <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted">{t("guide.s3Claude")}</p>
-        <CodeBlock label="Claude Desktop mcp.json" text={CURSOR_MCP} />
+        <CodeBlock label="claude_desktop_config.json" text={CURSOR_MCP} />
         <CodeBlock label="node packages/fleet-tool/index.mjs list" text={CLI_LIST} />
         <h3 className="mt-6 text-sm font-medium">{t("guide.s3Tools")}</h3>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">{t("guide.s3ToolsBody")}</p>

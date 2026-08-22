@@ -35,10 +35,16 @@ test("guide documents real env, flags, and placeholder tokens", () => {
   assert.match(guide, /~\/\.fleet\/mcp\.env/);
   assert.match(guide, /FLEET_URL=/);
   assert.match(guide, /FLEET_TOKEN=flt_\.\.\./);
-  assert.match(guide, /fleet start --hub /);
+  assert.match(guide, /Fleet Agent\.app\/Contents\/MacOS\/FleetAgent/);
+  assert.match(guide, /FleetAgent\.exe start --hub /);
+  assert.match(guide, /\.\/fleet start --hub /);
+  assert.match(guide, /%LOCALAPPDATA%/);
+  assert.match(guide, /fleet install/);
   assert.match(guide, /--token flt_\.\.\./);
   assert.match(guide, /127\.0\.0\.1:17890/);
   assert.match(guide, /packages\/fleet-tool\/index\.mjs/);
+  assert.match(guide, /claude_desktop_config\.json/);
+  assert.match(guide, /tab: "agent"/);
   assert.doesNotMatch(guide, /flt_[0-9a-f]{16,}/i);
 });
 
@@ -46,4 +52,9 @@ test("landing and console link to /guide", () => {
   assert.match(src("src/components/login-landing.tsx"), /to="\/guide"/);
   assert.match(src("src/components/fleet-console.tsx"), /to="\/guide"/);
   assert.match(src("src/routes/guide.tsx"), /createFileRoute\("\/guide"\)/);
+});
+
+test("console honors /?tab=agent for Settings", () => {
+  assert.match(src("src/routes/index.tsx"), /validateSearch/);
+  assert.match(src("src/components/fleet-console.tsx"), /initialTab/);
 });

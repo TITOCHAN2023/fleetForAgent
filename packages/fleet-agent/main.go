@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	agentVersion = "0.2.5"
+	agentVersion = "0.2.7"
 )
 
 //go:embed ui/index.html
@@ -423,7 +423,7 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 		switch env.Type {
 		case "hello_ok":
 			a.mu.Lock()
-			a.hb = heartbeatEvery(env.Body)
+			// report cadence is chosen on the client
 			a.mu.Unlock()
 		case "pong":
 			// hub ack of our ping; liveness is the websocket Ping below

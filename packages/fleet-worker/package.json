@@ -1,6 +1,7 @@
 {
   "name": "fleet-hub",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --port 8787",

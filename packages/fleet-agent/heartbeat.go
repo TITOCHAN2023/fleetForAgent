@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"time"
 
 	"github.com/coder/websocket"
@@ -10,62 +11,58 @@ import (
 )
 
 const (
-	defaultHeartbeat = 25 * time.Second
-	minHeartbeat     = 5 * time.Second
-	maxHeartbeat     = 120 * time.Second
-	pingWait         = 10 * time.Second
+	livenessEvery = 25 * time.Second
+	pingWait      = 10 * time.Second
 )
 
-func heartbeatEvery(body map[string]any) time.Duration {
-	d := defaultHeartbeat
-	switch n := body["heartbeat_s"].(type) {
-	case float64:
-		if n > 0 {
-			d = time.Duration(n * float64(time.Second))
-		}
-	case int:
-		if n > 0 {
-			d = time.Duration(n) * time.Second
-		}
-	case int64:
-		if n > 0 {
-			d = time.Duration(n) * time.Second
-		}
-	}
-	if d < minHeartbeat {
-		return minHeartbeat
-	}
-	if d > maxHeartbeat {
-		return maxHeartbeat
-	}
-	return d
+// nextHeartbeatAt picks a random instant in the next clock hour after after.
+// A report at 5:20 schedules the next one somewhere in [6:00, 7:00).
+func nextHeartbeatAt(after time.Time) time.Time {
+	start := after.Truncate(time.Hour).Add(time.Hour)
+	return start.Add(time.Duration(rand.Int63n(int64(time.Hour))))
 }
 
-// heartbeatLoop keeps the hub's online bit honest. hello_ok advertises
-// heartbeat_s but older agents never sent anything, so a half-open TCP
-// (common on Windows after sleep / NAT idle) left list_computers offline
-// while the tray still said connected.
+// heartbeatLoop reports presence once on connect, then once per following
+// clock hour at a client-chosen random time so devices do not stampede the hub.
+// A cheap websocket Ping still runs often enough to notice half-open TCP.
 func (a *Agent) heartbeatLoop(ctx context.Context, c *websocket.Conn) {
-	a.beat(ctx, c)
+	go a.livenessLoop(ctx, c)
+	if !a.reportBeat(ctx, c) {
+		return
+	}
 	for {
-		a.mu.Lock()
-		d := a.hb
-		a.mu.Unlock()
-		if d <= 0 {
-			d = defaultHeartbeat
+		next := nextHeartbeatAt(time.Now())
+		wait := time.Until(next)
+		if wait < 0 {
+			wait = 0
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(d):
+		case <-time.After(wait):
 		}
-		if !a.beat(ctx, c) {
+		if !a.reportBeat(ctx, c) {
 			return
 		}
 	}
 }
 
-func (a *Agent) beat(ctx context.Context, c *websocket.Conn) bool {
+func (a *Agent) livenessLoop(ctx context.Context, c *websocket.Conn) {
+	t := time.NewTicker(livenessEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if !a.livenessPing(ctx, c) {
+				return
+			}
+		}
+	}
+}
+
+func (a *Agent) livenessPing(ctx context.Context, c *websocket.Conn) bool {
 	a.mu.Lock()
 	live := a.ws == c
 	a.mu.Unlock()
@@ -78,6 +75,13 @@ func (a *Agent) beat(ctx context.Context, c *websocket.Conn) bool {
 	if err != nil {
 		a.log("warn", "heartbeat ping: "+err.Error())
 		_ = c.Close(websocket.StatusGoingAway, "heartbeat timeout")
+		return false
+	}
+	return true
+}
+
+func (a *Agent) reportBeat(ctx context.Context, c *websocket.Conn) bool {
+	if !a.livenessPing(ctx, c) {
 		return false
 	}
 	env := Envelope{

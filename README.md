@@ -69,3 +69,6 @@ http://127.0.0.1:8080 is for hacking. A hub on loopback cannot reach Windows, Li
 | `docs/en/`, `docs/zh/` | Docs by language |
 | `docs/media/` | Architecture diagrams, GIF, explainer video |
 | `migrations/` | Auth + fleet schema (PGLite locally, Postgres in prod) |
+## License
+
+MIT. See [LICENSE](LICENSE).

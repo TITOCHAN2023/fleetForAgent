@@ -5,29 +5,29 @@ import (
 	"time"
 )
 
-func TestHeartbeatEveryDefault(t *testing.T) {
-	if got := heartbeatEvery(nil); got != 25*time.Second {
-		t.Fatalf("nil body: %s", got)
+func TestNextHeartbeatAtNextClockHour(t *testing.T) {
+	after := time.Date(2026, 8, 22, 5, 20, 0, 0, time.UTC)
+	start := time.Date(2026, 8, 22, 6, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	seen := map[int]bool{}
+	for i := 0; i < 80; i++ {
+		next := nextHeartbeatAt(after)
+		if next.Before(start) || !next.Before(end) {
+			t.Fatalf("after %s got %s, want [%s, %s)", after, next, start, end)
+		}
+		seen[next.Minute()] = true
 	}
-	if got := heartbeatEvery(map[string]any{}); got != 25*time.Second {
-		t.Fatalf("empty: %s", got)
+	if len(seen) < 8 {
+		t.Fatalf("expected jitter across the hour, got %d distinct minutes", len(seen))
 	}
 }
 
-func TestHeartbeatEveryFromHelloOk(t *testing.T) {
-	if got := heartbeatEvery(map[string]any{"heartbeat_s": float64(25)}); got != 25*time.Second {
-		t.Fatalf("float 25: %s", got)
-	}
-	if got := heartbeatEvery(map[string]any{"heartbeat_s": 10}); got != 10*time.Second {
-		t.Fatalf("int 10: %s", got)
-	}
-}
-
-func TestHeartbeatEveryClamps(t *testing.T) {
-	if got := heartbeatEvery(map[string]any{"heartbeat_s": float64(1)}); got != 5*time.Second {
-		t.Fatalf("want min 5s, got %s", got)
-	}
-	if got := heartbeatEvery(map[string]any{"heartbeat_s": float64(999)}); got != 120*time.Second {
-		t.Fatalf("want max 120s, got %s", got)
+func TestNextHeartbeatAtOnTheHour(t *testing.T) {
+	after := time.Date(2026, 8, 22, 6, 0, 0, 0, time.UTC)
+	start := time.Date(2026, 8, 22, 7, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	next := nextHeartbeatAt(after)
+	if next.Before(start) || !next.Before(end) {
+		t.Fatalf("after %s got %s, want [%s, %s)", after, next, start, end)
 	}
 }

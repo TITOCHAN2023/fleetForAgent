@@ -5,10 +5,13 @@
  * Operators call HTTPS: list_computers / select_computer / run / get_result.
  * No inbound ports on the machines. No intranet overlay.
  *
- * Auth: set secret HUB_TOKEN (wrangler secret put HUB_TOKEN). Empty = open (dev only).
+ * Auth: per-account flt_ tokens (hashed). Optional secret HUB_TOKEN is a
+ * super operator for HTTP list/run only — it cannot steal a device WebSocket.
+ * Empty HUB_TOKEN = no super user.
  */
 
 import { handleOAuth } from "./oauth";
+import { canClaimDevice, deviceOwnerConflict } from "./bind.mjs";
 import {
   ANON_FINGERPRINT,
   FLEET_OPERATOR_HEADER,
@@ -153,6 +156,13 @@ export default {
       if (!actor) return json({ error: "unauthorized" }, 401);
       const deviceId = deviceIdFrom(request);
       if (!deviceId) return json({ error: "x-device-id required" }, 400);
+      const rowRes = await fleet.fetch(
+        new Request(`https://fleet/device?id=${encodeURIComponent(deviceId)}`),
+      );
+      const row = (await rowRes.json()) as DeviceRow;
+      if (!canClaimDevice(row.userId, actor.id)) {
+        return json({ error: "taken" }, 409);
+      }
       const headers = new Headers(request.headers);
       headers.set("x-fleet-user", actor.id);
       const stub = env.DEVICE.get(env.DEVICE.idFromName(deviceId));
@@ -263,10 +273,12 @@ export class FleetDO implements DurableObject {
     if (url.pathname === "/upsert" && request.method === "POST") {
       const row = (await request.json()) as DeviceRow;
       const prev = await this.ctx.storage.get<DeviceRow>(`d:${row.id}`);
-      if (prev?.userId && row.userId && prev.userId !== row.userId && row.userId !== "*") {
+      if (deviceOwnerConflict(prev?.userId, row.userId)) {
         return json({ error: "taken" }, 409);
       }
-      await this.ctx.storage.put(`d:${row.id}`, { ...prev, ...row });
+      const next: DeviceRow = { ...prev, ...row, id: row.id };
+      if (prev?.userId && !row.userId) next.userId = prev.userId;
+      await this.ctx.storage.put(`d:${row.id}`, next);
       return json({ ok: true });
     }
     if (url.pathname === "/oauth" && request.method === "POST") {
@@ -442,25 +454,27 @@ export class DeviceDO implements DurableObject {
     const url = new URL(request.url);
 
     if (request.headers.get("Upgrade") === "websocket") {
+      const id = deviceIdFrom(request) ?? "unknown";
+      const userId = request.headers.get("x-fleet-user") ?? undefined;
+      const claimed = await this.mark(id, {
+        name: request.headers.get("x-device-name") ?? id,
+        os: request.headers.get("x-device-os") ?? "linux",
+        online: true,
+        userId,
+      });
+      if (!claimed) return json({ error: "taken" }, 409);
       const pair = new WebSocketPair();
       this.ctx.acceptWebSocket(pair[1]);
       for (const extra of this.ctx.getWebSockets()) {
         if (extra !== pair[1]) extra.close(1012, "replaced");
       }
-      const id = deviceIdFrom(request) ?? "unknown";
       pair[1].serializeAttachment({
         deviceId: id,
         name: request.headers.get("x-device-name") ?? id,
         os: request.headers.get("x-device-os") ?? "linux",
-        userId: request.headers.get("x-fleet-user") ?? undefined,
+        userId,
       });
       pair[1].send(JSON.stringify(envelope("hello_ok", { heartbeat_s: 3600 })));
-      await this.mark(id, {
-        name: request.headers.get("x-device-name") ?? id,
-        os: request.headers.get("x-device-os") ?? "linux",
-        online: true,
-        userId: request.headers.get("x-fleet-user") ?? undefined,
-      });
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
 
@@ -650,7 +664,7 @@ export class DeviceDO implements DurableObject {
   private async mark(
     id: string,
     extra: { name: string; os: string; online: boolean; agentVer?: string; userId?: string },
-  ) {
+  ): Promise<boolean> {
     const row: DeviceRow = {
       id,
       name: extra.name,
@@ -660,13 +674,14 @@ export class DeviceDO implements DurableObject {
       agentVer: extra.agentVer,
       userId: extra.userId,
     };
-    await this.fleet().fetch(
+    const res = await this.fleet().fetch(
       new Request("https://fleet/upsert", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(row),
       }),
     );
+    return res.ok;
   }
 }
 

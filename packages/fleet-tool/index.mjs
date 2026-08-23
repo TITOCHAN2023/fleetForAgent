@@ -18,6 +18,7 @@ import {
   fleetHubHeaders,
   formatMcpText,
   isFleetDev,
+  MCP_INSTRUCTIONS,
   measureHubFetch,
   newOperatorFingerprint,
 } from "./operator.mjs";
@@ -119,10 +120,11 @@ async function cli(args) {
 }
 
 function mcp() {
-  const { tools, callTool } = createOperator({
+  const { tools, prompts, getPrompt, callTool } = createOperator({
     rpc: (path, body) => hubRpc(path, body, { timed: true }),
     env: process.env,
   });
+  const cancelled = new Map();
 
   const rl = readline();
   void (async () => {
@@ -134,15 +136,31 @@ function mcp() {
       } catch {
         continue;
       }
+      if (msg.method === "notifications/cancelled") {
+        const rid = msg.params?.requestId == null ? "" : String(msg.params.requestId);
+        if (rid && cancelled.has(rid)) cancelled.set(rid, true);
+        continue;
+      }
       if (msg.method === "notifications/initialized") continue;
       const id = msg.id;
       try {
         if (msg.method === "initialize") {
           reply(id, {
             protocolVersion: "2024-11-05",
-            capabilities: { tools: {} },
+            capabilities: { tools: {}, prompts: {} },
             serverInfo: { name: "fleet", version: FLEET_VERSION },
+            instructions: MCP_INSTRUCTIONS,
           });
+          continue;
+        }
+        if (msg.method === "prompts/list") {
+          reply(id, { prompts });
+          continue;
+        }
+        if (msg.method === "prompts/get") {
+          const prompt = getPrompt(msg.params?.name);
+          if (!prompt) throw new Error(`unknown prompt ${msg.params?.name}`);
+          reply(id, prompt);
           continue;
         }
         if (msg.method === "tools/list") {
@@ -150,16 +168,41 @@ function mcp() {
           continue;
         }
         if (msg.method === "tools/call") {
-          const out = await callTool(msg.params?.name, msg.params?.arguments ?? {});
-          const payload = { content: [{ type: "text", text: formatMcpText(msg.params?.name, out, process.env) }] };
-          if (out && typeof out === "object" && out.dev && Number.isFinite(out.dev.total_ms)) {
-            payload._meta = { duration_ms: out.dev.total_ms, fleet_dev: out.dev };
-          }
-          reply(id, payload);
+          const reqId = String(id);
+          cancelled.set(reqId, false);
+          const progressToken = msg.params?._meta?.progressToken ?? id;
+          const name = msg.params?.name;
+          const args = msg.params?.arguments ?? {};
+          void (async () => {
+            try {
+              const out = await callTool(name, args, {
+                isCancelled: () => cancelled.get(reqId) === true,
+                onProgress: ({ progress, total }) => {
+                  notify("notifications/progress", { progressToken, progress, total });
+                },
+              });
+              cancelled.delete(reqId);
+              const payload = { content: [{ type: "text", text: formatMcpText(name, out, process.env) }] };
+              if (out && typeof out === "object" && out.dev && Number.isFinite(out.dev.total_ms)) {
+                payload._meta = { duration_ms: out.dev.total_ms, fleet_dev: out.dev };
+              }
+              reply(id, payload);
+            } catch (err) {
+              cancelled.delete(reqId);
+              process.stdout.write(
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  id,
+                  error: { code: -32000, message: err instanceof Error ? err.message : String(err) },
+                }) + "\n",
+              );
+            }
+          })();
           continue;
         }
         reply(id, {});
       } catch (err) {
+        cancelled.delete(id);
         process.stdout.write(
           JSON.stringify({
             jsonrpc: "2.0",
@@ -170,6 +213,10 @@ function mcp() {
       }
     }
   })();
+}
+
+function notify(method, params) {
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n");
 }
 
 function reply(id, result) {

@@ -10,6 +10,7 @@ import {
   hashHubToken,
   highSecAuthorization,
   hubOrigin,
+  inspectTokenV1,
   isLegacyFlt,
   isTokenV1,
   mintTokenV1,
@@ -79,6 +80,21 @@ test("parseAuthorization reads Fleet-OAEP and Bearer", () => {
   assert.deepEqual(parseAuthorization("Bearer flt_old"), { kind: "bearer", token: "flt_old" });
   assert.equal(parseAuthorization("").kind, "none");
   assert.equal(fleetOaepValue("k", "w"), "Fleet-OAEP k.w");
+});
+
+test("inspectTokenV1 shows composition without sec or pub", async () => {
+  const minted = await mintTokenV1({ aud: AUD });
+  const view = inspectTokenV1(minted.raw);
+  assert.equal(view.prefix, "flt_1.");
+  assert.equal(view.aud, AUD);
+  assert.equal(view.kid, minted.kid);
+  assert.equal(view.iat, minted.iat);
+  assert.equal(view.rsa, 2048);
+  assert.equal(view.sig.length, 12);
+  assert.equal("sec" in view, false);
+  assert.equal("pub" in view, false);
+  assert.equal(inspectTokenV1("flt_old"), null);
+  assert.equal(inspectTokenV1(""), null);
 });
 
 test("minted token verifies, wraps, and binds aud", async () => {

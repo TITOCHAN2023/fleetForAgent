@@ -272,12 +272,12 @@ DeviceDO 发 `desktop_*` **之前**读 attachment.caps（hello 未到 → 无 `c
 | action | 必填 | 说明 |
 | --- | --- | --- |
 | `screenshot` | — | **Hub 别名**：与 `POST /v1/desktop_screenshot` 走同一 waiter / 同一 WSS type `desktop_screenshot`（PR0 实现，不是后补） |
-| `left_click` | x, y | 主键单击 |
-| `right_click` | x, y | |
-| `double_click` | x, y | |
-| `middle_click` | x, y | |
-| `mouse_move` | x, y | 移动，不点击 |
-| `left_click_drag` | x, y, x2, y2 | 从 (x,y) 拖到 (x2,y2) |
+| `left_click` | x, y | 主键单击。**禁止瞬移：** 先沿人类轨迹 `mousemove` 再到点，悬停，再 down/up（见「人类指针」） |
+| `right_click` | x, y | 同上，换键 |
+| `double_click` | x, y | 轨迹到位后两次 down/up，间隔 ~80ms |
+| `middle_click` | x, y | 同上，换键 |
+| `mouse_move` | x, y | 只走轨迹，不点击 |
+| `left_click_drag` | x, y, x2, y2 | 轨迹到 (x,y) → down → 再沿轨迹拖到 (x2,y2) → up |
 | `scroll` | x, y, scroll_x/scroll_y | 在点上滚；单位 = “一次滚轮刻度”，正 y = 向下（与 OpenAI 一致） |
 | `type` | text | Unicode 文本，走 OS 文本输入，**不是** PTY `type_keys.go` |
 | `key` | key 或 keys | 命名键或组合，如 `enter`、`ctrl+c`；`keys: ["ctrl","c"]` 同义 |
@@ -573,6 +573,42 @@ Anthropic 官方 demo 要求工具侧缩到约 XGA 再映射坐标，不要把�
 4. 多显示器 v1 只捕获主屏。Windows `MOUSEEVENTF_ABSOLUTE` 公式见下，不能把图像坐标当成整桌面 0..65535。
 5. macOS Retina：捕获 backing pixels；`CGEvent` 用全局点。`desktop_darwin.go` 显式转换，单测 `scale=2`。
 6. Windows DPI awareness 在 **进程启动、托盘窗口创建之前**（`main` 最早处）调用 `SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)`。窗口已经创建后再设会扭曲托盘/设置页。捕获尺寸用 `GetSystemMetricsForDpi` / `GetDpiForMonitor`，不要用未感知的 `SM_CXSCREEN`。
+7. **点击坐标映射完之后仍不得瞬移。** 原生像素只是轨迹终点。HID 事件流必须先经过「人类指针」规划器。
+
+### 人类指针（OpenAI Codex Computer Use 对齐）
+
+OpenAI 的 CUA **API** 只吐 `click(x,y)` / `move` / `drag`；真正看起来像人的是 **客户端 harness**。Codex Computer Use（Sky 团队：Cameron 设计路径，Kiera Mumick / Dexter Leng / Phil 落地）的光标不是直线 A→B：
+
+- **几何：** heading-driven 候选族。2 条 base 三次贝塞尔 + 3×3×2 条 arched（中点弧），一共 20 条。评分惩罚过长、转角能量、最大转角、总转角；**先收 in-bounds，再 lowest score**。
+- **时序：** 路径参数 `progress` 用 Velocity-Verlet 弹簧，而不是匀速。官方常数 `response = 1.4`、`dampingFraction = 0.9`、`dt = 1/240`。到达 `closeEnough`（progress≈1 且误差≤0.01）就可以点，不必等弹簧完全停死。
+- **可见性：** 独立软件光标叠加层（layered / overlay window），带朝向、残影 trail、点击 squash + 涟漪。调试层曾画出控制点——我们产品默认关掉。
+- **会话：** 下一动从当前静止点继续，禁止每次从 (0,0) 飞入。
+
+Fleet **三端 Agent** 复制这套执行语义。模型仍然只给目标像素；Agent 负责好看且像人。
+
+```
+click(x,y)  ⇒  planPath(lastPos → native(x,y))
+            ⇒  overlay.Show()
+            ⇒  for sample in springTimeline:
+                   overlay.Move(sample)          // UX，click-through
+                   HID.mousemove(sample)         // 真实 OS 事件，网站看得到
+            ⇒  hover 45–90ms
+            ⇒  overlay click pulse
+            ⇒  HID down → hold 50–85ms → up
+```
+
+**不变量（HID PR 起强制，单测钉死）：**
+
+1. **Overlay 是给看的，HID 是给网页的。** 只画假指针、不发 `mousemove`，Akamai / `teleport_click_ratio` 一类检测仍会当机器人。只 `SetCursorPos` 一次再 click 同罪。
+2. **真实指针必须沿采样点走。** Windows：`SendInput` `MOUSEEVENTF_MOVE|ABSOLUTE|VIRTUALDESK` 每个采样点一次。macOS：`CGEventMouseMoved` 再 `LeftMouseDown/Up`（按住拖拽用 `LeftMouseDragged`）。Linux：同一条采样流经 uinput / xdotool，禁止 `xdotool click` 不带 move。
+3. **采样密度。** Verlet 内部 240 Hz；HID 上报 120 Hz（每 2 步）。相邻采样位移在长距离移动中必须是连续小步，单测：400px 对角线不得出现 ≥80px 的一步。
+4. **时长。** 官方弹簧 `response=1.4` 对 8px 微调会显得拖。几何用 OpenAI 候选模型；时长把 response 按距离缩放到 `[0.28, 1.1]` 秒（短距快、长距仍有弧线和加速），阻尼仍 0.9。单次 click 墙钟目标 p95 < 2s，给 8s waiter 留余量。
+5. **拖拽。** `left_click_drag` 不是 down@A 瞬移到 B。而是轨迹到 A → down → **第二条** 弹簧轨迹到 B（button 按住）→ up。
+6. **叠加层。** Windows：`WS_EX_LAYERED|TRANSPARENT|TOPMOST|NOACTIVATE|TOOLWINDOW` 的 320² ARGB 窗口，`UpdateLayeredWindow`；系统光标在 overlay 显示期间 `ShowCursor(FALSE)`，结束必恢复。Darwin / Linux v1：同一条弹簧轨迹驱动 **真实系统指针**（已经可见）；独立 NSWindow / X11 overlay 是 follow-up，避免两套光标叠在一起。
+7. **视觉。** 白箭头 + 深色描边 + teal 辉光；14 点衰减残影；按下时箭头 squash 到 ~0.86 并扩一圈涟漪。不要线性 lerp 透明度、不要瞬切。
+8. **状态。** `lastPointer` / `lastHeading` 活在本进程，随 WS 断开清 overlay，不清物理光标位置（下次 `GetCursorPos`）。
+
+实现：`desktop_motion.go`（候选+弹簧，无 OS）、`desktop_cursor.go`（字形/残影/涟漪）、`desktop_pointer.go`（把路径编成 HID 脚本）、`desktop_hid_{windows,darwin,linux}.go`。
 
 ### OS 实现要点
 
@@ -1131,19 +1167,19 @@ Feature flag：v1 用 caps + 工具是否发布，不另做远程 flag。Agent �
 ### PR6 — `feat(computer-use): Windows mouse/keyboard/scroll/drag`
 
 **依赖：** PR0（action HTTP）、PR1（`lastFrame`）、PR5（input grant）。  
-**描述：** SendInput + 虚拟桌面公式 + Unicode `type`。Hub action 路径已在 PR0。从此指针/`type`/`key` 走 `desktopInputGranted`（无 grant 则 Ask consent，不再 `unsupported_action`）。`wait` 在本 PR 实现：无 frame、无 input grant。
+**描述：** SendInput + 虚拟桌面公式 + Unicode `type`。**鼠标动作必须走人类指针规划器**（贝塞尔候选 + 弹簧进度 + overlay + 沿路 `mousemove` 再 click/drag），禁止瞬移点击。Hub action 路径已在 PR0。从此指针/`type`/`key` 走 `desktopInputGranted`（无 grant 则 Ask consent，不再 `unsupported_action`）。`wait` 在本 PR 实现：无 frame、无 input grant。
 
-**文件：** `desktop_windows.go`、`desktop_keys.go`、`desktop_action_test.go`。
+**文件：** `desktop_windows.go`、`desktop_motion.go`、`desktop_cursor.go`、`desktop_pointer.go`、`desktop_hid_windows.go`、`desktop_keys.go`、`desktop_action_test.go`。
 
 ### PR7 — `feat(computer-use): Linux HID`
 
 **依赖：** PR3、PR6 键名表、PR5 input grant。  
-**描述：** uinput / xdotool / ydotool；`no_input_backend`。RemoteDesktop portal 不在本 PR（Alternatives H）。
+**描述：** uinput / xdotool / ydotool；`no_input_backend`。鼠标动作复用同一套人类指针规划器（沿轨迹 mousemove 再 click/drag）。RemoteDesktop portal 不在本 PR（Alternatives H）。
 
 ### PR8 — `feat(computer-use): macOS HID + Accessibility TCC`
 
 **依赖：** PR4、PR5（input grant 已存在，本 PR 只接 TCC）。  
-**描述：** CGEvent；点 vs 像素；Accessibility 文案。
+**描述：** CGEventMouseMoved 再 down/up（拖拽用 LeftMouseDragged）；点 vs 像素；Accessibility 文案。轨迹与 overlay 语义同 Windows。
 
 ### PR9 — `feat(computer-use): MCP desktop_action`
 

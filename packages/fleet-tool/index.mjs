@@ -156,7 +156,7 @@ function mcp() {
         }
         if (msg.method === "tools/call") {
           const out = await callTool(msg.params?.name, msg.params?.arguments ?? {});
-          const payload = { content: [{ type: "text", text: formatMcpText(msg.params?.name, out, process.env) }] };
+          const text = { type: "text", text: formatMcpText(msg.params?.name, out, process.env) };
           const b64 =
             out &&
             out.ok === true &&
@@ -164,13 +164,16 @@ function mcp() {
             out.image_b64.length > 0
               ? out.image_b64
               : "";
+          const content = [];
           if (b64) {
-            payload.content.push({
+            content.push({
               type: "image",
               mimeType: out.mime || "image/jpeg",
               data: b64,
             });
           }
+          content.push(text);
+          const payload = { content };
           if (out && typeof out === "object" && (out.isError === true || out.ok === false)) {
             payload.isError = true;
           }

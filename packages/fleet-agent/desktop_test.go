@@ -143,6 +143,33 @@ func TestDesktopClickRequiresFrame(t *testing.T) {
 	}
 }
 
+func TestDesktopPointerRequiresCoordinates(t *testing.T) {
+	f := &fakeDesk{}
+	a := &Agent{
+		enabled: true, permit: PermitAllow, backend: f,
+		lastFrame: &DesktopFrame{ID: "f", ViewportW: 100, ViewportH: 100, DisplayW: 100, DisplayH: 100, ScaleX: 1, ScaleY: 1},
+	}
+	if body := a.desktopActionBody(map[string]any{"action": "left_click"}); body["code"] != "bad_request" {
+		t.Fatalf("missing x/y %+v", body)
+	}
+	if body := a.desktopActionBody(map[string]any{"action": "left_click", "x": 4}); body["code"] != "bad_request" {
+		t.Fatalf("missing y %+v", body)
+	}
+	if body := a.desktopActionBody(map[string]any{"action": "left_click_drag", "x": 0, "y": 0, "x2": 9}); body["code"] != "bad_request" {
+		t.Fatalf("missing y2 %+v", body)
+	}
+	if len(f.clicks) != 0 || len(f.drags) != 0 {
+		t.Fatalf("hid fired without coords clicks=%v drags=%v", f.clicks, f.drags)
+	}
+	origin := a.desktopActionBody(map[string]any{"action": "left_click", "x": 0, "y": 0})
+	if origin["ok"] != true {
+		t.Fatalf("explicit 0,0 %+v", origin)
+	}
+	if len(f.clicks) != 1 || f.clicks[0][2] != 0 || f.clicks[0][3] != 0 {
+		t.Fatalf("origin click %+v", f.clicks)
+	}
+}
+
 func TestDesktopWaitClampsWithoutFrame(t *testing.T) {
 	if clampWaitMsDesktop(-3) != 0 || clampWaitMsDesktop(9000) != 5000 || clampWaitMsDesktop(12) != 12 {
 		t.Fatal("clamp")
@@ -237,6 +264,24 @@ func TestSplitKeySpec(t *testing.T) {
 	got := splitKeySpec("Ctrl+Enter")
 	if len(got) != 2 || got[0] != "ctrl" || got[1] != "enter" {
 		t.Fatalf("%v", got)
+	}
+}
+
+func TestDarwinKeyCode(t *testing.T) {
+	if _, ok := darwinKeyCode("f1"); !ok {
+		t.Fatal("f1")
+	}
+	if _, ok := darwinKeyCode("1"); !ok {
+		t.Fatal("digit")
+	}
+	if _, ok := darwinKeyCode("home"); !ok {
+		t.Fatal("home")
+	}
+	if k, ok := darwinKeyCode("a"); !ok || k != 0 {
+		t.Fatalf("a %d %v", k, ok)
+	}
+	if _, ok := darwinKeyCode("fnord"); ok {
+		t.Fatal("unknown must miss")
 	}
 }
 

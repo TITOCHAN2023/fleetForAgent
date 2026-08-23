@@ -109,6 +109,25 @@ func TestSamePixelsSameDigest(t *testing.T) {
 	}
 }
 
+func TestEncodeJPEGBudgetNeverExceeds(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 640, 640))
+	for y := 0; y < 640; y++ {
+		for x := 0; x < 640; x++ {
+			src.SetRGBA(x, y, color.RGBA{R: uint8(x * y), G: uint8(x ^ y), B: uint8(x + y), A: 255})
+		}
+	}
+	data, w, h, _, err := encodeJPEGBudget(src, 8*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) > 8*1024 {
+		t.Fatalf("jpeg %d over hard budget", len(data))
+	}
+	if w < 1 || h < 1 {
+		t.Fatalf("empty %dx%d", w, h)
+	}
+}
+
 func TestBusyDesktopJPEGUnderBudget(t *testing.T) {
 	src := image.NewRGBA(image.Rect(0, 0, 2560, 1440))
 	for y := 0; y < 1440; y++ {

@@ -87,24 +87,49 @@ func desktopConsent() map[string]any {
 }
 
 func asInt(v any) int {
-	switch n := v.(type) {
-	case int:
-		return n
-	case int32:
-		return int(n)
-	case int64:
-		return int(n)
-	case float64:
-		return int(n)
-	case float32:
-		return int(n)
-	case string:
-		var x int
-		_, _ = fmt.Sscanf(n, "%d", &x)
-		return x
-	default:
+	n, ok := intFrom(v)
+	if !ok {
 		return 0
 	}
+	return n
+}
+
+func intFrom(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int32:
+		return int(n), true
+	case int64:
+		return int(n), true
+	case float64:
+		return int(n), true
+	case float32:
+		return int(n), true
+	case string:
+		var x int
+		if _, err := fmt.Sscanf(strings.TrimSpace(n), "%d", &x); err != nil || strings.TrimSpace(n) == "" {
+			return 0, false
+		}
+		return x, true
+	default:
+		return 0, false
+	}
+}
+
+func requiredInt(body map[string]any, key string) (int, error) {
+	if body == nil {
+		return 0, desktopError{code: "bad_request", msg: "fleet: " + key + " required"}
+	}
+	v, ok := body[key]
+	if !ok || v == nil {
+		return 0, desktopError{code: "bad_request", msg: "fleet: " + key + " required"}
+	}
+	n, ok := intFrom(v)
+	if !ok {
+		return 0, desktopError{code: "bad_request", msg: "fleet: " + key + " required"}
+	}
+	return n, nil
 }
 
 func asString(v any) string {
@@ -312,9 +337,15 @@ func (a *Agent) desktopActionBody(body map[string]any) map[string]any {
 
 func (a *Agent) runDesktopAction(be desktopBackend, frame *DesktopFrame, action string, body map[string]any) error {
 	mapXY := func(xKey, yKey string) (int, int, error) {
-		x, y := asInt(body[xKey]), asInt(body[yKey])
-		nx, ny, err := mapViewportToNative(*frame, x, y)
-		return nx, ny, err
+		x, err := requiredInt(body, xKey)
+		if err != nil {
+			return 0, 0, err
+		}
+		y, err := requiredInt(body, yKey)
+		if err != nil {
+			return 0, 0, err
+		}
+		return mapViewportToNative(*frame, x, y)
 	}
 	switch action {
 	case "left_click":

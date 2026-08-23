@@ -424,7 +424,7 @@ export function buildTools() {
     {
       name: "desktop_action",
       description:
-        "HID on the primary display. x,y are pixels in the last screenshot image (top-left origin), not native display pixels. Actions: screenshot, left_click, right_click, double_click, middle_click, mouse_move, left_click_drag, scroll, type, key, wait. Optional frame_id from the screenshot. Requires computer_use. Not the pane tool type. Optional device_id after set_computer.",
+        "HID on the primary display. x,y required for click/move/drag/scroll (pixels of the last screenshot, top-left origin, not native). left_click_drag also needs x2,y2. Actions: screenshot, left_click, right_click, double_click, middle_click, mouse_move, left_click_drag, scroll, type, key, wait. Optional frame_id from the screenshot. Requires computer_use. Not the pane tool type. Optional device_id after set_computer.",
       inputSchema: {
         type: "object",
         properties: {

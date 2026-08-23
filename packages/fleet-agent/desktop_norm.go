@@ -199,7 +199,42 @@ func encodeJPEGBudget(img image.Image, budget int) (data []byte, w, h, q int, er
 	if last == nil {
 		return nil, 0, 0, 0, fmt.Errorf("jpeg budget")
 	}
+	for len(last) > budget {
+		cb := cur.Bounds()
+		nw, nh := shrinkDims(cb.Dx(), cb.Dy(), 3, 4)
+		if nw < 32 || nh < 32 {
+			return nil, 0, 0, 0, fmt.Errorf("jpeg over budget")
+		}
+		cur = scaleBilinear(toRGBA(cur), nw, nh)
+		var buf bytes.Buffer
+		if err = jpeg.Encode(&buf, cur, &jpeg.Options{Quality: jpegQualityFloor}); err != nil {
+			return nil, 0, 0, 0, err
+		}
+		last = buf.Bytes()
+		lastQ = jpegQualityFloor
+	}
 	return last, cur.Bounds().Dx(), cur.Bounds().Dy(), lastQ, nil
+}
+
+func shrinkDims(w, h, num, den int) (int, int) {
+	if den < 1 {
+		den = 1
+	}
+	nw := w * num / den
+	nh := h * num / den
+	if nw < 1 {
+		nw = 1
+	}
+	if nh < 1 {
+		nh = 1
+	}
+	if nw >= w && w > 1 {
+		nw = w - 1
+	}
+	if nh >= h && h > 1 {
+		nh = h - 1
+	}
+	return nw, nh
 }
 
 func pixelDigest(img *image.RGBA) string {
@@ -278,25 +313,25 @@ func mapAxis(v, view, native int) int {
 
 func desktopFrameBody(fr DesktopFrame, unchanged bool) map[string]any {
 	body := map[string]any{
-		"ok":              true,
-		"status":          "ok",
-		"code":            "",
-		"error":           "",
-		"unchanged":       unchanged,
-		"frame_id":        fr.ID,
-		"width":           fr.ViewportW,
-		"height":          fr.ViewportH,
-		"display_width":   fr.DisplayW,
-		"display_height":  fr.DisplayH,
-		"scale_x":         fr.ScaleX,
-		"scale_y":         fr.ScaleY,
-		"display_id":      fr.DisplayID,
-		"origin":          fr.Origin,
-		"dpr":             fr.DPR,
-		"mime":            fr.MIME,
-		"bytes":           fr.Bytes,
-		"digest":          fr.Digest,
-		"encoding":        "base64",
+		"ok":             true,
+		"status":         "ok",
+		"code":           "",
+		"error":          "",
+		"unchanged":      unchanged,
+		"frame_id":       fr.ID,
+		"width":          fr.ViewportW,
+		"height":         fr.ViewportH,
+		"display_width":  fr.DisplayW,
+		"display_height": fr.DisplayH,
+		"scale_x":        fr.ScaleX,
+		"scale_y":        fr.ScaleY,
+		"display_id":     fr.DisplayID,
+		"origin":         fr.Origin,
+		"dpr":            fr.DPR,
+		"mime":           fr.MIME,
+		"bytes":          fr.Bytes,
+		"digest":         fr.Digest,
+		"encoding":       "base64",
 		"frame": map[string]any{
 			"id":       fr.ID,
 			"viewport": map[string]any{"width": fr.ViewportW, "height": fr.ViewportH},

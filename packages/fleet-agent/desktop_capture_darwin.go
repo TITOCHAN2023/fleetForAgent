@@ -9,7 +9,6 @@ package main
 #include <CoreFoundation/CoreFoundation.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
 
 static int fleetScreenTrusted(void) {
 	return CGPreflightScreenCaptureAccess() ? 1 : 0;
@@ -70,47 +69,9 @@ static void fleetTypeUTF8(const char *utf8) {
 	CFRelease(s);
 }
 
-static CGKeyCode fleetKeyCode(const char *n) {
-	if (!n) return 0xFFFF;
-	if (strcmp(n, "enter") == 0) return 36;
-	if (strcmp(n, "tab") == 0) return 48;
-	if (strcmp(n, "escape") == 0) return 53;
-	if (strcmp(n, "space") == 0) return 49;
-	if (strcmp(n, "backspace") == 0) return 51;
-	if (strcmp(n, "delete") == 0) return 117;
-	if (strcmp(n, "up") == 0) return 126;
-	if (strcmp(n, "down") == 0) return 125;
-	if (strcmp(n, "left") == 0) return 123;
-	if (strcmp(n, "right") == 0) return 124;
-	if (strcmp(n, "ctrl") == 0) return 59;
-	if (strcmp(n, "shift") == 0) return 56;
-	if (strcmp(n, "alt") == 0) return 58;
-	if (strcmp(n, "win") == 0) return 55;
-	if (strlen(n) == 1) {
-		char c = n[0];
-		if (c >= 'a' && c <= 'z') {
-			static const CGKeyCode map[26] = {
-				0,11,8,2,14,3,5,4,34,38,40,37,46,45,31,35,12,15,1,17,32,9,13,7,16,6
-			};
-			return map[c - 'a'];
-		}
-	}
-	return 0xFFFF;
-}
-
-static void fleetKey(const char *spec) {
-	if (!spec) return;
-	char buf[128];
-	strncpy(buf, spec, sizeof(buf) - 1);
-	buf[sizeof(buf) - 1] = 0;
-	CGKeyCode codes[8];
-	int n = 0;
-	char *tok = strtok(buf, "+");
-	while (tok && n < 8) {
-		CGKeyCode k = fleetKeyCode(tok);
-		if (k != 0xFFFF) codes[n++] = k;
-		tok = strtok(NULL, "+");
-	}
+static void fleetKeyCodes(const CGKeyCode *codes, int n) {
+	if (!codes || n <= 0) return;
+	if (n > 8) n = 8;
 	for (int i = 0; i < n; i++) {
 		CGEventRef e = CGEventCreateKeyboardEvent(NULL, codes[i], true);
 		if (e) { CGEventPost(kCGHIDEventTap, e); CFRelease(e); }
@@ -124,7 +85,6 @@ static void fleetKey(const char *spec) {
 import "C"
 import (
 	"image"
-	"strings"
 	"unsafe"
 )
 
@@ -193,8 +153,14 @@ func nativeKey(spec string) error {
 	if len(names) == 0 {
 		return desktopError{code: "bad_request", msg: "fleet: unknown key"}
 	}
-	cstr := C.CString(strings.Join(names, "+"))
-	defer C.free(unsafe.Pointer(cstr))
-	C.fleetKey(cstr)
+	codes := make([]C.CGKeyCode, 0, len(names))
+	for _, n := range names {
+		k, ok := darwinKeyCode(n)
+		if !ok {
+			return desktopError{code: "bad_request", msg: "fleet: unknown key " + n}
+		}
+		codes = append(codes, C.CGKeyCode(k))
+	}
+	C.fleetKeyCodes(&codes[0], C.int(len(codes)))
 	return nil
 }

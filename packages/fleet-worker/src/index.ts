@@ -123,6 +123,7 @@ type WsAttachment = {
   userId?: string;
   caps?: string[];
   permit?: string;
+  agentVer?: string;
 };
 
 type Actor = { id: string; email?: string; super?: boolean; banned?: boolean };
@@ -756,8 +757,11 @@ export class DeviceDO implements DurableObject {
       if (sockets.length === 0) return json({ error: "offline" }, 409);
       const ws = sockets[0]!;
       const att = (ws.deserializeAttachment() ?? {}) as WsAttachment;
+      if (!Array.isArray(att.caps)) {
+        return json({ error: "not ready", code: "NOT_READY" }, 409);
+      }
       if (!hasComputerUse({ caps: att.caps })) {
-        return json(unsupportedCapBody({ agentVer: "", os: att.os ?? "" }), 409);
+        return json(unsupportedCapBody({ agentVer: att.agentVer ?? "", os: att.os ?? "" }), 409);
       }
       const plan = (await request.json()) as { type?: string; body?: Record<string, unknown> };
       const type = plan.type === "desktop_action" ? "desktop_action" : "desktop_screenshot";
@@ -807,8 +811,11 @@ export class DeviceDO implements DurableObject {
       const os = String(parsed.body.os ?? att.os ?? "linux");
       const name = String(parsed.body.hostname ?? att.name ?? att.deviceId ?? "device");
       if (Array.isArray(parsed.body.caps)) att.caps = normalizeCaps(parsed.body.caps);
+      else if (!Array.isArray(att.caps)) att.caps = [];
       const permit = normalizePermit(parsed.body.permit);
       if (permit) att.permit = permit;
+      const agentVer = String(parsed.body.agent_ver ?? att.agentVer ?? "");
+      att.agentVer = agentVer;
       ws.serializeAttachment({
         deviceId: att.deviceId,
         name,
@@ -816,12 +823,13 @@ export class DeviceDO implements DurableObject {
         userId: att.userId,
         caps: att.caps,
         permit: att.permit,
+        agentVer,
       });
       await this.mark(att.deviceId ?? "unknown", {
         name,
         os,
         online: true,
-        agentVer: String(parsed.body.agent_ver ?? ""),
+        agentVer,
         userId: att.userId,
         ...(Array.isArray(parsed.body.caps) ? { caps: normalizeCaps(parsed.body.caps) } : {}),
         ...(permit ? { permit } : {}),
@@ -840,6 +848,7 @@ export class DeviceDO implements DurableObject {
       if (Array.isArray(body.caps)) att.caps = normalizeCaps(body.caps);
       const permit = normalizePermit(body.permit);
       if (permit) att.permit = permit;
+      if (agentVer !== undefined) att.agentVer = agentVer;
       ws.serializeAttachment({
         deviceId: att.deviceId,
         name: att.name ?? att.deviceId ?? "device",
@@ -847,6 +856,7 @@ export class DeviceDO implements DurableObject {
         userId: att.userId,
         caps: att.caps,
         permit: att.permit,
+        agentVer: att.agentVer,
       });
       await this.mark(att.deviceId ?? "unknown", {
         name: att.name ?? att.deviceId ?? "device",

@@ -110,6 +110,12 @@ test("worker desktop HTTP 409s missing cap before DeviceDO send", () => {
   assert.match(src, /parsed\.type === "desktop"/);
   const desktopHandler = src.slice(src.indexOf('if (parsed.type === "desktop")'), src.indexOf('if (parsed.type === "desktop")') + 400);
   assert.equal(desktopHandler.includes("storage.put"), false);
+  const desktopDo = src.slice(src.indexOf('url.pathname === "/desktop"'), src.indexOf('url.pathname === "/heartbeat"'));
+  assert.match(desktopDo, /NOT_READY/);
+  assert.match(desktopDo, /Array\.isArray\(att\.caps\)/);
+  const notReady = desktopDo.indexOf("NOT_READY");
+  const unsup = desktopDo.indexOf("unsupportedCapBody");
+  assert.ok(notReady !== -1 && unsup !== -1 && notReady < unsup);
 });
 
 test("heartbeat wait is short so an offline or mute client cannot hang the hub", () => {

@@ -91,7 +91,11 @@ func linuxGrab() (image.Image, error) {
 		}
 		return img, nil
 	}
-	f, err := os.CreateTemp("", "fleet-desk-*.png")
+	dir := strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR"))
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	f, err := os.CreateTemp(dir, "fleet-desk-*.png")
 	if err != nil {
 		return nil, desktopError{code: "capture_failed", msg: "fleet: temp file: " + err.Error()}
 	}
@@ -173,18 +177,33 @@ func nativeScroll(x, y, dx, dy int) error {
 	return nil
 }
 
+const linuxTypeWait = 6 * time.Second
+
 func nativeTypeText(text string) error {
 	p, _ := nativePointer()
 	lp, ok := p.(*linuxPointer)
 	if !ok || lp == nil {
 		return desktopError{code: "no_input_backend", msg: "no_input_backend"}
 	}
+	path, err := exec.LookPath("xdotool")
+	if err != nil {
+		return desktopError{code: "no_input_backend", msg: "no_input_backend"}
+	}
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
 	lines := strings.Split(text, "\n")
+	deadline := time.Now().Add(linuxTypeWait)
 	for i, line := range lines {
+		remain := time.Until(deadline)
+		if remain <= 0 {
+			return desktopError{code: "timeout", msg: "fleet: type exceeded wait"}
+		}
 		if line != "" {
-			if err := lp.cmd("type -- " + line); err != nil {
+			cmd := exec.Command(path, "type", "--delay", "0", "--clearmodifiers", "--", line)
+			if err := runBounded(cmd, remain); err != nil {
+				if err.Error() == "timeout" {
+					return desktopError{code: "timeout", msg: "fleet: type exceeded wait"}
+				}
 				return err
 			}
 		}

@@ -11,8 +11,10 @@ import {
   buildOverview,
   handleOpsRoute,
   isOpsAdmin,
+  matchOpsSearch,
   opsPageHtml,
   parseAdminEmails,
+  sortByLastSeen,
   stripSensitive,
 } from "./src/ops.mjs";
 
@@ -147,8 +149,29 @@ test("matching email → overview", async () => {
   assert.match(body.freshnessNote, /last-seen freshness/i);
   assert.equal(body.accounts[0].token, true);
   assert.equal(body.accounts[0].devices, 2);
+  assert.equal(body.accounts[0].email, "ada@example.com");
+  assert.equal(body.accounts[0].lastSeen, now - 10_000);
+  assert.equal(body.accounts[0].online, true);
+  assert.deepEqual(body.accounts[0].deviceIds, ["dev-1", "dev-2"]);
   assert.equal(body.accounts[1].banned, true);
+  assert.equal(body.accounts[1].lastSeen, 0);
+  assert.equal(body.deviceRows[0].id, "dev-1");
   assert.equal(body.me, "user-ops");
+});
+
+test("ops search matches email/id/device and sort is recently active first", () => {
+  const rows = [
+    { id: "b", email: "bob@example.com", lastSeen: 1 },
+    { id: "a", email: "ada@example.com", lastSeen: 9, deviceIds: ["dev-9"] },
+  ];
+  assert.deepEqual(
+    sortByLastSeen(rows).map((r) => r.id),
+    ["a", "b"],
+  );
+  assert.equal(matchOpsSearch(rows[1], "ADA"), true);
+  assert.equal(matchOpsSearch(rows[1], "dev-9"), true);
+  assert.equal(matchOpsSearch(rows[0], "dev-9"), false);
+  assert.equal(matchOpsSearch(rows[0], ""), true);
 });
 
 test("overview JSON never includes name / hostname / ip fields", () => {
@@ -281,6 +304,23 @@ test("ops page copy is Ban, not Delete/Restore, and matches public wording", () 
   assert.match(html, /data-theme-set="system"/);
   assert.match(html, /state\.data\.me/);
   assert.match(html, /t\("you"\)/);
+  assert.match(html, /id="ops-q"/);
+  assert.match(html, /byRecent/);
+  assert.match(html, /ops-switch/);
+  assert.match(html, /href="\/ops"/);
+  assert.match(html, /href="\/"/);
+});
+
+test("ops page body script parses", () => {
+  const html = opsPageHtml();
+  const bodyStart = html.search(/<body[\s>]/i);
+  assert.ok(bodyStart !== -1, "expected <body>");
+  const scripts = [...html.slice(bodyStart).matchAll(/<script>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts.length > 0, "expected a <script> in <body>");
+  const script = scripts[scripts.length - 1][1];
+  assert.doesNotThrow(() => {
+    new Function(script);
+  });
 });
 
 test("opsPageHtml first paint has visible title chrome and no Google Fonts", () => {
@@ -315,6 +355,7 @@ test("worker gates /ops before assets and /v1/ops before the catch-all actor", (
   assert.match(worker, /handleOpsRoute/);
   assert.match(worker, /archFromBody/);
   assert.match(worker, /ADMIN_EMAILS/);
+  assert.match(worker, /ops: isOpsAdmin\(sess, env\.ADMIN_EMAILS\)/);
 });
 
 test("dispatchOps uses the cookie session and ignores Authorization", () => {

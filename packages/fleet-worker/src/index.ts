@@ -15,7 +15,7 @@
 import { handleOAuth } from "./oauth";
 import { applyBannedState, rejectIfBanned } from "./ban.mjs";
 import { canClaimDevice, deviceOwnerConflict } from "./bind.mjs";
-import { handleOpsRoute } from "./ops.mjs";
+import { handleOpsRoute, isOpsAdmin } from "./ops.mjs";
 import {
   agentVerFromBody,
   archFromBody,
@@ -186,7 +186,12 @@ export default {
     if (url.pathname === "/v1/me" && request.method === "GET") {
       const resolved = await resolveActor(request, env, fleet);
       if (!resolved.actor || resolved.actor.super) return deny(resolved, true);
-      return json({ id: resolved.actor.id, email: resolved.actor.email });
+      const sess = await resolveSession(request, fleet);
+      return json({
+        id: resolved.actor.id,
+        email: resolved.actor.email,
+        ops: isOpsAdmin(sess, env.ADMIN_EMAILS),
+      });
     }
     if (url.pathname === "/v1/hub_token" && request.method === "GET") {
       const resolved = await resolveActor(request, env, fleet);

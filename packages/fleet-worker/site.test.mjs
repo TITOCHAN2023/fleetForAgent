@@ -26,4 +26,7 @@ test("hub site explains multi-os fleet and ships a Help page", () => {
   assert.match(html, /Fleet-OAEP/);
   assert.match(html, /class="prompt"/);
   assert.match(html, /\/logo\.png/);
+  assert.match(html, /ops-switch/);
+  assert.match(html, /href="\/ops"/);
+  assert.match(html, /user\.ops/);
 });

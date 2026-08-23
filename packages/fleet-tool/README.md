@@ -68,6 +68,8 @@ Existing tools stay. `device_id` is still on every mutating/read schema; it is o
 | `set_computer` | Remember a device for later calls **in this MCP process only**. |
 | `get_current_computer` | Show last-used, last `cwd`, and the `FLEET_DEVICE_ID` start default. |
 
+MCP **prompts**: `hub_token` (generate / reset in Settings) and `hub_token_anatomy` (`flt_1.<payload>.<sig>`, RSA-2048, Fleet-OAEP not Bearer). The initialize payload includes short `instructions`. `run` / `wait` emit `notifications/progress` and honor `notifications/cancelled` (cancel stops waiting; it does not kill the remote command).
+
 `wait_ms` is an MCP-call budget only, max **30s** (hosts cancel tools at ~60s). It never kills the remote command. `run` omitted defaults to **30s**; `get_result` omitted/0 is an instant snapshot; `wait` omitted defaults to **30s**. Explicit `run` `wait_ms: 0` is the fire-and-forget path. Hub `POST /v1/run` and `POST /v1/get_result` treat omitted/`0` `wait_ms` as immediate (web console and old clients unchanged). A still-running reply is not an error — do not re-issue `run`; poll `get_result(wait_ms=...)` or `wait(wait_ms=...)`.
 
 MCP text for a finished `run` / `get_result` / `wait` is the command output (Desktop Commander style), not a JSON envelope. A still-running job is the plain line `still running` — never a `corr=`, fingerprint, or operator id. `FLEET_DEV=1` (also `true`/`yes`) keeps that text first, then appends a `# fleet-dev` trailer with per-hop `out`/`in`/`send`/`wait`/`recv`/`total` (epoch-ms wall times plus durations). The tool result includes a `dev` object; MCP `_meta.duration_ms` is the overall total and `_meta.fleet_dev` is the full `dev` object. Default is off.

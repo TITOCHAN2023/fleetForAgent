@@ -4,6 +4,7 @@ import {
   HIGH_SEC_UPGRADE,
   bearerToken,
   hashHubToken,
+  inspectTokenV1,
   isHubToken,
   isLegacyFlt,
   mintHubToken,
@@ -20,6 +21,16 @@ test("minted tokens are flt_1 and hash the secret", async () => {
   const claims = await verifyTokenV1(t.raw);
   assert.equal(claims.aud, "https://fleet.ginfo.cc");
   assert.equal(claims.kid, t.kid);
+});
+
+test("inspectTokenV1 hides sec and pub", async () => {
+  const t = await mintHubToken("https://fleet.ginfo.cc");
+  const view = inspectTokenV1(t.raw);
+  if (!view) throw new Error("expected inspectTokenV1");
+  assert.equal(view.kid, t.kid);
+  assert.equal(view.aud, "https://fleet.ginfo.cc");
+  assert.equal("sec" in view, false);
+  assert.equal("pub" in view, false);
 });
 
 test("reset mints a different keypair", async () => {

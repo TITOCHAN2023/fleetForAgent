@@ -28,6 +28,70 @@ export function shQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
+export const MCP_INSTRUCTIONS =
+  "Fleet: remote Windows/Linux/macOS machines via a cloud hub. list_computers, then set_computer (or pass device_id). run waits up to 30s; if the text is still running, call wait — do not run again. Hub tokens are minted in website Settings (cookie session), shape flt_1.<payload>.<sig> — not Bearer.";
+
+export function buildPrompts() {
+  return [
+    {
+      name: "hub_token",
+      description: "How to generate or reset a Fleet hub token in Settings, and what reset does to old keys.",
+    },
+    {
+      name: "hub_token_anatomy",
+      description: "How a flt_1 hub token is composed (prefix, signed payload, RSA-2048) and how Fleet-OAEP is used instead of Bearer.",
+    },
+  ];
+}
+
+export function getPrompt(name) {
+  if (name === "hub_token") {
+    return {
+      description: "Generate or reset a hub token",
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: [
+              "Generate or reset a Fleet hub token on the website Settings page, not through this MCP server.",
+              "",
+              "- Sign in with Google or X (cookie session).",
+              "- Settings → Generate token (first time) or Reset token (replaces the key).",
+              "- Plaintext is shown once. Copy FLEET_TOKEN now. FLEET_URL is the site origin.",
+              "- Reset deletes the old RSA key immediately and closes every live device WebSocket (1008 token reset). Re-paste the new token on every Agent and MCP client.",
+              "- Do not put the token in git or wrangler [vars].",
+            ].join("\n"),
+          },
+        },
+      ],
+    };
+  }
+  if (name === "hub_token_anatomy") {
+    return {
+      description: "flt_1 token composition",
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: [
+              "A Fleet hub token is flt_1.<payload>.<sig> (RSA-2048).",
+              "",
+              "- payload JSON, signed RSA-PSS-SHA256: v, aud, kid, pub, iat, sec",
+              "- aud is HUB_ORIGIN (https://fleet.ginfo.cc), never the HTTP Host header",
+              "- Agents and MCP do not send Authorization: Bearer <token>",
+              "- They GET /v1/challenge?kid=… then Authorization: Fleet-OAEP <kid>.<oaep({sec,nonce})>",
+              "- Reset mints a new keypair; the old kid will not complete the handshake",
+            ].join("\n"),
+          },
+        },
+      ],
+    };
+  }
+  return null;
+}
+
 export function wrapSessionCommand(command, cwd) {
   const lines = [
     "__fleet_ec=0",
@@ -310,7 +374,7 @@ export function buildTools() {
   return [
     {
       name: "list_computers",
-      description: "List machines in this hub account. Never returns IPs.",
+      description: "List machines in this hub account (id, name, os, online, lastSeen, agentVer). Never returns IPs. Call this first, then set_computer.",
       inputSchema: { type: "object", properties: {} },
     },
     {
@@ -334,7 +398,7 @@ export function buildTools() {
     {
       name: "run",
       description:
-        "Start a command on a device and wait for the result (default wait_ms 30000). If it finishes in time, return the same payload get_result would. Explicit wait_ms=0 starts the job and returns immediately (TUIs / long jobs). POST /v1/run is held only when this client sends wait_ms>0; omitted/old clients still return immediately if the command is still going. If the budget expires, the command continues — the text is a plain still-running notice. Never kill on wait expiry. Never re-issue run after a still-running reply; poll get_result(wait_ms) or wait(wait_ms).",
+        "Run a shell command on a fleet machine. Default wait_ms 30000. wait_ms=0 returns immediately while the job keeps running. If the result is still running, call wait — do not run the same command again. wait_ms never kills the remote process.",
       inputSchema: {
         type: "object",
         required: ["command"],
@@ -351,7 +415,7 @@ export function buildTools() {
     {
       name: "get_result",
       description:
-        "Peek this process's live session on the device. wait_ms omitted/0 is an instant snapshot. wait_ms>0 long-polls until completion or the budget expires (max 30s). A still-running reply is not an error and does not mean the process died. Never re-issue run after a still-running reply; poll again with get_result(wait_ms=...) or wait(wait_ms). Do not spam wait_ms=0.",
+        "Snapshot this process's live session. wait_ms omitted/0 is instant; wait_ms>0 long-polls (max 30s). still running is not an error — poll again, do not re-run.",
       inputSchema: {
         type: "object",
         properties: {
@@ -363,7 +427,7 @@ export function buildTools() {
     {
       name: "wait",
       description:
-        "Explicit block: wait until this process's live session finishes or wait_ms elapses (default 30s cap, max 30s). Long-polls get_result. wait_ms never kills the remote command. If still going: a plain still-running notice — not an error. Never re-issue run after that; poll with wait(wait_ms) or get_result(wait_ms). Do not spam wait_ms=0.",
+        "Block until this process's live session finishes or wait_ms elapses (default 30s). Does not kill the remote command. still running → poll again, do not re-run.",
       inputSchema: {
         type: "object",
         properties: {
@@ -529,28 +593,45 @@ export function createOperator({
     return decorateResult(row, deviceId);
   }
 
-  async function waitForResult(deviceId, timeoutMs, trace, corr) {
+  async function waitForResult(deviceId, timeoutMs, trace, corr, hooks) {
     const budget = clampWaitMs(timeoutMs);
     const startedAt = now();
     const deadline = startedAt + budget;
-    let snapshot = await peekResult(deviceId, trace, budget);
+    let snapshot = await peekResult(deviceId, trace, 0);
     if (isFinishedResult(snapshot) || budget <= 0) {
       return isFinishedResult(snapshot) ? snapshot : runningSnapshot(snapshot, corr, deviceId);
     }
     while (now() < deadline) {
       if (isFinishedResult(snapshot)) return snapshot;
+      if (hooks?.isCancelled?.()) return runningSnapshot(snapshot, corr, deviceId);
       const left = deadline - now();
       if (left <= 0) break;
+      hooks?.onProgress?.({ progress: budget - left, total: budget });
       const sl = Math.min(WAIT_POLL_MS, left);
       if (trace) trace.sleep_ms += sl;
       await sleep(sl);
-      snapshot = await peekResult(deviceId, trace, Math.max(0, deadline - now()));
+      snapshot = await peekResult(deviceId, trace, 0);
     }
     if (isFinishedResult(snapshot)) return snapshot;
     return runningSnapshot(snapshot, corr, deviceId);
   }
 
-  async function callTool(name, rawArgs) {
+  async function execOnDevice(deviceId, command, waitMs, trace, hooks) {
+    const body = { device_id: deviceId, command };
+    const t0 = now();
+    const started = await callRpc(trace, "/v1/run", body);
+    const corr = started?.corr;
+    if (waitMs <= 0) {
+      return withDevice({ ...started, corr, status: started?.status ?? "running" }, deviceId);
+    }
+    const finished = decorateResult({ ...started, corr }, deviceId);
+    if (isFinishedResult(started) || isFinishedResult(finished)) return finished;
+    const left = waitMs - Math.max(0, now() - t0);
+    if (left <= 0) return runningSnapshot(started, corr, deviceId);
+    return waitForResult(deviceId, left, trace, corr, hooks);
+  }
+
+  async function callTool(name, rawArgs, hooks = {}) {
     const args = rawArgs && typeof rawArgs === "object" ? rawArgs : {};
     const trace = fleetDev ? newTrace() : null;
 
@@ -594,34 +675,20 @@ export function createOperator({
       if (!command) throw new Error("command required");
       const deviceId = resolveDevice(args);
       const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? RUN_WAIT_DEFAULT_MS);
-      const body = { device_id: deviceId, command };
-      if (waitMs > 0) body.wait_ms = waitMs;
-      const t0 = now();
-      const started = await callRpc(trace, "/v1/run", body);
-      const corr = started?.corr;
-      if (waitMs <= 0) {
-        return withDev(withDevice({ ...started, corr, status: started?.status ?? "running" }, deviceId), trace);
-      }
-      const finished = decorateResult({ ...started, corr }, deviceId);
-      if (isFinishedResult(started) || isFinishedResult(finished)) {
-        return withDev(finished, trace);
-      }
-      const left = waitMs - Math.max(0, now() - t0);
-      if (left <= 0) return withDev(runningSnapshot(started, corr, deviceId), trace);
-      return withDev(await waitForResult(deviceId, left, trace, corr), trace);
+      return withDev(await execOnDevice(deviceId, command, waitMs, trace, hooks), trace);
     }
 
     if (name === "get_result") {
       const deviceId = resolveDevice(args);
       const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? WAIT_DEFAULT_MS);
       if (waitMs <= 0) return withDev(await peekResult(deviceId, trace), trace);
-      return withDev(await waitForResult(deviceId, waitMs, trace), trace);
+      return withDev(await waitForResult(deviceId, waitMs, trace, undefined, hooks), trace);
     }
 
     if (name === "wait") {
       const deviceId = resolveDevice(args);
       const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? WAIT_TOOL_DEFAULT_MS);
-      return withDev(await waitForResult(deviceId, waitMs, trace), trace);
+      return withDev(await waitForResult(deviceId, waitMs, trace, undefined, hooks), trace);
     }
 
     if (name === "read_screen") {
@@ -647,6 +714,8 @@ export function createOperator({
 
   return {
     tools,
+    prompts: buildPrompts(),
+    getPrompt,
     callTool,
     resolveDevice,
     currentDevice,

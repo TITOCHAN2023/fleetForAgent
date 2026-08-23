@@ -10,6 +10,7 @@ export function rejectIfBanned(
   user: { banned?: boolean } | null | undefined,
 ): { error: "banned"; status: 403 } | null;
 export function applyBanFields<T extends BanActorUser>(user: T, now?: number): T;
+export function applyBannedState<T extends BanActorUser>(user: T, banned: boolean, now?: number): T;
 export function oauthCallbackFail(body: { error?: string } | null | undefined): {
   message: string;
   status: number;

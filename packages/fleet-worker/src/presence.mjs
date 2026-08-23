@@ -12,6 +12,15 @@ export function agentVerFromBody(body) {
   return s === "" ? undefined : s;
 }
 
+/** Non-empty arch (GOARCH) from hello / heartbeat. Missing/blank → undefined (keep stored). */
+export function archFromBody(body) {
+  if (!body || typeof body !== "object") return undefined;
+  if (!Object.prototype.hasOwnProperty.call(body, "arch")) return undefined;
+  if (body.arch == null) return undefined;
+  const s = String(body.arch).trim();
+  return s === "" ? undefined : s;
+}
+
 /** Same fields list_computers already returns. Strips userId and anything else. */
 export function computerPublic(row) {
   if (!row || typeof row !== "object" || !row.id) return null;

@@ -7,6 +7,10 @@ workers_dev = false
 #   npx wrangler secret put HUB_TOKEN
 # [vars] must not hold the token.
 #
+# Optional cookie-session ops emails (not HUB_TOKEN / Fleet-OAEP). Empty = no admins:
+#   npx wrangler secret put ADMIN_EMAILS
+# [vars] must not hold emails.
+#
 # aud inside every flt_1 token. Never taken from the Host header.
 [vars]
 HUB_ORIGIN = "https://fleet.ginfo.cc"

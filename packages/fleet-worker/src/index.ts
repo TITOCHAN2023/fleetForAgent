@@ -8,14 +8,17 @@
  * Auth: per-account flt_1 tokens (RSA-2048, aud = HUB_ORIGIN). Operators and
  * agents present Fleet-OAEP wraps, not plaintext Bearer. Optional secret
  * HUB_TOKEN is a super operator for HTTP list/run only — it cannot steal a
- * device WebSocket. Empty HUB_TOKEN = no super user.
+ * device WebSocket. Empty HUB_TOKEN = no super user. Optional ADMIN_EMAILS
+ * is a cookie-session list for /ops on this same Worker. Empty = no admins.
  */
 
 import { handleOAuth } from "./oauth";
-import { rejectIfBanned } from "./ban.mjs";
+import { applyBannedState, rejectIfBanned } from "./ban.mjs";
 import { canClaimDevice, deviceOwnerConflict } from "./bind.mjs";
+import { handleOpsRoute } from "./ops.mjs";
 import {
   agentVerFromBody,
+  archFromBody,
   clampHeartbeatWaitMs,
   computerPublic,
 } from "./presence.mjs";
@@ -45,6 +48,7 @@ export interface Env {
   DEVICE: DurableObjectNamespace;
   FLEET: DurableObjectNamespace;
   HUB_TOKEN?: string;
+  ADMIN_EMAILS?: string;
   HUB_ORIGIN?: string;
   ASSETS?: Fetcher;
   GOOGLE_CLIENT_ID?: string;
@@ -106,6 +110,7 @@ type DeviceRow = {
   online: boolean;
   lastSeen: number;
   agentVer?: string;
+  arch?: string;
   userId?: string;
 };
 
@@ -140,7 +145,13 @@ const CORS: Record<string, string> = {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const path = url.pathname.replace(/\/+$/, "") || "/";
     const hub = url.pathname === "/v1" || url.pathname.startsWith("/v1/");
+
+    if (path === "/ops") {
+      const fleet = env.FLEET.get(env.FLEET.idFromName("fleet"));
+      return dispatchOps(request, env, fleet, "/ops");
+    }
 
     if (!hub) {
       if (!env.ASSETS) return new Response("site missing", { status: 500 });
@@ -191,6 +202,13 @@ export default {
           method: "POST",
         }),
       );
+    }
+
+    if (url.pathname === "/v1/ops/overview" && request.method === "GET") {
+      return dispatchOps(request, env, fleet, "/v1/ops/overview");
+    }
+    if (url.pathname === "/v1/ops/banned" && request.method === "POST") {
+      return dispatchOps(request, env, fleet, "/v1/ops/banned");
     }
 
     if (url.pathname === "/v1/device") {
@@ -406,6 +424,15 @@ export class FleetDO implements DurableObject {
         createdAt: user.tokenAt ?? 0,
       });
     }
+    if (url.pathname === "/ops-catalog") {
+      return json({ users: await this.listOpsUsers(), devices: await this.listOpsDevices() });
+    }
+    if (url.pathname === "/ops-banned" && request.method === "POST") {
+      const body = (await request.json()) as { id?: string; banned?: boolean };
+      const row = await this.setUserBanned(body.id ?? "", body.banned);
+      if (!row) return json({ error: "not found" }, 404);
+      return json(row);
+    }
     if (url.pathname === "/token-issue" && request.method === "POST") {
       const userId = url.searchParams.get("user") ?? "";
       const user = await this.userById(userId);
@@ -535,6 +562,42 @@ export class FleetDO implements DurableObject {
     const email = await this.ctx.storage.get<string>(`id:${userId}`);
     if (!email) return null;
     return (await this.ctx.storage.get<UserRow>(`u:${email}`)) ?? null;
+  }
+
+  async listOpsUsers() {
+    const map = await this.ctx.storage.list<UserRow>({ prefix: "u:" });
+    return [...map.values()]
+      .filter((u) => u && u.id && u.email)
+      .map((u) => ({
+        id: u.id,
+        email: u.email,
+        banned: Boolean(u.banned),
+        hasToken: Boolean(u.tokenHash || u.kid),
+      }));
+  }
+
+  async listOpsDevices() {
+    const map = await this.ctx.storage.list<DeviceRow>({ prefix: "d:" });
+    return [...map.values()]
+      .filter((d) => d && d.id)
+      .map((d) => ({
+        id: d.id,
+        os: d.os,
+        arch: d.arch,
+        agentVer: d.agentVer,
+        online: Boolean(d.online),
+        lastSeen: d.lastSeen,
+        userId: d.userId,
+      }));
+  }
+
+  async setUserBanned(id: string, banned: boolean | undefined) {
+    if (typeof banned !== "boolean") return null;
+    const user = await this.userById(String(id || "").trim());
+    if (!user) return null;
+    applyBannedState(user, banned);
+    await this.ctx.storage.put(`u:${user.email}`, user);
+    return { id: user.id, banned: Boolean(user.banned), bannedAt: user.bannedAt };
   }
 
   async register(email: string, password: string): Promise<Response> {
@@ -748,24 +811,28 @@ export class DeviceDO implements DurableObject {
     if (parsed.type === "hello") {
       const os = String(parsed.body.os ?? att.os ?? "linux");
       const name = String(parsed.body.hostname ?? att.name ?? att.deviceId ?? "device");
+      const arch = archFromBody(parsed.body);
       await this.mark(att.deviceId ?? "unknown", {
         name,
         os,
         online: true,
         agentVer: String(parsed.body.agent_ver ?? ""),
         userId: att.userId,
+        ...(arch !== undefined ? { arch } : {}),
       });
       return;
     }
 
     if (parsed.type === "ping" || parsed.type === "heartbeat") {
       const agentVer = agentVerFromBody(parsed.body);
+      const arch = archFromBody(parsed.body);
       await this.mark(att.deviceId ?? "unknown", {
         name: att.name ?? att.deviceId ?? "device",
         os: att.os ?? "linux",
         online: true,
         userId: att.userId,
         ...(agentVer !== undefined ? { agentVer } : {}),
+        ...(arch !== undefined ? { arch } : {}),
       });
       this.noteBeat();
       ws.send(JSON.stringify(envelope("pong", {}, parsed.id)));
@@ -871,7 +938,7 @@ export class DeviceDO implements DurableObject {
 
   private async mark(
     id: string,
-    extra: { name: string; os: string; online: boolean; agentVer?: string; userId?: string },
+    extra: { name: string; os: string; online: boolean; agentVer?: string; arch?: string; userId?: string },
   ): Promise<boolean> {
     const row: DeviceRow = {
       id,
@@ -880,6 +947,7 @@ export class DeviceDO implements DurableObject {
       online: extra.online,
       lastSeen: Date.now(),
       agentVer: extra.agentVer,
+      arch: extra.arch,
       userId: extra.userId,
     };
     const res = await this.fleet().fetch(
@@ -891,6 +959,51 @@ export class DeviceDO implements DurableObject {
     );
     return res.ok;
   }
+}
+
+async function resolveSession(request: Request, fleet: DurableObjectStub): Promise<Actor | null> {
+  const res = await fleet.fetch(new Request("https://fleet/resolve", { headers: request.headers }));
+  const sess = (await res.json()) as Actor;
+  return sess.id ? sess : null;
+}
+
+async function putOpsBanned(fleet: DurableObjectStub, id: string, banned: boolean) {
+  const res = await fleet.fetch(
+    new Request("https://fleet/ops-banned", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id, banned }),
+    }),
+  );
+  if (!res.ok) return null;
+  return (await res.json()) as { id: string; banned: boolean };
+}
+
+async function dispatchOps(
+  request: Request,
+  env: Env,
+  fleet: DurableObjectStub,
+  path: string,
+): Promise<Response> {
+  const sess = await resolveSession(request, fleet);
+  let catalog: { users?: unknown[]; devices?: unknown[] } = {};
+  if (path !== "/ops") {
+    const res = await fleet.fetch(new Request("https://fleet/ops-catalog"));
+    catalog = (await res.json()) as { users?: unknown[]; devices?: unknown[] };
+  }
+  return handleOpsRoute({
+    path,
+    method: request.method,
+    actor: sess,
+    adminEmails: env.ADMIN_EMAILS,
+    users: catalog.users,
+    devices: catalog.devices,
+    body:
+      path === "/v1/ops/banned"
+        ? ((await request.json().catch(() => ({}))) as { id?: string; banned?: boolean })
+        : undefined,
+    setBanned: (id, banned) => putOpsBanned(fleet, id, banned),
+  });
 }
 
 function configuredOrigin(env: Env): string {
@@ -926,9 +1039,8 @@ async function resolveActor(
   const auth = parseAuthorization(request.headers.get("authorization"));
   if (need && auth.kind === "bearer" && auth.token === need) return { actor: { id: "*", super: true } };
 
-  const sessRes = await fleet.fetch(new Request("https://fleet/resolve", { headers: request.headers }));
-  const sess = (await sessRes.json()) as Actor;
-  if (sess.id) {
+  const sess = await resolveSession(request, fleet);
+  if (sess) {
     if (sess.banned) return { error: "banned", status: 403 };
     return { actor: sess };
   }

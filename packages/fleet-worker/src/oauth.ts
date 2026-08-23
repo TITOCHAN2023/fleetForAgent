@@ -1,5 +1,6 @@
 /** Google / X OAuth for the public site. Not the Grok sandbox broker. */
 
+import { oauthCallbackFail } from "./ban.mjs";
 import { googleProfileEmail, xAccountEmail } from "./oauth-account.mjs";
 
 export type OAuthEnv = {
@@ -163,6 +164,11 @@ async function finishUser(env: OAuthEnv, email: string, provider: string): Promi
       body: JSON.stringify({ email, provider }),
     }),
   );
+  if (!res.ok) {
+    const payload = (await res.json().catch(() => ({}))) as { error?: string };
+    const failPage = oauthCallbackFail(payload);
+    return fail(failPage.message, failPage.status);
+  }
   const headers = new Headers(res.headers);
   headers.set("location", "/");
   return new Response(null, { status: 302, headers });
@@ -186,9 +192,9 @@ async function takePending(env: OAuthEnv, state: string): Promise<Pending | null
   return row;
 }
 
-function fail(msg: string): Response {
+function fail(msg: string, status = 400): Response {
   const html = `<!doctype html><meta charset="utf-8"><pre>${escapeHtml(msg)}</pre><p><a href="/">返回</a></p>`;
-  return new Response(html, { status: 400, headers: { "content-type": "text/html; charset=utf-8" } });
+  return new Response(html, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
 function escapeHtml(s: string) {

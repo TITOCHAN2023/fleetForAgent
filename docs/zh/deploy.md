@@ -65,9 +65,12 @@ npx wrangler deploy
 
 ```bash
 npx wrangler secret put HUB_TOKEN
+npx wrangler secret put ADMIN_EMAILS
 ```
 
-设了之后，设备连接和控制面调用都要带：
+`ADMIN_EMAILS` 是登录邮箱列表（逗号或空白分隔），只有这些邮箱能打开同一 Worker 上的 `/ops`。空 / 未设 = 没有管理员。这不是 `HUB_TOKEN`。不要把邮箱写进 `[vars]`。
+
+设了 `HUB_TOKEN` 之后，设备连接和控制面调用都要带：
 
 ```
 Authorization: Bearer <HUB_TOKEN>

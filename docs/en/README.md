@@ -33,6 +33,8 @@ Explainer video: [architecture.mp4](../media/architecture.mp4)
 FLEET_URL=https://fleet.ginfo.cc FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
 ```
 
+The same Worker can serve `/ops` (usage, last-seen freshness, Ban) for emails in the `ADMIN_EMAILS` secret. Empty secret = no admins. Not a separate Worker. Ban cannot operate machines.
+
 Details: [deploy.md](deploy.md) · [auth.md](auth.md)
 
 ## Local is a CLI

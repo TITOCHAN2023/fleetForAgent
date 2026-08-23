@@ -7,6 +7,7 @@ import {
   HEARTBEAT_WAIT_DEFAULT_MS,
   HEARTBEAT_WAIT_MAX_MS,
   agentVerFromBody,
+  archFromBody,
   clampHeartbeatWaitMs,
   computerPublic,
 } from "./src/presence.mjs";
@@ -24,6 +25,16 @@ test("heartbeat without version is compat — leave stored agentVer alone", () =
   assert.equal(agentVerFromBody({ agent_ver: "" }), undefined);
   assert.equal(agentVerFromBody({ agent_ver: "   " }), undefined);
   assert.equal(agentVerFromBody({ agent_ver: null }), undefined);
+});
+
+test("hello arch is stored; heartbeat without arch keeps the stored value", () => {
+  assert.equal(archFromBody({ arch: "arm64" }), "arm64");
+  assert.equal(archFromBody({ arch: " amd64 " }), "amd64");
+  assert.equal(archFromBody({}), undefined);
+  assert.equal(archFromBody(undefined), undefined);
+  assert.equal(archFromBody({ arch: "" }), undefined);
+  assert.equal(archFromBody({ arch: "   " }), undefined);
+  assert.equal(archFromBody({ arch: null }), undefined);
 });
 
 test("computerPublic is the list_computers row and never leaks userId or IPs", () => {

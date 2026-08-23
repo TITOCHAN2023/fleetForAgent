@@ -51,3 +51,9 @@ Agents and MCP do not send that string as `Authorization: Bearer`. They:
 Resetting the token deletes the old keypair and closes every live device WebSocket for that account (`1008 token reset`). Legacy `flt_` hex Bearer is rejected with an English `HIGH_SEC` error: update the agent / MCP client, then issue a new token.
 
 `HUB_ORIGIN` is set in `packages/fleet-worker/wrangler.toml` `[vars]`. Optional `HUB_TOKEN` remains HTTP-only super for list/run; it cannot steal a device WebSocket.
+
+Optional `ADMIN_EMAILS` is a different secret: logged-in session emails that may open `/ops` on this Worker. Empty = no admins. Not `HUB_TOKEN` / `actor.super`.
+
+```bash
+npx wrangler secret put ADMIN_EMAILS
+```

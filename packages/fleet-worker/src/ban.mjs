@@ -1,4 +1,4 @@
-/** Out-of-band `banned` / `bannedAt` on the user row. This worker enforces the flag; it does not set it. */
+/** User-row `banned` / `bannedAt`. Login and invoke return 403. Ops may set the flag; Ban cannot operate machines. */
 
 export function isBanned(user) {
   return Boolean(user && user.banned);
@@ -12,6 +12,12 @@ export function rejectIfBanned(user) {
 export function applyBanFields(user, now = Date.now()) {
   user.banned = true;
   if (user.bannedAt == null) user.bannedAt = now;
+  return user;
+}
+
+export function applyBannedState(user, banned, now = Date.now()) {
+  if (banned) return applyBanFields(user, now);
+  user.banned = false;
   return user;
 }
 

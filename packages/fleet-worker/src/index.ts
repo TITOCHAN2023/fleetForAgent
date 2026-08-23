@@ -12,10 +12,12 @@
  */
 
 import { handleOAuth } from "./oauth";
-import { rejectIfBanned } from "./ban.mjs";
+import { applyBannedState, rejectIfBanned } from "./ban.mjs";
 import { canClaimDevice, deviceOwnerConflict } from "./bind.mjs";
+import { handleOpsRoute, isOpsAdmin, opsNotFound } from "./ops.mjs";
 import {
   agentVerFromBody,
+  archFromBody,
   clampHeartbeatWaitMs,
   computerPublic,
 } from "./presence.mjs";
@@ -45,6 +47,7 @@ export interface Env {
   DEVICE: DurableObjectNamespace;
   FLEET: DurableObjectNamespace;
   HUB_TOKEN?: string;
+  ADMIN_EMAILS?: string;
   HUB_ORIGIN?: string;
   ASSETS?: Fetcher;
   GOOGLE_CLIENT_ID?: string;
@@ -106,6 +109,7 @@ type DeviceRow = {
   online: boolean;
   lastSeen: number;
   agentVer?: string;
+  arch?: string;
   userId?: string;
 };
 
@@ -140,7 +144,13 @@ const CORS: Record<string, string> = {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const path = url.pathname.replace(/\/+$/, "") || "/";
     const hub = url.pathname === "/v1" || url.pathname.startsWith("/v1/");
+
+    if (path === "/ops") {
+      const fleet = env.FLEET.get(env.FLEET.idFromName("fleet"));
+      return dispatchOps(request, env, fleet, "/ops");
+    }
 
     if (!hub) {
       if (!env.ASSETS) return new Response("site missing", { status: 500 });
@@ -191,6 +201,13 @@ export default {
           method: "POST",
         }),
       );
+    }
+
+    if (url.pathname === "/v1/ops/overview" && request.method === "GET") {
+      return dispatchOps(request, env, fleet, "/v1/ops/overview");
+    }
+    if (url.pathname === "/v1/ops/banned" && request.method === "POST") {
+      return dispatchOps(request, env, fleet, "/v1/ops/banned");
     }
 
     if (url.pathname === "/v1/device") {
@@ -406,6 +423,15 @@ export class FleetDO implements DurableObject {
         createdAt: user.tokenAt ?? 0,
       });
     }
+    if (url.pathname === "/ops-catalog") {
+      return json({ users: await this.listOpsUsers(), devices: await this.listOpsDevices() });
+    }
+    if (url.pathname === "/ops-banned" && request.method === "POST") {
+      const body = (await request.json()) as { id?: string; banned?: boolean };
+      const row = await this.setUserBanned(body.id ?? "", body.banned);
+      if (!row) return json({ error: "not found" }, 404);
+      return json(row);
+    }
     if (url.pathname === "/token-issue" && request.method === "POST") {
       const userId = url.searchParams.get("user") ?? "";
       const user = await this.userById(userId);
@@ -535,6 +561,42 @@ export class FleetDO implements DurableObject {
     const email = await this.ctx.storage.get<string>(`id:${userId}`);
     if (!email) return null;
     return (await this.ctx.storage.get<UserRow>(`u:${email}`)) ?? null;
+  }
+
+  async listOpsUsers() {
+    const map = await this.ctx.storage.list<UserRow>({ prefix: "u:" });
+    return [...map.values()]
+      .filter((u) => u && u.id && u.email)
+      .map((u) => ({
+        id: u.id,
+        email: u.email,
+        banned: Boolean(u.banned),
+        hasToken: Boolean(u.tokenHash || u.kid),
+      }));
+  }
+
+  async listOpsDevices() {
+    const map = await this.ctx.storage.list<DeviceRow>({ prefix: "d:" });
+    return [...map.values()]
+      .filter((d) => d && d.id)
+      .map((d) => ({
+        id: d.id,
+        os: d.os,
+        arch: d.arch,
+        agentVer: d.agentVer,
+        online: Boolean(d.online),
+        lastSeen: d.lastSeen,
+        userId: d.userId,
+      }));
+  }
+
+  async setUserBanned(id: string, banned: boolean | undefined) {
+    if (typeof banned !== "boolean") return null;
+    const user = await this.userById(String(id || "").trim());
+    if (!user) return null;
+    applyBannedState(user, banned);
+    await this.ctx.storage.put(`u:${user.email}`, user);
+    return { id: user.id, banned: Boolean(user.banned), bannedAt: user.bannedAt };
   }
 
   async register(email: string, password: string): Promise<Response> {
@@ -748,24 +810,28 @@ export class DeviceDO implements DurableObject {
     if (parsed.type === "hello") {
       const os = String(parsed.body.os ?? att.os ?? "linux");
       const name = String(parsed.body.hostname ?? att.name ?? att.deviceId ?? "device");
+      const arch = archFromBody(parsed.body);
       await this.mark(att.deviceId ?? "unknown", {
         name,
         os,
         online: true,
         agentVer: String(parsed.body.agent_ver ?? ""),
         userId: att.userId,
+        ...(arch !== undefined ? { arch } : {}),
       });
       return;
     }
 
     if (parsed.type === "ping" || parsed.type === "heartbeat") {
       const agentVer = agentVerFromBody(parsed.body);
+      const arch = archFromBody(parsed.body);
       await this.mark(att.deviceId ?? "unknown", {
         name: att.name ?? att.deviceId ?? "device",
         os: att.os ?? "linux",
         online: true,
         userId: att.userId,
         ...(agentVer !== undefined ? { agentVer } : {}),
+        ...(arch !== undefined ? { arch } : {}),
       });
       this.noteBeat();
       ws.send(JSON.stringify(envelope("pong", {}, parsed.id)));
@@ -871,7 +937,7 @@ export class DeviceDO implements DurableObject {
 
   private async mark(
     id: string,
-    extra: { name: string; os: string; online: boolean; agentVer?: string; userId?: string },
+    extra: { name: string; os: string; online: boolean; agentVer?: string; arch?: string; userId?: string },
   ): Promise<boolean> {
     const row: DeviceRow = {
       id,
@@ -880,6 +946,7 @@ export class DeviceDO implements DurableObject {
       online: extra.online,
       lastSeen: Date.now(),
       agentVer: extra.agentVer,
+      arch: extra.arch,
       userId: extra.userId,
     };
     const res = await this.fleet().fetch(
@@ -891,6 +958,56 @@ export class DeviceDO implements DurableObject {
     );
     return res.ok;
   }
+}
+
+async function dispatchOps(
+  request: Request,
+  env: Env,
+  fleet: DurableObjectStub,
+  path: string,
+): Promise<Response> {
+  const resolved = await resolveActor(request, env, fleet);
+  const actor = "actor" in resolved ? resolved.actor : undefined;
+  if (!isOpsAdmin(actor, env.ADMIN_EMAILS)) return opsNotFound(path === "/ops" ? "html" : "json");
+  if (path === "/v1/ops/overview") {
+    const catalogRes = await fleet.fetch(new Request("https://fleet/ops-catalog"));
+    const catalog = (await catalogRes.json()) as { users?: unknown[]; devices?: unknown[] };
+    return handleOpsRoute({
+      path,
+      method: request.method,
+      actor,
+      adminEmails: env.ADMIN_EMAILS,
+      users: catalog.users,
+      devices: catalog.devices,
+    });
+  }
+  if (path === "/v1/ops/banned") {
+    const body = (await request.json().catch(() => ({}))) as { id?: string; banned?: boolean };
+    return handleOpsRoute({
+      path,
+      method: request.method,
+      actor,
+      adminEmails: env.ADMIN_EMAILS,
+      body,
+      setBanned: async (id, banned) => {
+        const res = await fleet.fetch(
+          new Request("https://fleet/ops-banned", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ id, banned }),
+          }),
+        );
+        if (!res.ok) return null;
+        return (await res.json()) as { id: string; banned: boolean };
+      },
+    });
+  }
+  return handleOpsRoute({
+    path,
+    method: request.method,
+    actor,
+    adminEmails: env.ADMIN_EMAILS,
+  });
 }
 
 function configuredOrigin(env: Env): string {

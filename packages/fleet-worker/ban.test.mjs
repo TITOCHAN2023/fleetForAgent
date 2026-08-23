@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { applyBanFields, isBanned, oauthCallbackFail, rejectIfBanned } from "./src/ban.mjs";
+import { applyBanFields, applyBannedState, isBanned, oauthCallbackFail, rejectIfBanned } from "./src/ban.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -92,6 +92,15 @@ test("banned OAuth callback is HTML fail, not raw JSON", () => {
   assert.deepEqual(oauthCallbackFail({ error: "email required" }), { message: "email required", status: 400 });
   assert.deepEqual(oauthCallbackFail({}), { message: "oauth failed", status: 400 });
   assert.deepEqual(oauthCallbackFail(null), { message: "oauth failed", status: 400 });
+});
+
+test("applyBannedState can clear the flag without touching machines", () => {
+  const user = applyBannedState({ id: "user-ada", email: "ada@example.com" }, true, 1_700_000_000_000);
+  assert.equal(user.banned, true);
+  applyBannedState(user, false);
+  assert.equal(user.banned, false);
+  assert.equal(user.bannedAt, 1_700_000_000_000);
+  assert.deepEqual(rejectIfBanned(user), null);
 });
 
 test("missing or unbanned rows are not rejected", () => {

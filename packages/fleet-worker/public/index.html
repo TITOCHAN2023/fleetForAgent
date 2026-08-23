@@ -45,7 +45,7 @@
       button { cursor: pointer; }
       #app { min-height: 100svh; }
       .top { position: sticky; top: 0; z-index: 20; display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
-        border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 80%, transparent); backdrop-filter: blur(12px);
+        border-bottom: 1px solid color-mix(in srgb, var(--border) 88%, transparent); background: color-mix(in srgb, var(--bg) 74%, transparent); backdrop-filter: saturate(185%) blur(18px);
         padding: 12px 20px; }
       .brand { font-weight: 600; letter-spacing: -0.03em; display: inline-flex; align-items: center; gap: 8px; }
       .brand img { width: 28px; height: 28px; }
@@ -55,9 +55,12 @@
       .gh { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; color: var(--fg); border-radius: 8px; flex-shrink: 0; }
       .gh:hover { background: var(--elevated); color: var(--fg); }
       .gh svg { width: 20px; height: 20px; display: block; }
-      .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; padding: 2px; gap: 0; }
-      .seg button { height: 32px; padding: 0 10px; border: 0; background: transparent; color: var(--muted); border-radius: 999px; font-size: 12px; }
-      .seg button.on { background: var(--fg); color: var(--bg); }
+      .seg { --seg-x: 0px; --seg-w: 0px; position: relative; display: inline-grid; grid-auto-flow: column; align-items: center; border: 1px solid color-mix(in srgb, var(--border) 85%, transparent); border-radius: 999px; padding: 2px; gap: 0; overflow: hidden; isolation: isolate; background: color-mix(in srgb, var(--surface) 38%, transparent); backdrop-filter: saturate(180%) blur(14px); }
+      .seg .seg-thumb { position: absolute; top: 2px; left: 2px; z-index: 0; width: var(--seg-w); height: calc(100% - 4px); border-radius: 999px; transform: translateX(var(--seg-x)); transition: transform 240ms cubic-bezier(.22,1,.36,1), width 240ms cubic-bezier(.22,1,.36,1); background: color-mix(in srgb, var(--surface) 84%, var(--fg) 16%); box-shadow: 0 1px 0 rgba(255,255,255,.35) inset, 0 10px 24px rgba(0,0,0,.12); pointer-events: none; }
+      html[data-theme="dark"] .seg .seg-thumb { box-shadow: 0 1px 0 rgba(255,255,255,.09) inset, 0 10px 22px rgba(0,0,0,.35); background: color-mix(in srgb, var(--surface) 88%, var(--fg) 12%); }
+      .seg button { position: relative; z-index: 1; height: 32px; padding: 0 10px; border: 0; background: transparent; color: var(--muted); border-radius: 999px; font-size: 12px; transition: color 150ms ease, transform 140ms ease, opacity 140ms ease; }
+      .seg button.on { color: var(--fg); }
+      .seg button:active { transform: scale(.98); opacity: .9; }
       .wrap { max-width: 960px; margin: 0 auto; padding: 64px 20px 80px; }
       .kicker { font-size: 13px; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }
       h1 { font-size: clamp(32px, 6vw, 56px); font-weight: 600; letter-spacing: -0.04em; line-height: 1.1; margin: 16px 0 0; max-width: 16ch; }
@@ -66,8 +69,9 @@
       .lead { margin-top: 20px; max-width: 40em; color: var(--muted); font-size: 16px; }
       .stack { margin-top: 32px; display: flex; flex-direction: column; gap: 10px; max-width: 22rem; }
       .btn { height: 44px; padding: 0 18px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface);
-        color: var(--fg); display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+        color: var(--fg); display: inline-flex; align-items: center; justify-content: center; gap: 8px; transition: transform 150ms ease, opacity 150ms ease, background-color 170ms ease; }
       .btn:hover { background: var(--elevated); }
+      .btn:active { transform: scale(.98); opacity: .92; }
       .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
       .btn.primary:hover { opacity: 0.9; background: var(--accent); }
       .btn.ghost { background: transparent; border: 0; color: var(--muted); height: auto; padding: 8px; }
@@ -114,6 +118,9 @@
       .help li { margin: 8px 0; }
       .dl { display: grid; gap: 12px; }
       @media (min-width: 800px) { .dl { grid-template-columns: 1fr 1fr; } }
+      @media (prefers-reduced-motion: reduce) {
+        .seg .seg-thumb, .seg button, .btn { transition: none !important; transform: none !important; }
+      }
     </style>
   </head>
   <body>
@@ -306,6 +313,7 @@
       }
       function langBar() {
         return `<div class="seg" role="group" aria-label="Language">
+          <span class="seg-thumb" aria-hidden="true"></span>
           <button type="button" data-loc="en" class="${state.locale==="en"?"on":""}">EN</button>
           <button type="button" data-loc="zh" class="${state.locale==="zh"?"on":""}">中文</button>
         </div>`;
@@ -313,10 +321,21 @@
       function themeBar() {
         const p = state.themePref;
         return `<div class="seg" role="group" aria-label="Theme">
+          <span class="seg-thumb" aria-hidden="true"></span>
           <button type="button" data-theme-set="light" class="${p==="light"?"on":""}">${t("themeL")}</button>
           <button type="button" data-theme-set="dark" class="${p==="dark"?"on":""}">${t("themeD")}</button>
           <button type="button" data-theme-set="system" class="${p==="system"?"on":""}">${t("themeS")}</button>
         </div>`;
+      }
+      function syncSegments() {
+        document.querySelectorAll(".seg").forEach((seg) => {
+          const active = seg.querySelector("button.on") || seg.querySelector("button");
+          if (!active) return;
+          const s = seg.getBoundingClientRect();
+          const b = active.getBoundingClientRect();
+          seg.style.setProperty("--seg-x", (b.left - s.left) + "px");
+          seg.style.setProperty("--seg-w", b.width + "px");
+        });
       }
       function chrome(extra) {
         return `<header class="top">
@@ -533,7 +552,9 @@ node packages/fleet-tool/index.mjs list</pre>
           state.locale = b.dataset.loc; localStorage.setItem("fleet-locale", state.locale); render();
         });
         document.querySelectorAll("[data-theme-set]").forEach((b) => b.onclick = () => {
-          applyTheme(b.dataset.themeSet); render();
+          applyTheme(b.dataset.themeSet);
+          document.querySelectorAll("[data-theme-set]").forEach((x) => x.classList.toggle("on", x.dataset.themeSet === state.themePref));
+          syncSegments();
         });
         document.querySelectorAll("[data-go]").forEach((b) => b.onclick = (e) => {
           e.preventDefault();
@@ -562,10 +583,12 @@ node packages/fleet-tool/index.mjs list</pre>
         });
         document.querySelectorAll("[data-copy]").forEach((b) => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy));
         document.querySelectorAll("[data-copy-secret]").forEach((b) => b.onclick = () => { if (state.secret) navigator.clipboard.writeText(state.secret); });
+        requestAnimationFrame(syncSegments);
       }
       window.addEventListener("popstate", render);
+      window.addEventListener("resize", syncSegments);
       window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-        if (state.themePref === "system") { applyTheme("system"); render(); }
+        if (state.themePref === "system") { applyTheme("system"); syncSegments(); }
       });
       boot();
     </script>

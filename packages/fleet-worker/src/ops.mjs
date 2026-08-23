@@ -275,14 +275,17 @@ export function opsPageHtml() {
       a { color: inherit; text-decoration: none; }
       button { cursor: pointer; }
       .top { position: sticky; top: 0; z-index: 20; display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
-        border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 80%, transparent); backdrop-filter: blur(12px);
+        border-bottom: 1px solid color-mix(in srgb, var(--border) 88%, transparent); background: color-mix(in srgb, var(--bg) 74%, transparent); backdrop-filter: saturate(185%) blur(18px);
         padding: 12px 20px; }
       .brand { font-weight: 600; letter-spacing: -0.03em; display: inline-flex; align-items: center; gap: 8px; }
       .brand img { width: 28px; height: 28px; }
       .spacer { flex: 1; }
-      .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; padding: 2px; gap: 0; }
-      .seg button { height: 32px; padding: 0 10px; border: 0; background: transparent; color: var(--muted); border-radius: 999px; font-size: 12px; }
-      .seg button.on { background: var(--fg); color: var(--bg); }
+      .seg { --seg-x: 0px; --seg-w: 0px; position: relative; display: inline-grid; grid-auto-flow: column; align-items: center; border: 1px solid color-mix(in srgb, var(--border) 85%, transparent); border-radius: 999px; padding: 2px; gap: 0; overflow: hidden; isolation: isolate; background: color-mix(in srgb, var(--surface) 38%, transparent); backdrop-filter: saturate(180%) blur(14px); }
+      .seg .seg-thumb { position: absolute; top: 2px; left: 2px; z-index: 0; width: var(--seg-w); height: calc(100% - 4px); border-radius: 999px; transform: translateX(var(--seg-x)); transition: transform 240ms cubic-bezier(.22,1,.36,1), width 240ms cubic-bezier(.22,1,.36,1); background: color-mix(in srgb, var(--surface) 84%, var(--fg) 16%); box-shadow: 0 1px 0 rgba(255,255,255,.35) inset, 0 10px 24px rgba(0,0,0,.12); pointer-events: none; }
+      html[data-theme="dark"] .seg .seg-thumb { box-shadow: 0 1px 0 rgba(255,255,255,.09) inset, 0 10px 22px rgba(0,0,0,.35); background: color-mix(in srgb, var(--surface) 88%, var(--fg) 12%); }
+      .seg button { position: relative; z-index: 1; height: 32px; padding: 0 10px; border: 0; background: transparent; color: var(--muted); border-radius: 999px; font-size: 12px; transition: color 150ms ease, transform 140ms ease, opacity 140ms ease; }
+      .seg button.on { color: var(--fg); }
+      .seg button:active { transform: scale(.98); opacity: .9; }
       .wrap { max-width: 960px; margin: 0 auto; padding: 64px 20px 96px; }
       .kicker { font-size: 13px; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }
       h1 { font-size: clamp(32px, 6vw, 48px); font-weight: 600; letter-spacing: -0.04em; line-height: 1.1; margin: 16px 0 0; }
@@ -298,8 +301,9 @@ export function opsPageHtml() {
       .grid-2 { display: grid; gap: 12px; }
       .stat { font-size: 28px; font-weight: 600; letter-spacing: -0.04em; margin-top: 8px; }
       .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: space-between; }
-      .btn { height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); }
+      .btn { height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); transition: transform 150ms ease, opacity 150ms ease, background-color 170ms ease; }
       .btn:hover { background: var(--elevated); }
+      .btn:active { transform: scale(.98); opacity: .92; }
       .btn.warn { color: var(--warn); }
       .dot { width: 8px; height: 8px; border-radius: 99px; background: var(--subtle); display: inline-block; }
       .dot.on { background: var(--ok); }
@@ -308,6 +312,9 @@ export function opsPageHtml() {
       .machine { border: 1px solid var(--border); border-radius: 12px; padding: 16px; background: var(--surface); }
       code { font-family: var(--mono); font-size: 12px; }
       .kv { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; padding: 4px 0; }
+      @media (prefers-reduced-motion: reduce) {
+        .seg .seg-thumb, .seg button, .btn { transition: none !important; transform: none !important; }
+      }
     </style>
   </head>
   <body>
@@ -380,6 +387,7 @@ export function opsPageHtml() {
       function themeBar() {
         const p = state.themePref;
         return '<div class="seg" role="group" aria-label="Theme">'
+          + '<span class="seg-thumb" aria-hidden="true"></span>'
           + '<button type="button" data-theme-set="light" class="'+(p==="light"?"on":"")+'">'+t("themeL")+'</button>'
           + '<button type="button" data-theme-set="dark" class="'+(p==="dark"?"on":"")+'">'+t("themeD")+'</button>'
           + '<button type="button" data-theme-set="system" class="'+(p==="system"?"on":"")+'">'+t("themeS")+'</button>'
@@ -387,9 +395,20 @@ export function opsPageHtml() {
       }
       function langBar() {
         return '<div class="seg" role="group" aria-label="Language">'
+          + '<span class="seg-thumb" aria-hidden="true"></span>'
           + '<button type="button" data-loc="en" class="'+(state.locale==="en"?"on":"")+'">EN</button>'
           + '<button type="button" data-loc="zh" class="'+(state.locale==="zh"?"on":"")+'">中文</button>'
           + "</div>";
+      }
+      function syncSegments() {
+        document.querySelectorAll(".seg").forEach(function (seg) {
+          var active = seg.querySelector("button.on") || seg.querySelector("button");
+          if (!active) return;
+          var s = seg.getBoundingClientRect();
+          var b = active.getBoundingClientRect();
+          seg.style.setProperty("--seg-x", (b.left - s.left) + "px");
+          seg.style.setProperty("--seg-w", b.width + "px");
+        });
       }
       function chrome() {
         return '<header class="top">'
@@ -478,7 +497,13 @@ export function opsPageHtml() {
           b.onclick = function () { state.locale = b.dataset.loc; localStorage.setItem("fleet-locale", state.locale); render(); };
         });
         document.querySelectorAll("[data-theme-set]").forEach(function (b) {
-          b.onclick = function () { applyTheme(b.dataset.themeSet); render(); };
+          b.onclick = function () {
+            applyTheme(b.dataset.themeSet);
+            document.querySelectorAll("[data-theme-set]").forEach(function (x) {
+              x.classList.toggle("on", x.dataset.themeSet === state.themePref);
+            });
+            syncSegments();
+          };
         });
         document.querySelectorAll("[data-ban]").forEach(function (b) {
           b.onclick = async function () {
@@ -497,7 +522,9 @@ export function opsPageHtml() {
             } catch (e) { state.err = e.message || String(e); render(); }
           };
         });
+        requestAnimationFrame(syncSegments);
       }
+      window.addEventListener("resize", syncSegments);
       async function load() {
         applyTheme(state.themePref);
         state.loading = true;
@@ -522,7 +549,7 @@ export function opsPageHtml() {
         render();
       }
       window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
-        if (state.themePref === "system") { applyTheme("system"); render(); }
+        if (state.themePref === "system") { applyTheme("system"); syncSegments(); }
       });
       load();
     </script>

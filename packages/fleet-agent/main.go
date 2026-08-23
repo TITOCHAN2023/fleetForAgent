@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -29,8 +28,6 @@ const (
 
 //go:embed ui/index.html
 var uiHTML []byte
-
-var destructive = regexp.MustCompile(`(?i)rm\s+-rf|del\s+/f|format\s+c:|shutdown|reboot|mkfs|diskpart`)
 
 type Permit string
 
@@ -574,7 +571,7 @@ func (a *Agent) handleRun(ctx context.Context, c *websocket.Conn, corr, cmd, fin
 		_ = wsjson.Write(ctx, c, resultEnv(corr, false, code, "", msg))
 		return
 	}
-	if destructive.MatchString(cmd) {
+	if devicePolicyBlocked(cmd) {
 		a.log("error", "blocked destructive: "+cmd)
 		a.mu.Unlock()
 		_ = wsjson.Write(ctx, c, resultEnv(corr, false, 126, "", "fleet: refused by device policy"))

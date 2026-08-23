@@ -4,23 +4,14 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/creack/pty"
 )
 
 func liveShellEnv() []string {
-	out := make([]string, 0, len(os.Environ())+1)
-	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "TERM=") || strings.HasPrefix(e, "NO_COLOR=") || strings.HasPrefix(e, "FORCE_COLOR=") {
-			continue
-		}
-		out = append(out, e)
-	}
-	return append(out, "TERM=xterm-256color")
+	return runCommandEnv()
 }
 
 // startLiveShell opens an interactive login shell on a real PTY. Stdin,

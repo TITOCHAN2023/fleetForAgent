@@ -1,3 +1,4 @@
+import { devicePolicyBlocked } from "./policy";
 import type { OsKind } from "./protocol";
 import {
   HUB,
@@ -23,7 +24,6 @@ export type ShellResult = {
 };
 
 const REFUSED = [
-  "rm",
   "rmdir",
   "shutdown",
   "reboot",
@@ -239,15 +239,17 @@ export function runSimulated(device: ShellDevice, raw: string): ShellResult {
   const joined = args.join(" ");
   if (
     REFUSED.includes(bin) ||
-    command.includes("rm -rf") ||
-    command.toLowerCase().includes("del /f") ||
-    command.toLowerCase().includes("format c:")
+    devicePolicyBlocked(command)
   ) {
     return {
       exitCode: 126,
       stdout: "",
       stderr: "fleet: refused by device policy (destructive commands are blocked in v1)",
     };
+  }
+
+  if (bin === "rm") {
+    return { exitCode: 0, stdout: "", stderr: "" };
   }
 
   if (bin === "help" || bin === "fleet") {

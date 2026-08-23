@@ -87,6 +87,8 @@ type pane struct {
 	seq               int
 	stdin             io.WriteCloser
 	cmd               *exec.Cmd
+	screen            *vtScreen
+	rawOut            string
 	dirty             bool
 }
 
@@ -115,10 +117,10 @@ func (s *supervisor) spawn(corr, command string) (*pane, error) {
 }
 
 func (s *supervisor) spawnFor(fingerprint, corr, command string) (*pane, error) {
-	// Live login PTY is POSIX-only (cwd/env persist across jobs).
-	// Windows keeps cmd /C oneshot so old clients and this agent stay compatible.
+	// Each run is its own process (shell -c / cmd /C). Completion is the
+	// child exit code, not PS1 on a shared interactive login PTY.
 	if runtime.GOOS != "windows" {
-		return s.enqueueLiveFor(fingerprint, corr, command)
+		return s.spawnOneshotPTY(fingerprint, corr, command)
 	}
 	return s.spawnOneshotFor(fingerprint, corr, command)
 }
@@ -150,7 +152,6 @@ func (s *supervisor) liveFor(fp string) *liveShell {
 
 func (s *supervisor) killAllLive() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.live != nil {
 		s.live.kill()
 	}
@@ -159,11 +160,27 @@ func (s *supervisor) killAllLive() {
 			sl.live.kill()
 		}
 	}
+	var procs []*exec.Cmd
+	for _, p := range s.panes {
+		if p == nil {
+			continue
+		}
+		p.mu.Lock()
+		if p.cmd != nil && p.cmd.Process != nil {
+			procs = append(procs, p.cmd)
+		}
+		p.mu.Unlock()
+	}
+	s.mu.Unlock()
+	for _, cmd := range procs {
+		killLiveProcess(cmd.Process)
+	}
 }
 
 func (s *supervisor) spawnOneshotFor(fingerprint, corr, command string) (*pane, error) {
 	ctx := context.Background()
 	cmd := exec.CommandContext(ctx, "cmd", "/C", command)
+	cmd.Env = runCommandEnv()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -286,6 +303,15 @@ func (s *supervisor) paneSnapshot(p *pane) (text string, running bool, code, seq
 	if p == nil {
 		return "", false, 0, 0, 0, 0
 	}
+	if p.screen != nil {
+		text, row, col = p.screen.grid()
+		p.mu.Lock()
+		p.seq++
+		running, code, seq = p.running, p.exitCode, p.seq
+		p.dirty = false
+		p.mu.Unlock()
+		return
+	}
 	s.mu.Lock()
 	live := s.slotLocked(p.fingerprint).live
 	s.mu.Unlock()
@@ -320,19 +346,19 @@ func (p *pane) typeKeys(keys string) error {
 func (p *pane) typeInput(keys, named string) error {
 	p.mu.Lock()
 	w := p.stdin
-	oneshot := p.cmd != nil
+	pipeOneshot := p.cmd != nil && p.screen == nil
 	alive := p.running
-	if !oneshot && alive {
+	if !pipeOneshot && alive {
 		p.typed = true
 	}
 	p.mu.Unlock()
 	if w == nil {
 		return io.ErrClosedPipe
 	}
-	if oneshot && !alive {
+	if pipeOneshot && !alive {
 		return io.ErrClosedPipe
 	}
-	if oneshot {
+	if pipeOneshot {
 		if strings.TrimSpace(named) != "" {
 			stroke, err := encodeType("", named)
 			if err != nil {
@@ -382,7 +408,7 @@ func (s *supervisor) getFor(fingerprint, id string) *pane {
 			return nil
 		}
 	}
-	if p != nil {
+	if p != nil && p.cmd == nil {
 		live := s.slotLocked(p.fingerprint).live
 		if live != nil && live.stdin != nil {
 			p.mu.Lock()

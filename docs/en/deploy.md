@@ -38,7 +38,9 @@ Start at **[https://fleet.ginfo.cc](https://fleet.ginfo.cc)**. Do not begin with
 4. Operator:
 
 ```bash
-FLEET_URL=https://fleet.ginfo.cc FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
+FLEET_URL=https://fleet.ginfo.cc
+FLEET_TOKEN=flt_...
+npx -y https://fleet.ginfo.cc/fleet-tool.tgz
 ```
 
 A/B below are optional separate hub implementations. New users do not fill those URLs. Local `http://127.0.0.1:8080` is only for hacking the website.

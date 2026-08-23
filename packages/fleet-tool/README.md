@@ -8,7 +8,7 @@ FLEET_URL=http://127.0.0.1:8080 FLEET_TOKEN=flt_... node index.mjs run <device_i
 node index.mjs --dev list
 ```
 
-Cursor / MCP: run `node index.mjs` with those two env vars, no extra args. `--dev` sets `FLEET_DEV=1` (same as the env) and still starts MCP if there are no other args.
+Public MCP import (no clone): `npx -y https://<hub-origin>/fleet-tool.tgz` with those two env vars and no extra args. Repo developers can still run `node index.mjs` locally. `--dev` sets `FLEET_DEV=1` (same as the env) and still starts MCP if there are no other args.
 
 `~/.fleet/mcp.env` is already loaded (does not override env vars that are already set):
 
@@ -24,8 +24,8 @@ FLEET_DEV=1
 {
   "mcpServers": {
     "fleet": {
-      "command": "node",
-      "args": ["/path/to/packages/fleet-tool/index.mjs"],
+      "command": "npx",
+      "args": ["-y", "https://your.app/fleet-tool.tgz"],
       "env": {
         "FLEET_URL": "https://your.app",
         "FLEET_TOKEN": "flt_...",
@@ -42,8 +42,8 @@ FLEET_DEV=1
 {
   "mcpServers": {
     "fleet": {
-      "command": "node",
-      "args": ["/path/to/packages/fleet-tool/index.mjs"],
+      "command": "npx",
+      "args": ["-y", "https://your.app/fleet-tool.tgz"],
       "env": {
         "FLEET_URL": "https://your.app",
         "FLEET_TOKEN": "flt_...",

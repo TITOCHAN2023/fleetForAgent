@@ -6,6 +6,7 @@
  *   FLEET_URL=... FLEET_TOKEN=... node index.mjs run <device_id> 'uname -a'
  *   node index.mjs --dev list
  *
+ * Public MCP import (no clone): npx -y <hub-origin>/fleet-tool.tgz
  * No extra args → MCP stdio (Cursor / other agents). `--dev` sets FLEET_DEV=1.
  */
 import { homedir } from "node:os";
@@ -22,7 +23,7 @@ import {
   measureHubFetch,
   newOperatorFingerprint,
 } from "./operator.mjs";
-import { highSecAuthorization } from "../fleet-worker/src/tokenv1.mjs";
+import { highSecAuthorization } from "./tokenv1.mjs";
 
 const operatorFingerprint = newOperatorFingerprint();
 

@@ -30,7 +30,9 @@ Explainer video: [architecture.mp4](../media/architecture.mp4)
 4. Point the tool at the same pair:
 
 ```bash
-FLEET_URL=https://fleet.ginfo.cc FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
+FLEET_URL=https://fleet.ginfo.cc
+FLEET_TOKEN=flt_...
+npx -y https://fleet.ginfo.cc/fleet-tool.tgz
 ```
 
 The same Worker can serve `/ops` (usage, last-seen freshness, Ban) for emails in the `ADMIN_EMAILS` secret. Empty secret = no admins. Not a separate Worker. Ban cannot operate machines.

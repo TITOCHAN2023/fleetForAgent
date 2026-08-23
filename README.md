@@ -43,7 +43,9 @@ Silent explainer: [docs/media/architecture.mp4](docs/media/architecture.mp4)
 4. Import the operator:
 
 ```bash
-FLEET_URL=https://fleet.ginfo.cc FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
+FLEET_URL=https://fleet.ginfo.cc
+FLEET_TOKEN=flt_...
+npx -y https://fleet.ginfo.cc/fleet-tool.tgz
 ```
 
 Full walkthrough: [English](docs/en/deploy.md) · [中文](docs/zh/deploy.md)

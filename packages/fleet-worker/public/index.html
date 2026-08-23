@@ -437,8 +437,13 @@
             <div style="margin-top:20px">${keys()}</div>
           </div>`;
       }
-      function helpView(inApp) {
+      function importToolSnippet() {
         const origin = location.origin;
+        return `FLEET_URL=${origin}
+FLEET_TOKEN=flt_1.…
+npx -y ${origin}/fleet-tool.tgz`;
+      }
+      function helpView(inApp) {
         const extra = inApp ? `<nav class="tabs">
             <button class="tab" data-tab="fleet">${t("fleet")}</button>
             <button class="tab" data-tab="downloads">${t("downloads")}</button>
@@ -462,9 +467,7 @@
             <p class="muted"><a class="nav-link" href="${GH.replace("/download","")}">GitHub Releases</a></p>
             <h2>${t("s3")}</h2>
             <p class="muted">${t("s3b")}</p>
-            <pre>FLEET_URL=${origin}
-FLEET_TOKEN=flt_1.…
-node packages/fleet-tool/index.mjs list</pre>
+            <pre>${importToolSnippet()}</pre>
             <h2>${t("s4")}</h2>
             <p class="muted">${t("keysTitle")}</p>
             <div style="margin-top:16px">${keys()}</div>
@@ -478,16 +481,13 @@ node packages/fleet-tool/index.mjs list</pre>
           <div class="page">${state.tab === "downloads" ? downloadsView() : state.tab === "fleet" ? fleetView() : state.tab === "help" ? helpInner() : settingsView()}</div>`;
       }
       function helpInner() {
-        const origin = location.origin;
         return `<section class="card"><h3>${t("helpTitle")}</h3><p class="muted" style="margin-top:8px">${t("helpLead")}</p></section>
           ${fan()}
           <section class="card">
             <h3>${t("s1")}</h3><p class="muted" style="margin-top:8px">${t("s1b")}</p>
             <h3 style="margin-top:20px">${t("s2")}</h3><p class="muted" style="margin-top:8px">${t("s2b")}</p>
             <h3 style="margin-top:20px">${t("s3")}</h3><p class="muted" style="margin-top:8px">${t("s3b")}</p>
-            <pre style="margin-top:12px">FLEET_URL=${origin}
-FLEET_TOKEN=flt_1.…
-node packages/fleet-tool/index.mjs list</pre>
+            <pre style="margin-top:12px">${importToolSnippet()}</pre>
           </section>`;
       }
       function settingsView() {
@@ -513,9 +513,7 @@ node packages/fleet-tool/index.mjs list</pre>
             ${state.meta && state.meta.hasToken ? `<span class="subtle">${t("resetHint")}</span>` : ""}
           </div>
           <p class="muted" style="margin-top:16px">${t("toolHint")}</p>
-          <pre style="margin-top:8px">FLEET_URL=${origin}
-FLEET_TOKEN=flt_1.…
-node packages/fleet-tool/index.mjs list</pre>
+          <pre style="margin-top:8px">${importToolSnippet()}</pre>
         </section>`;
       }
       function downloadsView() {

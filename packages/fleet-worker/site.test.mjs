@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "public/index.html"), "utf8");
+const here = dirname(fileURLToPath(import.meta.url));
+const html = readFileSync(join(here, "public/index.html"), "utf8");
+const wrangler = readFileSync(join(here, "wrangler.toml"), "utf8");
+const worker = readFileSync(join(here, "src/index.ts"), "utf8");
+const tgz = join(here, "public/fleet-tool.tgz");
 
 test("hub site explains multi-os fleet and ships a Help page", () => {
   assert.match(html, /\/help/);
@@ -29,4 +33,24 @@ test("hub site explains multi-os fleet and ships a Help page", () => {
   assert.match(html, /ops-switch/);
   assert.match(html, /href="\/ops"/);
   assert.match(html, /user\.ops/);
+});
+
+test("import-the-tool snippet is npx tarball from page origin", () => {
+  assert.match(html, /function importToolSnippet\(/);
+  const calls = html.match(/\$\{importToolSnippet\(\)\}/g) || [];
+  assert.equal(calls.length, 3);
+  assert.match(html, /npx -y \$\{origin\}\/fleet-tool\.tgz/);
+  assert.doesNotMatch(html, /node packages\/fleet-tool\/index\.mjs/);
+  assert.doesNotMatch(html, /index\.mjs list/);
+});
+
+test("worker public assets serve /fleet-tool.tgz", () => {
+  assert.match(wrangler, /directory = "\.\/public"/);
+  assert.match(wrangler, /binding = "ASSETS"/);
+  assert.match(worker, /if \(!hub\)/);
+  assert.match(worker, /env\.ASSETS\.fetch\(request\)/);
+  assert.ok(existsSync(tgz), "expected packages/fleet-worker/public/fleet-tool.tgz");
+  const buf = readFileSync(tgz);
+  assert.equal(buf[0], 0x1f);
+  assert.equal(buf[1], 0x8b);
 });

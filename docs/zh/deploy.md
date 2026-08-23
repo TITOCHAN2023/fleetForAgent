@@ -38,7 +38,9 @@ https://github.com/TITOCHAN2023/fleetForAgent/releases/latest
 4. 操作端：
 
 ```bash
-FLEET_URL=https://fleet.ginfo.cc FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
+FLEET_URL=https://fleet.ginfo.cc
+FLEET_TOKEN=flt_...
+npx -y https://fleet.ginfo.cc/fleet-tool.tgz
 ```
 
 下面 A/B 是可选的独立中枢实现，不是新用户要填的地址。本地 `http://127.0.0.1:8080` 只适合改网站代码。

@@ -55,7 +55,9 @@ test("guide documents real env, flags, and placeholder tokens", () => {
   assert.match(guide, /fleet install/);
   assert.match(guide, /--token flt_\.\.\./);
   assert.match(guide, /127\.0\.0\.1:17890/);
-  assert.match(guide, /packages\/fleet-tool\/index\.mjs/);
+  assert.match(guide, /npx -y /);
+  assert.match(guide, /fleet-tool\.tgz/);
+  assert.doesNotMatch(guide, /node packages\/fleet-tool\/index\.mjs/);
   assert.match(guide, /claude_desktop_config\.json/);
   assert.match(guide, /tab: "agent"/);
   assert.doesNotMatch(guide, /flt_[0-9a-f]{16,}/i);

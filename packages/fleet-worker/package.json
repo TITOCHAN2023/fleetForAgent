@@ -4,8 +4,9 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
+    "pack-tool": "node ../../scripts/pack-fleet-tool.mjs",
     "dev": "wrangler dev --port 8787",
-    "deploy": "wrangler deploy",
+    "deploy": "node ../../scripts/pack-fleet-tool.mjs && wrangler deploy",
     "tail": "wrangler tail"
   },
   "devDependencies": {

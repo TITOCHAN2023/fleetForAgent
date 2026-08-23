@@ -10,6 +10,8 @@ Full steps: [English](../../docs/en/deploy.md) · [中文](../../docs/zh/deploy.
 
 Hub tokens are `flt_1` (RSA-2048, bound to `HUB_ORIGIN` in `wrangler.toml`). Agents and MCP authenticate with `Fleet-OAEP`, not plaintext Bearer. After deploy, users must issue a new token and run agent 0.2.9+.
 
+`npm run deploy` packs `fleet-tool` into `public/fleet-tool.tgz` first so `GET /fleet-tool.tgz` (Worker static assets) stays current. Import snippet: `npx -y <origin>/fleet-tool.tgz`.
+
 ```bash
 cd packages/fleet-worker
 npm install

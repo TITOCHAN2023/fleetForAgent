@@ -1,12 +1,19 @@
 {
   "name": "fleet-tool",
+  "version": "0.3.0",
   "private": true,
   "license": "MIT",
   "type": "module",
   "bin": {
     "fleet-tool": "./index.mjs"
   },
+  "files": [
+    "index.mjs",
+    "operator.mjs",
+    "tokenv1.mjs"
+  ],
   "scripts": {
-    "test": "node --test operator.test.mjs"
+    "test": "node --test operator.test.mjs pack.test.mjs",
+    "pack": "node ../../scripts/pack-fleet-tool.mjs"
   }
 }

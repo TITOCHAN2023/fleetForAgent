@@ -354,7 +354,7 @@ function ToolsView({
         <pre className="mt-4 overflow-auto rounded-md bg-elevated p-4 font-mono text-xs text-muted">
 {`FLEET_URL=${origin || "https://your.site"}
 FLEET_TOKEN=flt_…          # generate under Settings
-node packages/fleet-tool/index.mjs list`}
+npx -y ${origin || "https://your.site"}/fleet-tool.tgz`}
         </pre>
         <ol className="mt-5 space-y-3">
           {TOOLS.map((tool) => (

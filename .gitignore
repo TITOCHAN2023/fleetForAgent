@@ -1,3 +1,6 @@
+# leftover npm pack files (the served asset is public/fleet-tool.tgz)
+packages/fleet-tool/*.tgz
+
 # --- build & deps ---
 node_modules
 dist

@@ -17,6 +17,10 @@ type ScreenSlot = {
 
 type BeatWaiter = { resolve: (ok: boolean) => void; timer: ReturnType<typeof setTimeout> };
 type BeatSlot = { seq: number; waiters: BeatWaiter[] };
+type DesktopWaiter = {
+  resolve: (body: Record<string, unknown> | undefined) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
 
 type LiveStore = {
   byDevice: Map<string, LiveSlot>;
@@ -25,6 +29,7 @@ type LiveStore = {
   results: Map<string, Map<string, Record<string, unknown>>>;
   agentVer: Map<string, string>;
   beats: Map<string, BeatSlot>;
+  desktop: Map<string, DesktopWaiter>;
 };
 
 const OPEN = 1;
@@ -39,10 +44,12 @@ function store(): LiveStore {
     results: new Map(),
     agentVer: new Map(),
     beats: new Map(),
+    desktop: new Map(),
   };
   const s = g.__fleetLive__;
   s.agentVer ??= new Map();
   s.beats ??= new Map();
+  s.desktop ??= new Map();
   return s;
 }
 
@@ -186,6 +193,34 @@ export function cancelHeartbeatWait(deviceId: string) {
   waiter?.resolve(false);
 }
 
+export function waitDesktop(corr: string, waitMs: number): Promise<Record<string, unknown> | undefined> {
+  const s = store();
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      s.desktop.delete(corr);
+      resolve(undefined);
+    }, waitMs);
+    s.desktop.set(corr, { resolve, timer });
+  });
+}
+
+export function noteDesktop(corr: string, body: Record<string, unknown>) {
+  if (!corr) return;
+  const waiter = store().desktop.get(corr);
+  if (!waiter) return;
+  clearTimeout(waiter.timer);
+  store().desktop.delete(corr);
+  waiter.resolve(body);
+}
+
+export function cancelDesktopWait(corr: string) {
+  const waiter = store().desktop.get(corr);
+  if (!waiter) return;
+  clearTimeout(waiter.timer);
+  store().desktop.delete(corr);
+  waiter.resolve(undefined);
+}
+
 function userSet(userId: string): Set<string> {
   const s = store();
   let set = s.byUser.get(userId);
@@ -205,4 +240,5 @@ export function resetLive() {
   s.results.clear();
   s.agentVer.clear();
   s.beats.clear();
+  s.desktop.clear();
 }

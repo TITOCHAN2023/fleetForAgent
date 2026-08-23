@@ -4,11 +4,17 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
+  DESKTOP_WAIT_MS,
   HEARTBEAT_WAIT_DEFAULT_MS,
   HEARTBEAT_WAIT_MAX_MS,
   agentVerFromBody,
   clampHeartbeatWaitMs,
   computerPublic,
+  hasComputerUse,
+  joinCaps,
+  normalizeCaps,
+  normalizePermit,
+  unsupportedCapBody,
 } from "./src/presence.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -44,6 +50,8 @@ test("computerPublic is the list_computers row and never leaks userId or IPs", (
     online: true,
     lastSeen: 2000,
     agentVer: "0.2.5",
+    caps: [],
+    permit: null,
   });
   assert.equal(computerPublic({}), null);
   assert.equal(computerPublic(null), null);
@@ -59,6 +67,49 @@ test("worker heartbeat 404s a missing catalog row before DeviceDO offline", () =
   assert.match(slice, /computerPublic/);
   assert.match(slice, /not found/);
   assert.ok(slice.indexOf("computerPublic") < slice.indexOf("env.DEVICE.get"));
+});
+
+test("caps split from SQL text and stay arrays on the public row", () => {
+  assert.deepEqual(normalizeCaps(undefined), []);
+  assert.deepEqual(normalizeCaps("shell,pane,computer_use"), ["shell", "pane", "computer_use"]);
+  assert.deepEqual(normalizeCaps(["shell", "pane"]), ["shell", "pane"]);
+  assert.equal(joinCaps(["shell", "pane", "computer_use"]), "shell,pane,computer_use");
+  assert.equal(normalizePermit("ask"), "ask");
+  assert.equal(normalizePermit(""), null);
+  assert.equal(normalizePermit("maybe"), null);
+  const row = computerPublic({
+    id: "win-1",
+    name: "pc",
+    os: "windows",
+    online: true,
+    lastSeen: 1,
+    caps: "shell,pane,computer_use",
+    permit: "ask",
+  });
+  assert.deepEqual(row.caps, ["shell", "pane", "computer_use"]);
+  assert.equal(row.permit, "ask");
+  assert.equal(hasComputerUse(row), true);
+  assert.equal(hasComputerUse({ caps: ["shell", "pane"] }), false);
+  const miss = unsupportedCapBody({ agentVer: "0.2.10", os: "darwin" });
+  assert.equal(miss.code, "UNSUPPORTED_CAP");
+  assert.equal(miss.os, "darwin");
+  assert.equal(DESKTOP_WAIT_MS, 8_000);
+});
+
+test("worker desktop HTTP 409s missing cap before DeviceDO send", () => {
+  const src = readFileSync(join(here, "src/index.ts"), "utf8");
+  assert.match(src, /\/v1\/desktop_screenshot/);
+  assert.match(src, /\/v1\/desktop_action/);
+  assert.match(src, /unsupportedCapBody/);
+  assert.match(src, /hasComputerUse/);
+  const shot = src.indexOf('url.pathname === "/v1/desktop_screenshot"');
+  const device = src.indexOf('url.pathname === "/desktop"');
+  assert.notEqual(shot, -1);
+  assert.notEqual(device, -1);
+  assert.ok(shot < device);
+  assert.match(src, /parsed\.type === "desktop"/);
+  const desktopHandler = src.slice(src.indexOf('if (parsed.type === "desktop")'), src.indexOf('if (parsed.type === "desktop")') + 400);
+  assert.equal(desktopHandler.includes("storage.put"), false);
 });
 
 test("heartbeat wait is short so an offline or mute client cannot hang the hub", () => {

@@ -13,6 +13,9 @@ import {
   resetLive,
   sendToDevice,
   waitNextHeartbeat,
+  waitDesktop,
+  noteDesktop,
+  cancelDesktopWait,
 } from "./live";
 
 function fakeWs() {
@@ -73,6 +76,27 @@ test("waitNextHeartbeat resolves on noteHeartbeat and times out without hanging"
   const missed = await waitNextHeartbeat("dev-1", 40);
   assert.equal(missed, false);
   assert.ok(Date.now() - t0 < 200, `wait hung ${Date.now() - t0}ms`);
+});
+
+test("waitDesktop resolves on noteDesktop and times out without hanging", async () => {
+  resetLive();
+  const pending = waitDesktop("corr-1", 1000);
+  noteDesktop("corr-1", { ok: true, width: 10 });
+  assert.deepEqual(await pending, { ok: true, width: 10 });
+
+  const t0 = Date.now();
+  const missed = await waitDesktop("corr-2", 40);
+  assert.equal(missed, undefined);
+  assert.ok(Date.now() - t0 < 200, `desktop wait hung ${Date.now() - t0}ms`);
+});
+
+test("cancelDesktopWait drops a waiter without waiting for the timer", async () => {
+  resetLive();
+  const t0 = Date.now();
+  const pending = waitDesktop("corr-3", 1000);
+  cancelDesktopWait("corr-3");
+  assert.equal(await pending, undefined);
+  assert.ok(Date.now() - t0 < 200, `desktop cancel hung ${Date.now() - t0}ms`);
 });
 
 test("cancelHeartbeatWait drops a waiter without waiting for the timer", async () => {

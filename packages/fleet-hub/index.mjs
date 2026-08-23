@@ -13,9 +13,14 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import {
+  DESKTOP_WAIT_MS,
   agentVerFromBody,
   clampHeartbeatWaitMs,
   computerPublic,
+  hasComputerUse,
+  normalizeCaps,
+  normalizePermit,
+  unsupportedCapBody,
 } from "../fleet-worker/src/presence.mjs";
 import { createSessionBook, fingerprintFromHeaders } from "../fleet-worker/src/session.mjs";
 
@@ -45,6 +50,7 @@ export function createHub({
   token = "",
   now = () => Date.now(),
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  desktopWaitMs = DESKTOP_WAIT_MS,
 } = {}) {
   /** @type {Map<string, { id: string, name: string, os: string, online: boolean, lastSeen: number, agentVer?: string }>} */
   const fleet = new Map();
@@ -58,6 +64,8 @@ export function createHub({
   const sessions = new Map();
   /** @type {Map<string, { seq: number, waiters: Array<() => void> }>} */
   const beats = new Map();
+  /** @type {Map<string, { resolve: (body: Record<string, unknown> | undefined) => void, timer: ReturnType<typeof setTimeout> }>} */
+  const desktopWaiters = new Map();
 
   const wss = new WebSocketServer({ noServer: true });
   const server = http.createServer((req, res) => {
@@ -128,7 +136,13 @@ export function createHub({
         os: String(parsed.body?.os ?? fleet.get(id)?.os ?? "linux"),
         online: true,
         agentVer: String(parsed.body?.agent_ver ?? ""),
+        ...(Array.isArray(parsed.body?.caps) ? { caps: normalizeCaps(parsed.body.caps) } : {}),
+        ...(normalizePermit(parsed.body?.permit) ? { permit: normalizePermit(parsed.body.permit) } : {}),
       });
+      return;
+    }
+    if (parsed.type === "desktop") {
+      noteDesktop(parsed.corr ?? "", parsed.body ?? {});
       return;
     }
     if (parsed.type === "ping" || parsed.type === "heartbeat") {
@@ -221,6 +235,8 @@ export function createHub({
       online: extra.online,
       lastSeen: now(),
       agentVer: extra.agentVer ?? prev?.agentVer,
+      caps: Array.isArray(extra.caps) ? extra.caps : prev?.caps,
+      permit: extra.permit !== undefined ? extra.permit : prev?.permit,
     });
   }
 
@@ -238,6 +254,25 @@ export function createHub({
     slot.seq += 1;
     const waiters = slot.waiters.splice(0);
     for (const w of waiters) w();
+  }
+
+  function waitDesktop(corr, waitMs) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        desktopWaiters.delete(corr);
+        resolve(undefined);
+      }, waitMs);
+      desktopWaiters.set(corr, { resolve, timer });
+    });
+  }
+
+  function noteDesktop(corr, body) {
+    if (!corr) return;
+    const waiter = desktopWaiters.get(corr);
+    if (!waiter) return;
+    clearTimeout(waiter.timer);
+    desktopWaiters.delete(corr);
+    waiter.resolve(body);
   }
 
   function waitNextBeat(id, waitMs) {
@@ -273,10 +308,14 @@ export function createHub({
   }
 
   function listComputers() {
-    const computers = [...fleet.values()].map((row) => ({
-      ...row,
-      online: sockets.get(row.id)?.readyState === WebSocket.OPEN,
-    }));
+    const computers = [...fleet.values()]
+      .map((row) =>
+        computerPublic({
+          ...row,
+          online: sockets.get(row.id)?.readyState === WebSocket.OPEN,
+        }),
+      )
+      .filter(Boolean);
     computers.sort((a, b) => Number(b.online) - Number(a.online) || b.lastSeen - a.lastSeen);
     return { computers };
   }
@@ -355,6 +394,60 @@ export function createHub({
         return;
       }
       write(res, 200, row);
+      return;
+    }
+
+    if (
+      (url.pathname === "/v1/desktop_screenshot" || url.pathname === "/v1/desktop_action") &&
+      req.method === "POST"
+    ) {
+      if (!body.device_id) {
+        write(res, 400, { error: "device_id required" });
+        return;
+      }
+      const row = fleet.get(body.device_id);
+      if (!row) {
+        write(res, 404, { error: "not found" });
+        return;
+      }
+      const live = sockets.get(body.device_id);
+      if (!live || live.readyState !== WebSocket.OPEN) {
+        write(res, 409, { error: "offline" });
+        return;
+      }
+      if (!hasComputerUse(row)) {
+        write(res, 409, unsupportedCapBody(row));
+        return;
+      }
+      const plan =
+        url.pathname.endsWith("desktop_screenshot") || body.action === "screenshot"
+          ? { type: "desktop_screenshot", body: { max_width: body.max_width, max_height: body.max_height } }
+          : {
+              type: "desktop_action",
+              body: {
+                action: body.action,
+                x: body.x,
+                y: body.y,
+                x2: body.x2,
+                y2: body.y2,
+                text: body.text,
+                key: body.key,
+                keys: body.keys,
+                scroll_x: body.scroll_x,
+                scroll_y: body.scroll_y,
+                duration_ms: body.duration_ms,
+                frame_id: body.frame_id,
+              },
+            };
+      const corr = randomUUID();
+      const pending = waitDesktop(corr, desktopWaitMs);
+      live.send(JSON.stringify(envelope(plan.type, plan.body, corr)));
+      const got = await pending;
+      if (!got) {
+        write(res, 409, { error: "timeout", code: "TIMEOUT" });
+        return;
+      }
+      write(res, 200, got);
       return;
     }
 

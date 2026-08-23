@@ -32,6 +32,8 @@ static int fleetCaptureBGRA(uint8_t **out, int *w, int *h) {
 		kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
 	CGColorSpaceRelease(cs);
 	if (!ctx) { free(buf); CFRelease(img); return -3; }
+	CGContextTranslateCTM(ctx, 0, *h);
+	CGContextScaleCTM(ctx, 1, -1);
 	CGContextDrawImage(ctx, CGRectMake(0, 0, *w, *h), img);
 	CGContextRelease(ctx);
 	CFRelease(img);
@@ -152,6 +154,7 @@ func nativeCapture() (*image.RGBA, DisplayInfo, error) {
 	}
 	C.free(unsafe.Pointer(raw))
 	scale := darwinBackingScale()
+	darwinCapSize.w, darwinCapSize.h = float64(w), float64(h)
 	return img, DisplayInfo{ID: "primary", Width: int(w), Height: int(h), Scale: scale}, nil
 }
 

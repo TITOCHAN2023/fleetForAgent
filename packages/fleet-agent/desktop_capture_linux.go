@@ -50,8 +50,19 @@ func nativeCapture() (*image.RGBA, DisplayInfo, error) {
 	if err != nil {
 		return nil, DisplayInfo{}, err
 	}
-	b := img.Bounds()
-	return toRGBA(img), DisplayInfo{ID: "primary", Width: b.Dx(), Height: b.Dy(), Scale: 1}, nil
+	rgba := toRGBA(img)
+	b := nativeMotionBounds()
+	hidW, hidH := int(b.MaxX)+1, int(b.MaxY)+1
+	rgba = fitCaptureToHID(rgba, hidW, hidH)
+	bb := rgba.Bounds()
+	scale := 1.0
+	if hidW > 1 {
+		scale = float64(bb.Dx()) / float64(hidW)
+		if scale < 1 {
+			scale = 1
+		}
+	}
+	return rgba, DisplayInfo{ID: "primary", Width: bb.Dx(), Height: bb.Dy(), Scale: scale}, nil
 }
 
 func linuxGrab() (image.Image, error) {

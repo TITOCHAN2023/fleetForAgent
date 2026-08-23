@@ -62,6 +62,12 @@ static void fleetDisplaySize(double *w, double *h) {
 	*h = (double)CGDisplayPixelsHigh(id);
 }
 
+static void fleetDisplayPoints(double *w, double *h) {
+	CGRect b = CGDisplayBounds(CGMainDisplayID());
+	*w = b.size.width;
+	*h = b.size.height;
+}
+
 static double fleetBackingScale(void) {
 	CGDirectDisplayID id = CGMainDisplayID();
 	double pts = CGDisplayBounds(id).size.width;
@@ -94,6 +100,10 @@ func nativeMotionBounds() motionBounds {
 	return motionBounds{0, 0, float64(w - 1), float64(h - 1)}
 }
 
+var darwinCapSize struct {
+	w, h float64
+}
+
 func darwinBackingScale() float64 {
 	s := float64(C.fleetBackingScale())
 	if s < 1 {
@@ -110,6 +120,12 @@ func (p *darwinPointer) CursorPos() (float64, float64, error) {
 }
 
 func (p *darwinPointer) toPoints(x, y float64) (float64, float64) {
+	var pw, ph C.double
+	C.fleetDisplayPoints(&pw, &ph)
+	cw, ch := darwinCapSize.w, darwinCapSize.h
+	if cw > 1 && ch > 1 && pw > 1 && ph > 1 {
+		return x * float64(pw) / cw, y * float64(ph) / ch
+	}
 	s := darwinBackingScale()
 	return x / s, y / s
 }

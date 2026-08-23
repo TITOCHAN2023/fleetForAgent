@@ -221,6 +221,18 @@ func TestDesktopDragAndTypeAndKey(t *testing.T) {
 	}
 }
 
+func TestFitCaptureToHID(t *testing.T) {
+	hi := solid(3840, 2160, color.RGBA{R: 9, G: 18, B: 27, A: 255})
+	got := fitCaptureToHID(hi, 1920, 1080)
+	if got.Bounds().Dx() != 1920 || got.Bounds().Dy() != 1080 {
+		t.Fatalf("hid fit %dx%d", got.Bounds().Dx(), got.Bounds().Dy())
+	}
+	same := fitCaptureToHID(solid(1920, 1080, color.RGBA{R: 1, A: 255}), 1920, 1080)
+	if same.Bounds().Dx() != 1920 {
+		t.Fatal("same-size should stay")
+	}
+}
+
 func TestSplitKeySpec(t *testing.T) {
 	got := splitKeySpec("Ctrl+Enter")
 	if len(got) != 2 || got[0] != "ctrl" || got[1] != "enter" {

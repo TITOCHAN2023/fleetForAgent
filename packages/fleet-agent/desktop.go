@@ -450,6 +450,19 @@ func blankFrame(img *image.RGBA) bool {
 	return mean < 4 && varm < 2
 }
 
+// If the capture is denser than the HID coordinate space (HiDPI grim vs xdotool),
+// shrink the image so lastFrame native pixels match MoveAbs.
+func fitCaptureToHID(img *image.RGBA, hidW, hidH int) *image.RGBA {
+	if img == nil || hidW < 2 || hidH < 2 {
+		return img
+	}
+	w, h := img.Bounds().Dx(), img.Bounds().Dy()
+	if w <= hidW+2 && h <= hidH+2 {
+		return img
+	}
+	return scaleBilinear(img, hidW, hidH)
+}
+
 func clampWaitMsDesktop(ms int) int {
 	if ms < 0 {
 		return 0

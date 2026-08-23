@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"testing"
 )
 
@@ -57,6 +59,13 @@ func TestNormalize4KStaysUnderBudget(t *testing.T) {
 	}
 	if fr.MIME != "image/jpeg" || fr.Origin != "top-left" {
 		t.Fatalf("meta %+v", fr)
+	}
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(fr.JPEG))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Width != fr.ViewportW || cfg.Height != fr.ViewportH {
+		t.Fatalf("jpeg %dx%d vs viewport %dx%d — clicks would miss", cfg.Width, cfg.Height, fr.ViewportW, fr.ViewportH)
 	}
 	nx, ny, err := mapViewportToNative(fr, fr.ViewportW-1, fr.ViewportH-1)
 	if err != nil {
@@ -113,6 +122,16 @@ func TestBusyDesktopJPEGUnderBudget(t *testing.T) {
 	}
 	if fr.Bytes > jpegBudgetBytes {
 		t.Fatalf("busy desktop %d bytes > %d", fr.Bytes, jpegBudgetBytes)
+	}
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(fr.JPEG))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Width != fr.ViewportW || cfg.Height != fr.ViewportH {
+		t.Fatalf("jpeg %dx%d vs viewport %dx%d", cfg.Width, cfg.Height, fr.ViewportW, fr.ViewportH)
+	}
+	if _, _, err := mapViewportToNative(fr, fr.ViewportW-1, fr.ViewportH-1); err != nil {
+		t.Fatal(err)
 	}
 }
 

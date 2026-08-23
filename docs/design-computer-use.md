@@ -568,7 +568,7 @@ Anthropic 官方 demo 要求工具侧缩到约 XGA 再映射坐标，不要把�
 规则：
 
 1. 模型 **只**使用返回图的像素坐标，原点左上。
-2. Agent 用 **`lastFrame`**（整颗 `DesktopFrame`），不是现场重测显示器。映射：`mapAxis` 把视口闭区间映到原生闭区间。
+2. Agent 用 **`lastFrame`**（整颗 `DesktopFrame`），不是现场重测显示器。映射：`mapAxis` 把视口闭区间映到原生闭区间。**`viewport` 必须等于 JPEG 文件的像素宽高**（预算再缩一次之后也要改 viewport / scale，禁止模型按 1280 点、图却是 1088）。HID **必须**走 `mapViewportToNative`，禁止 `x * scale_x`（那是展示用比例，闭区间映射会差 1–2px）。
 3. 缩放前越界 → `bad_coordinates`。尚无成功截图 → `no_frame`。
 4. 多显示器 v1 只捕获主屏。Windows `MOUSEEVENTF_ABSOLUTE` 公式见下，不能把图像坐标当成整桌面 0..65535。
 5. macOS Retina：捕获 backing pixels；`CGEvent` 用全局点。`desktop_darwin.go` 显式转换，单测 `scale=2`。

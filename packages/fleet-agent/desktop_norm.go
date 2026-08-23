@@ -170,21 +170,23 @@ func lerp2(a, b, c, d uint8, tx, ty float64) uint8 {
 	return uint8(v + 0.5)
 }
 
-func encodeJPEGBudget(img image.Image, budget int) ([]byte, int, error) {
+func encodeJPEGBudget(img image.Image, budget int) (data []byte, w, h, q int, err error) {
 	if budget < 8*1024 {
 		budget = 8 * 1024
 	}
 	cur := img
 	var last []byte
+	lastQ := jpegQualityFloor
 	for round := 0; round < 6; round++ {
-		for q := jpegQualityStart; q >= jpegQualityFloor; q -= 8 {
+		for q = jpegQualityStart; q >= jpegQualityFloor; q -= 8 {
 			var buf bytes.Buffer
-			if err := jpeg.Encode(&buf, cur, &jpeg.Options{Quality: q}); err != nil {
-				return nil, 0, err
+			if err = jpeg.Encode(&buf, cur, &jpeg.Options{Quality: q}); err != nil {
+				return nil, 0, 0, 0, err
 			}
 			last = buf.Bytes()
+			lastQ = q
 			if len(last) <= budget {
-				return last, q, nil
+				return last, cur.Bounds().Dx(), cur.Bounds().Dy(), q, nil
 			}
 		}
 		cb := cur.Bounds()
@@ -195,9 +197,9 @@ func encodeJPEGBudget(img image.Image, budget int) ([]byte, int, error) {
 		cur = scaleBilinear(toRGBA(cur), nw, nh)
 	}
 	if last == nil {
-		return nil, 0, fmt.Errorf("jpeg budget")
+		return nil, 0, 0, 0, fmt.Errorf("jpeg budget")
 	}
-	return last, jpegQualityFloor, nil
+	return last, cur.Bounds().Dx(), cur.Bounds().Dy(), lastQ, nil
 }
 
 func pixelDigest(img *image.RGBA) string {
@@ -212,18 +214,21 @@ func normalizeDesktop(src image.Image, displayID string, dpr float64, maxW, maxH
 	maxH = clampMax(maxH, viewportLongMin, viewportLongMax, viewportLongDefault)
 	dw, dh := fitBox(sw, sh, maxW, maxH)
 	view := scaleBilinear(rgba, dw, dh)
-	jpegBytes, _, err := encodeJPEGBudget(view, jpegBudgetBytes)
+	jpegBytes, vw, vh, _, err := encodeJPEGBudget(view, jpegBudgetBytes)
 	if err != nil {
 		return nil, DesktopFrame{}, err
 	}
-	scaleX := float64(sw) / float64(dw)
-	scaleY := float64(sh) / float64(dh)
+	if vw != view.Bounds().Dx() || vh != view.Bounds().Dy() {
+		view = scaleBilinear(rgba, vw, vh)
+	}
+	scaleX := float64(sw) / float64(vw)
+	scaleY := float64(sh) / float64(vh)
 	if dpr <= 0 {
 		dpr = 1
 	}
 	fr := DesktopFrame{
-		ViewportW: dw,
-		ViewportH: dh,
+		ViewportW: vw,
+		ViewportH: vh,
 		DisplayID: displayID,
 		DisplayW:  sw,
 		DisplayH:  sh,

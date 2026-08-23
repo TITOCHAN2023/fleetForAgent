@@ -3,7 +3,7 @@
  * Do not write hub_sessions, ~/.fleet, or a workspace file.
  */
 
-export const FLEET_VERSION = "0.2.9";
+export const FLEET_VERSION = "0.2.10";
 
 /** MCP-process fingerprint. HTTP header only — never a tool argument. */
 export const FLEET_OPERATOR_HEADER = "X-Fleet-Operator";

@@ -796,8 +796,8 @@ test("applyCliDevFlag sets FLEET_DEV and strips --dev", () => {
   assert.equal(isFleetDev({}), false);
 });
 
-test("MCP version is 0.2.9", () => {
-  assert.equal(FLEET_VERSION, "0.2.9");
+test("MCP version is 0.2.10", () => {
+  assert.equal(FLEET_VERSION, "0.2.10");
 });
 
 test("newOperatorFingerprint is a UUID and is not read from FLEET_OPERATOR", () => {

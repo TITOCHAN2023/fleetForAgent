@@ -12,6 +12,7 @@
  */
 
 import { handleOAuth } from "./oauth";
+import { rejectIfBanned } from "./ban.mjs";
 import { canClaimDevice, deviceOwnerConflict } from "./bind.mjs";
 import {
   agentVerFromBody,
@@ -108,7 +109,7 @@ type DeviceRow = {
   userId?: string;
 };
 
-type Actor = { id: string; email?: string; super?: boolean };
+type Actor = { id: string; email?: string; super?: boolean; banned?: boolean };
 
 type UserRow = {
   id: string;
@@ -121,6 +122,8 @@ type UserRow = {
   kid?: string;
   pub?: string;
   priv?: string;
+  banned?: boolean;
+  bannedAt?: number;
 };
 
 type Resolved =
@@ -395,6 +398,8 @@ export class FleetDO implements DurableObject {
       const userId = url.searchParams.get("user") ?? "";
       const user = await this.userById(userId);
       if (!user) return json({ error: "unauthorized" }, 401);
+      const banned = rejectIfBanned(user);
+      if (banned) return json({ error: banned.error }, banned.status);
       return json({
         hasToken: Boolean(user.tokenHash),
         prefix: user.tokenPrefix ?? "",
@@ -405,6 +410,8 @@ export class FleetDO implements DurableObject {
       const userId = url.searchParams.get("user") ?? "";
       const user = await this.userById(userId);
       if (!user) return json({ error: "unauthorized" }, 401);
+      const banned = rejectIfBanned(user);
+      if (banned) return json({ error: banned.error }, banned.status);
       const minted = await mintTokenV1({ aud: url.searchParams.get("aud") ?? "" });
       await this.revokeToken(user);
       user.tokenHash = minted.hash;
@@ -445,7 +452,7 @@ export class FleetDO implements DurableObject {
       if (userId) {
         const email = await this.ctx.storage.get<string>(`id:${userId}`);
         const user = email ? await this.ctx.storage.get<UserRow>(`u:${email}`) : null;
-        if (user) return { id: user.id, email: user.email };
+        if (user) return { id: user.id, email: user.email, banned: Boolean(user.banned) };
       }
     }
     return null;
@@ -456,6 +463,8 @@ export class FleetDO implements DurableObject {
     if (!kid || !origin) return highSecJson(HIGH_SEC_KEY_MISMATCH, 401);
     const userId = await this.ctx.storage.get<string>(`kid:${kid}`);
     const user = userId ? await this.userById(userId) : null;
+    const banned = rejectIfBanned(user);
+    if (banned) return json({ error: banned.error }, banned.status);
     if (!user?.priv || user.kid !== kid) return highSecJson(HIGH_SEC_KEY_MISMATCH, 401);
     const nonce = [...crypto.getRandomValues(new Uint8Array(32))]
       .map((b) => b.toString(16).padStart(2, "0"))
@@ -474,6 +483,8 @@ export class FleetDO implements DurableObject {
     if (!kid || !wrap) return highSecJson(HIGH_SEC_KEY_MISMATCH, 401);
     const userId = await this.ctx.storage.get<string>(`kid:${kid}`);
     const user = userId ? await this.userById(userId) : null;
+    const banned = rejectIfBanned(user);
+    if (banned) return json({ error: banned.error }, banned.status);
     if (!user?.priv || user.kid !== kid) return highSecJson(HIGH_SEC_KEY_MISMATCH, 401);
     let opened: { sec: string; nonce: string };
     try {
@@ -548,6 +559,8 @@ export class FleetDO implements DurableObject {
     email = email.trim().toLowerCase();
     if (!email.includes("@")) return json({ error: "email required" }, 400);
     let user = await this.ctx.storage.get<UserRow>(`u:${email}`);
+    const banned = rejectIfBanned(user);
+    if (banned) return json({ error: banned.error }, banned.status);
     if (!user) {
       user = {
         id: crypto.randomUUID(),
@@ -567,10 +580,14 @@ export class FleetDO implements DurableObject {
     if (!user || (await pbkdf2(password, user.salt)) !== user.pass) {
       return json({ error: "invalid" }, 401);
     }
+    const banned = rejectIfBanned(user);
+    if (banned) return json({ error: banned.error }, banned.status);
     return this.issueSession(user);
   }
 
   async issueSession(user: UserRow): Promise<Response> {
+    const banned = rejectIfBanned(user);
+    if (banned) return json({ error: banned.error }, banned.status);
     const sid = crypto.randomUUID() + crypto.randomUUID();
     await this.ctx.storage.put(`sess:${sid}`, user.id);
     const res = json({ id: user.id, email: user.email });
@@ -911,7 +928,10 @@ async function resolveActor(
 
   const sessRes = await fleet.fetch(new Request("https://fleet/resolve", { headers: request.headers }));
   const sess = (await sessRes.json()) as Actor;
-  if (sess.id) return { actor: sess };
+  if (sess.id) {
+    if (sess.banned) return { error: "banned", status: 403 };
+    return { actor: sess };
+  }
 
   if (auth.kind === "oaep") {
     const wrapRes = await fleet.fetch(
@@ -922,6 +942,7 @@ async function resolveActor(
       }),
     );
     const data = (await wrapRes.json()) as Actor & { error?: string; code?: string };
+    if (data.error === "banned") return { error: "banned", status: 403 };
     if (wrapRes.ok && data.id) return { actor: { id: data.id, email: data.email } };
     return {
       error: data.error || HIGH_SEC_KEY_MISMATCH,

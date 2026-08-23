@@ -19,6 +19,8 @@ const MCP_TOOLS: { name: string; key: MessageKey }[] = [
   { name: "type", key: "guide.tool.type" },
   { name: "set_computer", key: "guide.tool.set_computer" },
   { name: "get_current_computer", key: "guide.tool.get_current_computer" },
+  { name: "desktop_screenshot", key: "guide.tool.desktop_screenshot" },
+  { name: "desktop_action", key: "guide.tool.desktop_action" },
 ];
 
 const CLONE = `git clone https://github.com/TITOCHAN2023/fleetForAgent.git

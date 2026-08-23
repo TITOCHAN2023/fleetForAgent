@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	agentVersion = "0.2.10"
+	agentVersion = "0.3.0"
 )
 
 //go:embed ui/index.html
@@ -94,23 +94,33 @@ type State struct {
 }
 
 type Agent struct {
-	mu       sync.Mutex
-	enabled  bool
-	permit   Permit
-	hubInput string
-	hubToken string
-	deviceID string
-	wss      string
-	conn     string
-	err      string
-	logs     []LogLine
-	pending  *Pending
-	seq      int
-	ws       *websocket.Conn
-	cancel   context.CancelFunc
-	cfgPath  string
-	panes    *supervisor
-	hb       time.Duration
+	mu                  sync.Mutex
+	enabled             bool
+	permit              Permit
+	hubInput            string
+	hubToken            string
+	deviceID            string
+	wss                 string
+	conn                string
+	err                 string
+	logs                []LogLine
+	pending             *Pending
+	desktopPending      *Pending
+	desktopShotGranted  bool
+	desktopInputGranted bool
+	desktopDeniedOnce   bool
+	lastFrame           *DesktopFrame
+	lastDigest          string
+	shotTimes           []time.Time
+	actTimes            []time.Time
+	backend             desktopBackend
+	osBackend           desktopBackend
+	seq                 int
+	ws                  *websocket.Conn
+	cancel              context.CancelFunc
+	cfgPath             string
+	panes               *supervisor
+	hb                  time.Duration
 }
 
 func (a *Agent) log(level, msg string) {
@@ -126,6 +136,10 @@ func (a *Agent) log(level, msg string) {
 func (a *Agent) snapshot() State {
 	logs := make([]LogLine, len(a.logs))
 	copy(logs, a.logs)
+	pending := a.pending
+	if a.desktopPending != nil {
+		pending = a.desktopPending
+	}
 	return State{
 		Enabled:  a.enabled,
 		Permit:   a.permit,
@@ -136,7 +150,7 @@ func (a *Agent) snapshot() State {
 		Conn:     a.conn,
 		Error:    a.err,
 		Logs:     logs,
-		Pending:  a.pending,
+		Pending:  pending,
 	}
 }
 
@@ -269,11 +283,23 @@ func (a *Agent) setPermit(p Permit) {
 	a.mu.Lock()
 	if p == PermitOff || p == PermitAsk || p == PermitAllow {
 		a.permit = p
+		a.desktopShotGranted = false
+		a.desktopInputGranted = false
+		a.desktopPending = nil
+		a.lastFrame = nil
+		a.lastDigest = ""
 		a.log("info", "permit → "+string(p))
 		a.save()
 	}
+	ws := a.ws
 	a.mu.Unlock()
 	a.pushUI()
+	if ws != nil {
+		_ = wsjson.Write(context.Background(), ws, Envelope{
+			V: 1, Type: "ping", ID: fmt.Sprintf("%d", time.Now().UnixNano()), T: time.Now().UnixMilli(),
+			Body: map[string]any{"agent_ver": agentVersion, "permit": string(p), "caps": agentCaps()},
+		})
+	}
 }
 
 func (a *Agent) pushUI() {
@@ -293,8 +319,17 @@ func (a *Agent) disconnectLocked(reason string) {
 		a.ws = nil
 	}
 	a.pending = nil
+	a.clearDesktopSessionLocked()
 	a.conn = "offline"
 	a.log("warn", reason)
+}
+
+func (a *Agent) clearDesktopSessionLocked() {
+	a.desktopPending = nil
+	a.desktopShotGranted = false
+	a.desktopInputGranted = false
+	a.lastFrame = nil
+	a.lastDigest = ""
 }
 
 func (a *Agent) connect(hub string) error {
@@ -448,10 +483,14 @@ func deviceName() string {
 }
 
 func agentCaps() []string {
-	if runtime.GOOS == "windows" {
-		return []string{"shell", "pane"}
+	caps := []string{"shell", "pane"}
+	if runtime.GOOS != "windows" {
+		caps = append(caps, "live_shell")
 	}
-	return []string{"shell", "pane", "live_shell"}
+	if desktopSupported() {
+		caps = append(caps, "computer_use")
+	}
+	return caps
 }
 
 func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
@@ -460,6 +499,7 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 		if a.ws == c {
 			a.ws = nil
 			a.conn = "offline"
+			a.clearDesktopSessionLocked()
 			a.log("warn", "socket closed")
 		}
 		a.mu.Unlock()
@@ -505,6 +545,10 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 			list := a.panes.list()
 			a.mu.Unlock()
 			_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "panes", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: env.Corr, T: time.Now().UnixMilli(), Body: map[string]any{"panes": list}})
+		case "desktop_screenshot":
+			go a.handleDesktopScreenshot(ctx, c, env)
+		case "desktop_action":
+			go a.handleDesktopAction(ctx, c, env)
 		}
 	}
 }
@@ -718,6 +762,19 @@ func runCmd(command string) (string, string, int) {
 
 func (a *Agent) approve() {
 	a.mu.Lock()
+	if a.desktopPending != nil {
+		p := a.desktopPending
+		a.desktopPending = nil
+		if p.Kind == pendingKindDesktopInput {
+			a.desktopInputGranted = true
+		} else {
+			a.desktopShotGranted = true
+		}
+		a.log("info", "approved: "+p.Command)
+		a.mu.Unlock()
+		a.pushUI()
+		return
+	}
 	p := a.pending
 	ws := a.ws
 	a.pending = nil
@@ -738,6 +795,15 @@ func (a *Agent) approve() {
 
 func (a *Agent) deny() {
 	a.mu.Lock()
+	if a.desktopPending != nil {
+		p := a.desktopPending
+		a.desktopPending = nil
+		a.desktopDeniedOnce = true
+		a.log("warn", "denied: "+p.Command)
+		a.mu.Unlock()
+		a.pushUI()
+		return
+	}
 	p := a.pending
 	ws := a.ws
 	a.pending = nil

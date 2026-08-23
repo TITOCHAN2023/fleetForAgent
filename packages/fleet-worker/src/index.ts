@@ -17,10 +17,15 @@ import { applyBannedState, rejectIfBanned } from "./ban.mjs";
 import { canClaimDevice, deviceOwnerConflict } from "./bind.mjs";
 import { handleOpsRoute, isOpsAdmin } from "./ops.mjs";
 import {
+  DESKTOP_WAIT_MS,
   agentVerFromBody,
   archFromBody,
   clampHeartbeatWaitMs,
   computerPublic,
+  hasComputerUse,
+  normalizeCaps,
+  normalizePermit,
+  unsupportedCapBody,
 } from "./presence.mjs";
 import {
   ANON_FINGERPRINT,
@@ -112,6 +117,18 @@ type DeviceRow = {
   agentVer?: string;
   arch?: string;
   userId?: string;
+  caps?: string[];
+  permit?: "off" | "ask" | "allow";
+};
+
+type WsAttachment = {
+  deviceId?: string;
+  name?: string;
+  os?: string;
+  userId?: string;
+  caps?: string[];
+  permit?: string;
+  agentVer?: string;
 };
 
 type Actor = { id: string; email?: string; super?: boolean; banned?: boolean };
@@ -268,6 +285,29 @@ export default {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ device_id: body.device_id, wait_ms: body.wait_ms }),
+        }),
+      );
+    }
+
+    if (
+      (url.pathname === "/v1/desktop_screenshot" || url.pathname === "/v1/desktop_action") &&
+      request.method === "POST"
+    ) {
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      const deviceId = String(body.device_id ?? "");
+      if (!deviceId) return json({ error: "device_id required" }, 400);
+      if (!(await owns(fleet, actor, deviceId))) return json({ error: "not found" }, 404);
+      const catalog = await fleet.fetch(new Request(`https://fleet/device?id=${encodeURIComponent(deviceId)}`));
+      const row = (await catalog.json()) as DeviceRow;
+      if (!computerPublic(row)) return json({ error: "not found" }, 404);
+      if (!hasComputerUse(row)) return json(unsupportedCapBody(row), 409);
+      const plan = desktopPlan(url.pathname, body);
+      const stub = env.DEVICE.get(env.DEVICE.idFromName(deviceId));
+      return stub.fetch(
+        new Request("https://device/desktop", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(plan),
         }),
       );
     }
@@ -467,13 +507,15 @@ export class FleetDO implements DurableObject {
     let rows = [...map.values()];
     if (userId) rows = rows.filter((r) => r.userId === userId);
     rows.sort((a, b) => Number(b.online) - Number(a.online) || b.lastSeen - a.lastSeen);
-    return rows.map(({ id, name, os, online, lastSeen, agentVer }) => ({
-      id,
-      name,
-      os,
-      online,
-      lastSeen,
-      agentVer,
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      os: r.os,
+      online: r.online,
+      lastSeen: r.lastSeen,
+      agentVer: r.agentVer,
+      caps: normalizeCaps(r.caps),
+      permit: normalizePermit(r.permit),
     }));
   }
 
@@ -671,6 +713,10 @@ export class DeviceDO implements DurableObject {
   env: Env;
   private beatSeq = 0;
   private beatWaiters: Array<() => void> = [];
+  private desktopWaiters = new Map<
+    string,
+    { resolve: (body: Record<string, unknown> | undefined) => void; timer: ReturnType<typeof setTimeout> }
+  >();
 
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
@@ -774,6 +820,27 @@ export class DeviceDO implements DurableObject {
       return json(hubResultPayload(corr, row));
     }
 
+    if (url.pathname === "/desktop" && request.method === "POST") {
+      const sockets = this.ctx.getWebSockets();
+      if (sockets.length === 0) return json({ error: "offline" }, 409);
+      const ws = sockets[0]!;
+      const att = (ws.deserializeAttachment() ?? {}) as WsAttachment;
+      if (!Array.isArray(att.caps)) {
+        return json({ error: "not ready", code: "NOT_READY" }, 409);
+      }
+      if (!hasComputerUse({ caps: att.caps })) {
+        return json(unsupportedCapBody({ agentVer: att.agentVer ?? "", os: att.os ?? "" }), 409);
+      }
+      const plan = (await request.json()) as { type?: string; body?: Record<string, unknown> };
+      const type = plan.type === "desktop_action" ? "desktop_action" : "desktop_screenshot";
+      const corr = crypto.randomUUID();
+      const pending = this.waitDesktop(corr, DESKTOP_WAIT_MS);
+      ws.send(JSON.stringify(envelope(type, plan.body ?? {}, corr)));
+      const got = await pending;
+      if (!got) return json({ error: "timeout", code: "TIMEOUT" }, 409);
+      return json(got);
+    }
+
     if (url.pathname === "/heartbeat" && request.method === "POST") {
       const sockets = this.ctx.getWebSockets();
       if (sockets.length === 0) return json({ error: "offline" }, 409);
@@ -806,37 +873,70 @@ export class DeviceDO implements DurableObject {
       ws.close(1003, "bad proto");
       return;
     }
-    const att = (ws.deserializeAttachment() ?? {}) as {
-      deviceId?: string;
-      name?: string;
-      os?: string;
-      userId?: string;
-    };
+    const att = (ws.deserializeAttachment() ?? {}) as WsAttachment;
 
     if (parsed.type === "hello") {
       const os = String(parsed.body.os ?? att.os ?? "linux");
       const name = String(parsed.body.hostname ?? att.name ?? att.deviceId ?? "device");
+      if (Array.isArray(parsed.body.caps)) att.caps = normalizeCaps(parsed.body.caps);
+      else if (!Array.isArray(att.caps)) att.caps = [];
+      const permit = normalizePermit(parsed.body.permit);
+      if (permit) att.permit = permit;
+      const agentVer = String(parsed.body.agent_ver ?? att.agentVer ?? "");
+      att.agentVer = agentVer;
       const arch = archFromBody(parsed.body);
+      ws.serializeAttachment({
+        deviceId: att.deviceId,
+        name,
+        os,
+        userId: att.userId,
+        caps: att.caps,
+        permit: att.permit,
+        agentVer,
+      });
       await this.mark(att.deviceId ?? "unknown", {
         name,
         os,
         online: true,
-        agentVer: String(parsed.body.agent_ver ?? ""),
+        agentVer,
         userId: att.userId,
+        ...(Array.isArray(parsed.body.caps) ? { caps: normalizeCaps(parsed.body.caps) } : {}),
+        ...(permit ? { permit } : {}),
         ...(arch !== undefined ? { arch } : {}),
       });
       return;
     }
 
+    if (parsed.type === "desktop") {
+      this.noteDesktop(parsed.corr ?? "", parsed.body ?? {});
+      return;
+    }
+
     if (parsed.type === "ping" || parsed.type === "heartbeat") {
-      const agentVer = agentVerFromBody(parsed.body);
-      const arch = archFromBody(parsed.body);
+      const body = parsed.body ?? {};
+      const agentVer = agentVerFromBody(body);
+      const arch = archFromBody(body);
+      if (Array.isArray(body.caps)) att.caps = normalizeCaps(body.caps);
+      const permit = normalizePermit(body.permit);
+      if (permit) att.permit = permit;
+      if (agentVer !== undefined) att.agentVer = agentVer;
+      ws.serializeAttachment({
+        deviceId: att.deviceId,
+        name: att.name ?? att.deviceId ?? "device",
+        os: att.os ?? "linux",
+        userId: att.userId,
+        caps: att.caps,
+        permit: att.permit,
+        agentVer: att.agentVer,
+      });
       await this.mark(att.deviceId ?? "unknown", {
         name: att.name ?? att.deviceId ?? "device",
         os: att.os ?? "linux",
         online: true,
         userId: att.userId,
         ...(agentVer !== undefined ? { agentVer } : {}),
+        ...(Array.isArray(body.caps) ? { caps: normalizeCaps(body.caps) } : {}),
+        ...(permit ? { permit } : {}),
         ...(arch !== undefined ? { arch } : {}),
       });
       this.noteBeat();
@@ -901,6 +1001,25 @@ export class DeviceDO implements DurableObject {
     for (const w of waiters) w();
   }
 
+  private waitDesktop(corr: string, waitMs: number): Promise<Record<string, unknown> | undefined> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.desktopWaiters.delete(corr);
+        resolve(undefined);
+      }, waitMs);
+      this.desktopWaiters.set(corr, { resolve, timer });
+    });
+  }
+
+  private noteDesktop(corr: string, body: Record<string, unknown>) {
+    if (!corr) return;
+    const waiter = this.desktopWaiters.get(corr);
+    if (!waiter) return;
+    clearTimeout(waiter.timer);
+    this.desktopWaiters.delete(corr);
+    waiter.resolve(body);
+  }
+
   private waitNextBeat(waitMs: number): Promise<boolean> {
     const start = this.beatSeq;
     return new Promise((resolve) => {
@@ -943,7 +1062,16 @@ export class DeviceDO implements DurableObject {
 
   private async mark(
     id: string,
-    extra: { name: string; os: string; online: boolean; agentVer?: string; arch?: string; userId?: string },
+    extra: {
+      name: string;
+      os: string;
+      online: boolean;
+      agentVer?: string;
+      arch?: string;
+      userId?: string;
+      caps?: string[];
+      permit?: "off" | "ask" | "allow";
+    },
   ): Promise<boolean> {
     const row: DeviceRow = {
       id,
@@ -955,6 +1083,8 @@ export class DeviceDO implements DurableObject {
       arch: extra.arch,
       userId: extra.userId,
     };
+    if (Array.isArray(extra.caps)) row.caps = extra.caps;
+    if (extra.permit) row.permit = extra.permit;
     const res = await this.fleet().fetch(
       new Request("https://fleet/upsert", {
         method: "POST",
@@ -964,6 +1094,32 @@ export class DeviceDO implements DurableObject {
     );
     return res.ok;
   }
+}
+
+function desktopPlan(path: string, body: Record<string, unknown>): { type: string; body: Record<string, unknown> } {
+  if (path.endsWith("desktop_screenshot") || body.action === "screenshot") {
+    return {
+      type: "desktop_screenshot",
+      body: { max_width: body.max_width, max_height: body.max_height },
+    };
+  }
+  return {
+    type: "desktop_action",
+    body: {
+      action: body.action,
+      x: body.x,
+      y: body.y,
+      x2: body.x2,
+      y2: body.y2,
+      text: body.text,
+      key: body.key,
+      keys: body.keys,
+      scroll_x: body.scroll_x,
+      scroll_y: body.scroll_y,
+      duration_ms: body.duration_ms,
+      frame_id: body.frame_id,
+    },
+  };
 }
 
 async function resolveSession(request: Request, fleet: DurableObjectStub): Promise<Actor | null> {

@@ -832,8 +832,69 @@ test("applyCliDevFlag sets FLEET_DEV and strips --dev", () => {
   assert.equal(isFleetDev({}), false);
 });
 
-test("MCP version is 0.2.10", () => {
-  assert.equal(FLEET_VERSION, "0.2.10");
+test("MCP version is 0.3.0", () => {
+  assert.equal(FLEET_VERSION, "0.3.0");
+});
+
+test("desktop_screenshot success keeps image_b64; formatMcpText strips it", async () => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
+  const { rpc } = mockRpc({
+    "/v1/desktop_screenshot": () => ({
+      ok: true,
+      width: 1280,
+      height: 720,
+      image_b64: jpeg,
+      mime: "image/jpeg",
+    }),
+  });
+  const op = createOperator({ rpc });
+  op.resolveDevice({ device_id: "pc1" });
+  const row = await op.callTool("desktop_screenshot", {});
+  assert.equal(row.ok, true);
+  assert.equal(row.image_b64, jpeg);
+  const text = formatMcpText("desktop_screenshot", row);
+  assert.equal(text.includes("image_b64"), false);
+  assert.equal(text.includes(jpeg), false);
+});
+
+test("desktop_screenshot consent is isError and has no image", async () => {
+  const { rpc } = mockRpc({
+    "/v1/desktop_screenshot": () => ({
+      ok: false,
+      status: "consent",
+      code: "consent",
+      error: "fleet: waiting for consent at the machine",
+    }),
+  });
+  const op = createOperator({ rpc });
+  const row = await op.callTool("desktop_screenshot", { device_id: "pc1" });
+  assert.equal(row.ok, false);
+  assert.equal(row.isError, true);
+  assert.equal(row.image_b64, undefined);
+});
+
+test("desktop_action 409 unsupported cap is isError with code", async () => {
+  const err = new Error("unsupported");
+  err.status = 409;
+  err.json = { error: "unsupported", code: "UNSUPPORTED_CAP", missing: "computer_use", os: "linux", agentVer: "0.2.10" };
+  const { rpc, calls } = mockRpc({
+    "/v1/desktop_action": () => {
+      throw err;
+    },
+  });
+  const op = createOperator({ rpc });
+  const row = await op.callTool("desktop_action", { device_id: "old", action: "left_click", x: 1, y: 1 });
+  assert.equal(row.isError, true);
+  assert.equal(row.code, "UNSUPPORTED_CAP");
+  assert.equal(row.os, "linux");
+  assert.equal(calls.length, 1);
+});
+
+test("buildTools ships desktop_screenshot and desktop_action", () => {
+  const names = buildTools().map((t) => t.name);
+  assert.ok(names.includes("desktop_screenshot"));
+  assert.ok(names.includes("desktop_action"));
+  assert.equal(names.filter((n) => n === "read_screen").length, 1);
 });
 
 test("newOperatorFingerprint is a UUID and is not read from FLEET_OPERATOR", () => {

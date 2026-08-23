@@ -22,6 +22,9 @@ import {
   sendToDevice,
   waitNextHeartbeat,
   cancelHeartbeatWait,
+  waitDesktop,
+  noteDesktop,
+  cancelDesktopWait,
 } from "./live";
 import {
   CHALLENGE_TTL_MS,
@@ -36,7 +39,17 @@ import {
   signChallenge,
   unwrapAuth,
 } from "./token";
-import { agentVerFromBody, clampHeartbeatWaitMs } from "../../../packages/fleet-worker/src/presence.mjs";
+import {
+  DESKTOP_WAIT_MS,
+  agentVerFromBody,
+  clampHeartbeatWaitMs,
+  computerPublic,
+  hasComputerUse,
+  joinCaps,
+  normalizeCaps,
+  normalizePermit,
+  unsupportedCapBody,
+} from "../../../packages/fleet-worker/src/presence.mjs";
 
 const HUB_WAIT_MAX_MS = 30_000;
 const HUB_WAIT_POLL_MS = 25;
@@ -234,6 +247,44 @@ export async function handleHubHttp(request: Request): Promise<Response> {
     return json(row);
   }
 
+  if ((path === "/v1/desktop_screenshot" || path === "/v1/desktop_action") && request.method === "POST") {
+    const deviceId = String(body.device_id ?? "");
+    if (!deviceId) return json({ error: "device_id required" }, 400);
+    if (!(await ownsDevice(userId, deviceId))) return json({ error: "not found" }, 404);
+    const catalog = (await listComputers(userId)).find((c) => c.id === deviceId);
+    if (!catalog) return json({ error: "not found" }, 404);
+    if (!isOnline(deviceId)) return json({ error: "offline" }, 409);
+    if (!hasComputerUse(catalog)) return json(unsupportedCapBody(catalog), 409);
+    const isShot = path.endsWith("desktop_screenshot") || body.action === "screenshot";
+    const wsType = isShot ? "desktop_screenshot" : "desktop_action";
+    const wsBody = isShot
+      ? { max_width: body.max_width, max_height: body.max_height }
+      : {
+          action: body.action,
+          x: body.x,
+          y: body.y,
+          x2: body.x2,
+          y2: body.y2,
+          text: body.text,
+          key: body.key,
+          keys: body.keys,
+          scroll_x: body.scroll_x,
+          scroll_y: body.scroll_y,
+          duration_ms: body.duration_ms,
+          frame_id: body.frame_id,
+        };
+    const corr = randomUUID();
+    const pending = waitDesktop(corr, DESKTOP_WAIT_MS);
+    const ok = sendToDevice(userId, deviceId, envelope(wsType, wsBody, corr));
+    if (!ok) {
+      cancelDesktopWait(corr);
+      return json({ error: "offline" }, 409);
+    }
+    const got = await pending;
+    if (!got) return json({ error: "timeout", code: "TIMEOUT" }, 409);
+    return json(got);
+  }
+
   if (path === "/v1/select_computer" && request.method === "POST") {
     const id = String(body.id ?? "");
     if (!id) return json({ error: "id required" }, 400);
@@ -383,7 +434,13 @@ async function onDeviceMessage(userId: string, deviceId: string, ws: WebSocket, 
       arch: String(parsed.body.arch ?? "unknown"),
       online: true,
       agentVer: helloVer,
+      caps: Array.isArray(parsed.body.caps) ? normalizeCaps(parsed.body.caps) : undefined,
+      permit: normalizePermit(parsed.body.permit) ?? undefined,
     });
+    return;
+  }
+  if (parsed.type === "desktop") {
+    noteDesktop(parsed.corr ?? "", parsed.body ?? {});
     return;
   }
   if (parsed.type === "ping" || parsed.type === "heartbeat") {
@@ -393,6 +450,14 @@ async function onDeviceMessage(userId: string, deviceId: string, ws: WebSocket, 
       set status = ${"online"}, last_seen = now()
       where id = ${deviceId} and user_id = ${userId}
     `;
+    const pingCaps = Array.isArray(parsed.body.caps) ? joinCaps(normalizeCaps(parsed.body.caps)) : null;
+    const pingPermit = normalizePermit(parsed.body.permit);
+    if (pingCaps != null) {
+      await sql`update devices set caps = ${pingCaps} where id = ${deviceId} and user_id = ${userId}`;
+    }
+    if (pingPermit) {
+      await sql`update devices set permit = ${pingPermit} where id = ${deviceId} and user_id = ${userId}`;
+    }
     putAgentVer(deviceId, agentVerFromBody(parsed.body));
     noteHeartbeat(deviceId);
     ws.send(JSON.stringify(envelope("pong", {}, parsed.id)));
@@ -435,23 +500,26 @@ async function listComputers(userId: string) {
     os: string;
     status: string;
     last_seen: string | Date;
+    caps: string | null;
+    permit: string | null;
   }>`
-    select id, name, os, status, last_seen
+    select id, name, os, status, last_seen, caps, permit
     from devices
     where user_id = ${userId}
     order by created_at asc
   `;
-  return rows.map((r) => {
-    const row = {
+  return rows.map((r) =>
+    computerPublic({
       id: r.id,
       name: r.name,
       os: r.os,
       online: isOnline(r.id),
       lastSeen: r.last_seen instanceof Date ? r.last_seen.getTime() : new Date(r.last_seen).getTime(),
       agentVer: getAgentVer(r.id),
-    };
-    return row;
-  });
+      caps: r.caps,
+      permit: r.permit,
+    }),
+  ).filter((row): row is NonNullable<typeof row> => Boolean(row));
 }
 
 async function ownsDevice(userId: string, deviceId: string) {
@@ -471,7 +539,15 @@ async function stolenDevice(userId: string, deviceId: string) {
 async function upsertDevice(
   userId: string,
   deviceId: string,
-  extra: { name: string; os: string; arch: string; online: boolean; agentVer?: string },
+  extra: {
+    name: string;
+    os: string;
+    arch: string;
+    online: boolean;
+    agentVer?: string;
+    caps?: string[];
+    permit?: "off" | "ask" | "allow" | null;
+  },
 ) {
   const sql = await getSql();
   const existing = await sql<{ user_id: string; slug: string }>`
@@ -480,11 +556,13 @@ async function upsertDevice(
   if (existing[0] && existing[0].user_id !== userId) return;
   const status = extra.online ? "online" : "offline";
   const arch = extra.arch || "unknown";
+  const capsText = extra.caps ? joinCaps(extra.caps) : null;
+  const permit = extra.permit ?? null;
   if (!existing[0]) {
     const slug = makeDeviceSlug(extra.name);
     await sql`
-      insert into devices (id, user_id, slug, name, os, arch, location_tag, status, caps)
-      values (${deviceId}, ${userId}, ${slug}, ${extra.name}, ${extra.os}, ${arch}, ${"home"}, ${status}, ${"shell,pane"})
+      insert into devices (id, user_id, slug, name, os, arch, location_tag, status, caps, permit)
+      values (${deviceId}, ${userId}, ${slug}, ${extra.name}, ${extra.os}, ${arch}, ${"home"}, ${status}, ${capsText ?? "shell,pane"}, ${permit})
     `;
     return;
   }
@@ -492,17 +570,23 @@ async function upsertDevice(
     await sql`
       update devices
       set name = ${extra.name}, os = ${extra.os}, arch = ${arch},
-          status = ${status}, last_seen = now(), caps = ${"shell,pane"}
+          status = ${status}, last_seen = now()
       where id = ${deviceId} and user_id = ${userId}
     `;
-    return;
+  } else {
+    await sql`
+      update devices
+      set name = ${extra.name}, os = ${extra.os},
+          status = ${status}, last_seen = now()
+      where id = ${deviceId} and user_id = ${userId}
+    `;
   }
-  await sql`
-    update devices
-    set name = ${extra.name}, os = ${extra.os},
-        status = ${status}, last_seen = now(), caps = ${"shell,pane"}
-    where id = ${deviceId} and user_id = ${userId}
-  `;
+  if (capsText != null) {
+    await sql`update devices set caps = ${capsText} where id = ${deviceId} and user_id = ${userId}`;
+  }
+  if (permit != null) {
+    await sql`update devices set permit = ${permit} where id = ${deviceId} and user_id = ${userId}`;
+  }
 }
 
 function envelope(type: string, body: Record<string, unknown> = {}, corr?: string): Envelope {

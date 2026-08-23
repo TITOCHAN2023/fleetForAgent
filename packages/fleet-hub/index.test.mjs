@@ -566,3 +566,155 @@ test("new socket kicks the old one", async (t) => {
   await b.opened;
   await closed;
 });
+
+test("hello caps and permit survive a ping without those fields", async (t) => {
+  const hub = createHub();
+  t.after(() => hub.close());
+  const { http, ws: wsUrl } = await listen(hub);
+  const dev = connectDevice(wsUrl, { id: "win-cu" });
+  t.after(() => dev.ws.close());
+  await dev.opened;
+  await waitType(dev.inbox, "hello_ok");
+  dev.ws.send(
+    JSON.stringify({
+      v: 1,
+      type: "hello",
+      id: "h1",
+      t: Date.now(),
+      body: {
+        os: "windows",
+        hostname: "CU",
+        agent_ver: "0.3.0",
+        caps: ["shell", "pane", "computer_use"],
+        permit: "ask",
+      },
+    }),
+  );
+  const t0 = Date.now();
+  let row;
+  while (Date.now() - t0 < 1000) {
+    const listed = await post(http, "/v1/list_computers", {});
+    row = listed.json.computers.find((c) => c.id === "win-cu");
+    if (row?.caps?.includes("computer_use")) break;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assert.ok(Array.isArray(row.caps));
+  assert.ok(row.caps.includes("computer_use"));
+  assert.equal(row.permit, "ask");
+  dev.ws.send(JSON.stringify({ v: 1, type: "ping", id: "p1", t: Date.now(), body: { agent_ver: "0.3.0" } }));
+  await waitType(dev.inbox, "pong");
+  const after = await post(http, "/v1/get_computer", { device_id: "win-cu" });
+  assert.deepEqual(after.json.caps, ["shell", "pane", "computer_use"]);
+  assert.equal(after.json.permit, "ask");
+  assert.equal("userId" in after.json, false);
+
+  dev.ws.send(
+    JSON.stringify({
+      v: 1,
+      type: "ping",
+      id: "p2",
+      t: Date.now(),
+      body: { agent_ver: "0.3.0", permit: "allow" },
+    }),
+  );
+  await waitType(dev.inbox, "pong");
+  const allowed = await post(http, "/v1/get_computer", { device_id: "win-cu" });
+  assert.equal(allowed.json.permit, "allow");
+  assert.deepEqual(allowed.json.caps, ["shell", "pane", "computer_use"]);
+});
+
+test("desktop_screenshot 409s without computer_use and sends no WS frame", async (t) => {
+  const hub = createHub();
+  t.after(() => hub.close());
+  const { http, ws: wsUrl } = await listen(hub);
+  const missing = await post(http, "/v1/desktop_screenshot", { device_id: "ghost" });
+  assert.equal(missing.status, 404);
+
+  const dev = connectDevice(wsUrl, { id: "old-1" });
+  t.after(() => dev.ws.close());
+  await dev.opened;
+  await waitType(dev.inbox, "hello_ok");
+  const before = dev.inbox.length;
+  const denied = await post(http, "/v1/desktop_screenshot", { device_id: "old-1" });
+  assert.equal(denied.status, 409);
+  assert.equal(denied.json.code, "UNSUPPORTED_CAP");
+  assert.equal(
+    dev.inbox.some((m) => m.type === "desktop_screenshot" || m.type === "desktop_action"),
+    false,
+  );
+  assert.equal(dev.inbox.length, before);
+});
+
+test("desktop_screenshot waits for a desktop reply and does not hang when mute", async (t) => {
+  const hub = createHub({ desktopWaitMs: 800 });
+  t.after(() => hub.close());
+  const { http, ws: wsUrl } = await listen(hub);
+  const dev = connectDevice(wsUrl, { id: "win-live" });
+  t.after(() => dev.ws.close());
+  await dev.opened;
+  await waitType(dev.inbox, "hello_ok");
+  dev.ws.send(
+    JSON.stringify({
+      v: 1,
+      type: "hello",
+      id: "h1",
+      t: Date.now(),
+      body: { os: "windows", caps: ["shell", "pane", "computer_use"], permit: "allow" },
+    }),
+  );
+  const t0 = Date.now();
+  while (Date.now() - t0 < 1000) {
+    const listed = await post(http, "/v1/list_computers", {});
+    const row = listed.json.computers.find((c) => c.id === "win-live");
+    if (row?.caps?.includes("computer_use")) break;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+
+  async function nextShot(afterCorr) {
+    const t1 = Date.now();
+    while (Date.now() - t1 < 1000) {
+      const hit = dev.inbox.find((m) => m.type === "desktop_screenshot" && m.corr !== afterCorr);
+      if (hit) return hit;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw new Error("no desktop_screenshot frame");
+  }
+
+  const asked = post(http, "/v1/desktop_screenshot", { device_id: "win-live" });
+  const down = await nextShot(undefined);
+  assert.ok(down.corr);
+  dev.ws.send(
+    JSON.stringify({
+      v: 1,
+      type: "desktop",
+      id: "d1",
+      corr: down.corr,
+      t: Date.now(),
+      body: { ok: true, status: "ok", width: 1280, height: 720, image_b64: "qq" },
+    }),
+  );
+  const got = await asked;
+  assert.equal(got.status, 200);
+  assert.equal(got.json.ok, true);
+  assert.equal(got.json.width, 1280);
+  assert.equal(got.json.image_b64, "qq");
+
+  const alias = post(http, "/v1/desktop_action", { device_id: "win-live", action: "screenshot" });
+  const down2 = await nextShot(down.corr);
+  dev.ws.send(
+    JSON.stringify({
+      v: 1,
+      type: "desktop",
+      corr: down2.corr,
+      t: Date.now(),
+      body: { ok: true, status: "ok", unchanged: true },
+    }),
+  );
+  const aliased = await alias;
+  assert.equal(aliased.status, 200);
+  assert.equal(aliased.json.unchanged, true);
+
+  const mute = await post(http, "/v1/desktop_action", { device_id: "win-live", action: "left_click", x: 1, y: 1 });
+  assert.equal(mute.status, 409);
+  assert.equal(mute.json.code, "TIMEOUT");
+});

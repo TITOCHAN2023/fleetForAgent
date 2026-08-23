@@ -3,7 +3,7 @@
  * Do not write hub_sessions, ~/.fleet, or a workspace file.
  */
 
-export const FLEET_VERSION = "0.2.10";
+export const FLEET_VERSION = "0.3.0";
 
 /** MCP-process fingerprint. HTTP header only — never a tool argument. */
 export const FLEET_OPERATOR_HEADER = "X-Fleet-Operator";
@@ -307,7 +307,7 @@ export function formatMcpText(name, out, env = {}) {
     if (out == null) text = "";
     else if (typeof out === "string") text = out;
     else if (typeof out === "object") {
-      const { timing: _timing, dev: _dev, ...rest } = out;
+      const { timing: _timing, dev: _dev, image_b64: _img, ...rest } = out;
       text = JSON.stringify(rest);
     } else text = JSON.stringify(out);
   } else if (!out || typeof out !== "object") {
@@ -472,7 +472,77 @@ export function buildTools() {
       description: "Show this process's last-used device, last cwd, and FLEET_DEVICE_ID start default.",
       inputSchema: { type: "object", properties: {} },
     },
+    {
+      name: "desktop_screenshot",
+      description:
+        "Capture the device primary display as a JPEG. Coordinates are pixels of this image, origin top-left. Requires get_computer.caps to include computer_use (Windows/macOS/Linux screenshot from Agent 0.3.0). Not the pane tool read_screen. Optional device_id after set_computer.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          device_id: deviceId,
+          max_width: { type: "number", description: "Viewport long-edge cap. Agent clamps to 320–1920, default 1280." },
+          max_height: { type: "number" },
+        },
+      },
+    },
+    {
+      name: "desktop_action",
+      description:
+        "HID on the primary display. x,y required for click/move/drag/scroll (pixels of the last screenshot, top-left origin, not native). left_click_drag also needs x2,y2. Actions: screenshot, left_click, right_click, double_click, middle_click, mouse_move, left_click_drag, scroll, type, key, wait. Optional frame_id from the screenshot. Requires computer_use. Not the pane tool type. Optional device_id after set_computer.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          device_id: deviceId,
+          action: {
+            type: "string",
+            description: "screenshot | left_click | right_click | double_click | middle_click | mouse_move | left_click_drag | scroll | type | key | wait",
+          },
+          x: { type: "number" },
+          y: { type: "number" },
+          x2: { type: "number" },
+          y2: { type: "number" },
+          text: { type: "string" },
+          key: { type: "string" },
+          keys: { description: "Named keys array, same as key joined with +" },
+          scroll_x: { type: "number" },
+          scroll_y: { type: "number" },
+          duration_ms: { type: "number" },
+          frame_id: { type: "string" },
+        },
+        required: ["action"],
+      },
+    },
   ];
+}
+
+export function desktopMcpRow(row) {
+  if (!row || typeof row !== "object") {
+    return { ok: false, status: "error", code: "bad_request", error: "empty desktop reply", isError: true };
+  }
+  const out = { ...row, isError: row.ok === false || row.isError === true };
+  return out;
+}
+
+async function desktopCall(trace, path, body, callRpc) {
+  try {
+    const row = await callRpc(trace, path, body);
+    return desktopMcpRow(row);
+  } catch (err) {
+    if (err && typeof err === "object" && err.json) {
+      return desktopMcpRow({
+        ok: false,
+        status: "error",
+        code: err.json.code || "http_error",
+        error: err.json.error || err.message,
+        missing: err.json.missing,
+        agentVer: err.json.agentVer,
+        os: err.json.os,
+        http_status: err.status,
+        isError: true,
+      });
+    }
+    throw err;
+  }
 }
 
 function hopStatus(row) {
@@ -706,6 +776,29 @@ export function createOperator({
       if (args.key != null && String(args.key) !== "") body.key = String(args.key);
       if (body.keys == null && body.key) body.keys = body.key;
       const row = await callRpc(trace, "/v1/type", body);
+      return withDev(withDevice(row, deviceId), trace);
+    }
+
+    if (name === "desktop_screenshot") {
+      const deviceId = resolveDevice(args);
+      const body = { device_id: deviceId };
+      if (args.max_width != null) body.max_width = args.max_width;
+      if (args.max_height != null) body.max_height = args.max_height;
+      const row = await desktopCall(trace, "/v1/desktop_screenshot", body, callRpc);
+      return withDev(withDevice(row, deviceId), trace);
+    }
+
+    if (name === "desktop_action") {
+      const deviceId = resolveDevice(args);
+      const body = { device_id: deviceId, action: args.action };
+      for (const k of ["x", "y", "x2", "y2", "text", "key", "keys", "scroll_x", "scroll_y", "duration_ms", "frame_id"]) {
+        if (args[k] != null) body[k] = args[k];
+      }
+      if (body.key && body.keys) {
+        // key wins when both are set
+        delete body.keys;
+      }
+      const row = await desktopCall(trace, "/v1/desktop_action", body, callRpc);
       return withDev(withDevice(row, deviceId), trace);
     }
 

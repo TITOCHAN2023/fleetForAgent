@@ -11,12 +11,16 @@ import { makeDeviceSlug } from "./cap";
 import {
   attachDevice,
   detachDevice,
+  getAgentVer,
   getResult,
   getScreen,
   isOnline,
+  noteHeartbeat,
+  putAgentVer,
   putResult,
   putScreen,
   sendToDevice,
+  waitNextHeartbeat,
 } from "./live";
 import {
   CHALLENGE_TTL_MS,
@@ -31,6 +35,20 @@ import {
   signChallenge,
   unwrapAuth,
 } from "./token";
+
+function agentVerFromBody(body: Record<string, unknown> | undefined): string | undefined {
+  if (!body || !Object.prototype.hasOwnProperty.call(body, "agent_ver")) return undefined;
+  if (body.agent_ver == null) return undefined;
+  const s = String(body.agent_ver).trim();
+  return s === "" ? undefined : s;
+}
+
+function clampHeartbeatWaitMs(value: unknown): number {
+  if (value == null || value === "") return 3_000;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 3_000;
+  return Math.min(10_000, n);
+}
 
 const HUB_WAIT_MAX_MS = 30_000;
 const HUB_WAIT_POLL_MS = 25;
@@ -200,6 +218,31 @@ export async function handleHubHttp(request: Request): Promise<Response> {
     return json({ computers: await listComputers(userId) });
   }
 
+  if (path === "/v1/get_computer" && request.method === "POST") {
+    const deviceId = String(body.device_id ?? "");
+    if (!deviceId) return json({ error: "device_id required" }, 400);
+    if (!(await ownsDevice(userId, deviceId))) return json({ error: "not found" }, 404);
+    const row = (await listComputers(userId)).find((c) => c.id === deviceId);
+    if (!row) return json({ error: "not found" }, 404);
+    return json(row);
+  }
+
+  if (path === "/v1/heartbeat" && request.method === "POST") {
+    const deviceId = String(body.device_id ?? "");
+    if (!deviceId) return json({ error: "device_id required" }, 400);
+    if (!(await ownsDevice(userId, deviceId))) return json({ error: "not found" }, 404);
+    if (!isOnline(deviceId)) return json({ error: "offline" }, 409);
+    const waitMs = clampHeartbeatWaitMs(body.wait_ms);
+    const pending = waitNextHeartbeat(deviceId, waitMs);
+    const ok = sendToDevice(userId, deviceId, envelope("ask_heartbeat", {}));
+    if (!ok) return json({ error: "offline" }, 409);
+    const got = await pending;
+    if (!got) return json({ error: "no heartbeat" }, 409);
+    const row = (await listComputers(userId)).find((c) => c.id === deviceId);
+    if (!row) return json({ error: "not found" }, 404);
+    return json(row);
+  }
+
   if (path === "/v1/select_computer" && request.method === "POST") {
     const id = String(body.id ?? "");
     if (!id) return json({ error: "id required" }, 400);
@@ -341,12 +384,14 @@ async function onDeviceMessage(userId: string, deviceId: string, ws: WebSocket, 
     return;
   }
   if (parsed.type === "hello") {
+    const helloVer = agentVerFromBody(parsed.body) ?? String(parsed.body.agent_ver ?? "");
+    putAgentVer(deviceId, helloVer);
     await upsertDevice(userId, deviceId, {
       name: String(parsed.body.hostname ?? deviceId),
       os: String(parsed.body.os ?? "linux"),
       arch: String(parsed.body.arch ?? "unknown"),
       online: true,
-      agentVer: String(parsed.body.agent_ver ?? ""),
+      agentVer: helloVer,
     });
     return;
   }
@@ -357,6 +402,8 @@ async function onDeviceMessage(userId: string, deviceId: string, ws: WebSocket, 
       set status = ${"online"}, last_seen = now()
       where id = ${deviceId} and user_id = ${userId}
     `;
+    putAgentVer(deviceId, agentVerFromBody(parsed.body));
+    noteHeartbeat(deviceId);
     ws.send(JSON.stringify(envelope("pong", {}, parsed.id)));
     return;
   }
@@ -403,13 +450,17 @@ async function listComputers(userId: string) {
     where user_id = ${userId}
     order by created_at asc
   `;
-  return rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    os: r.os,
-    online: isOnline(r.id),
-    lastSeen: r.last_seen instanceof Date ? r.last_seen.getTime() : new Date(r.last_seen).getTime(),
-  }));
+  return rows.map((r) => {
+    const row = {
+      id: r.id,
+      name: r.name,
+      os: r.os,
+      online: isOnline(r.id),
+      lastSeen: r.last_seen instanceof Date ? r.last_seen.getTime() : new Date(r.last_seen).getTime(),
+      agentVer: getAgentVer(r.id),
+    };
+    return row;
+  });
 }
 
 async function ownsDevice(userId: string, deviceId: string) {

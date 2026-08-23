@@ -15,11 +15,15 @@ type ScreenSlot = {
   byCorr: Map<string, Record<string, unknown>>;
 };
 
+type BeatSlot = { seq: number; waiters: Array<() => void> };
+
 type LiveStore = {
   byDevice: Map<string, LiveSlot>;
   byUser: Map<string, Set<string>>;
   screens: Map<string, ScreenSlot>;
   results: Map<string, Map<string, Record<string, unknown>>>;
+  agentVer: Map<string, string>;
+  beats: Map<string, BeatSlot>;
 };
 
 const OPEN = 1;
@@ -32,8 +36,13 @@ function store(): LiveStore {
     byUser: new Map(),
     screens: new Map(),
     results: new Map(),
+    agentVer: new Map(),
+    beats: new Map(),
   };
-  return g.__fleetLive__;
+  const s = g.__fleetLive__;
+  s.agentVer ??= new Map();
+  s.beats ??= new Map();
+  return s;
 }
 
 export function attachDevice(userId: string, deviceId: string, ws: WsLike) {
@@ -121,6 +130,48 @@ export function getResult(deviceId: string, corr: string): Record<string, unknow
   return store().results.get(deviceId)?.get(corr);
 }
 
+export function putAgentVer(deviceId: string, ver?: string) {
+  if (!ver) return;
+  store().agentVer.set(deviceId, ver);
+}
+
+export function getAgentVer(deviceId: string): string | undefined {
+  return store().agentVer.get(deviceId);
+}
+
+function beatSlot(deviceId: string): BeatSlot {
+  const s = store();
+  let slot = s.beats.get(deviceId);
+  if (!slot) {
+    slot = { seq: 0, waiters: [] };
+    s.beats.set(deviceId, slot);
+  }
+  return slot;
+}
+
+export function noteHeartbeat(deviceId: string) {
+  const slot = beatSlot(deviceId);
+  slot.seq += 1;
+  const waiters = slot.waiters.splice(0);
+  for (const w of waiters) w();
+}
+
+export function waitNextHeartbeat(deviceId: string, waitMs: number): Promise<boolean> {
+  const slot = beatSlot(deviceId);
+  const start = slot.seq;
+  return new Promise((resolve) => {
+    const onBeat = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      slot.waiters = slot.waiters.filter((w) => w !== onBeat);
+      resolve(slot.seq > start);
+    }, waitMs);
+    slot.waiters.push(onBeat);
+  });
+}
+
 function userSet(userId: string): Set<string> {
   const s = store();
   let set = s.byUser.get(userId);
@@ -138,4 +189,6 @@ export function resetLive() {
   s.byUser.clear();
   s.screens.clear();
   s.results.clear();
+  s.agentVer.clear();
+  s.beats.clear();
 }

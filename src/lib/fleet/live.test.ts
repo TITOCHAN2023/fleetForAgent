@@ -5,9 +5,11 @@ import {
   detachDevice,
   isOnline,
   kickUser,
+  noteHeartbeat,
   ownerOf,
   resetLive,
   sendToDevice,
+  waitNextHeartbeat,
 } from "./live";
 
 function fakeWs() {
@@ -56,6 +58,18 @@ test("reset kicks every live socket for that account", () => {
   assert.equal(isOnline("dev-2"), false);
   assert.equal(a.closeCode, 1008);
   assert.equal(b.closeCode, 1008);
+});
+
+test("waitNextHeartbeat resolves on noteHeartbeat and times out without hanging", async () => {
+  resetLive();
+  const pending = waitNextHeartbeat("dev-1", 1000);
+  noteHeartbeat("dev-1");
+  assert.equal(await pending, true);
+
+  const t0 = Date.now();
+  const missed = await waitNextHeartbeat("dev-1", 40);
+  assert.equal(missed, false);
+  assert.ok(Date.now() - t0 < 200, `wait hung ${Date.now() - t0}ms`);
 });
 
 test("new socket replaces the old one on the same device", () => {

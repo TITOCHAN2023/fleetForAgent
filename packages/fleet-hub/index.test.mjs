@@ -375,6 +375,184 @@ test("headerless 0.2.7 clients share one anonymous fingerprint", async (t) => {
   assert.equal(peek.json.corr, run.json.corr);
 });
 
+async function waitAgentVer(http, id, ver, ms = 1000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    const listed = await post(http, "/v1/list_computers", {});
+    const row = listed.json.computers.find((c) => c.id === id);
+    if (row?.agentVer === ver) return row;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error(`timeout waiting for ${id} agentVer=${ver}`);
+}
+
+test("heartbeat with agent_ver updates list_computers agentVer", async (t) => {
+  let now = 1_000;
+  const hub = createHub({ now: () => now });
+  t.after(() => hub.close());
+  const { http, ws: wsUrl } = await listen(hub);
+  const dev = connectDevice(wsUrl, { id: "win-1", name: "MySuperPC", os: "windows" });
+  t.after(() => dev.ws.close());
+  await dev.opened;
+  await waitType(dev.inbox, "hello_ok");
+  dev.ws.send(
+    JSON.stringify({
+      v: 1,
+      type: "hello",
+      id: "h1",
+      t: now,
+      body: { os: "windows", hostname: "MySuperPC", agent_ver: "0.2.5" },
+    }),
+  );
+  await waitAgentVer(http, "win-1", "0.2.5");
+  now = 2_000;
+  dev.ws.send(
+    JSON.stringify({ v: 1, type: "ping", id: "p-ver", t: now, body: { agent_ver: "0.2.8" } }),
+  );
+  await waitType(dev.inbox, "pong");
+  const listed = await post(http, "/v1/list_computers", {});
+  const row = listed.json.computers.find((c) => c.id === "win-1");
+  assert.equal(row.agentVer, "0.2.8");
+  assert.equal(row.lastSeen, 2_000);
+});
+
+test("heartbeat without agent_ver keeps the hello version (old 0.2.8 compat)", async (t) => {
+  let now = 1_000;
+  const hub = createHub({ now: () => now });
+  t.after(() => hub.close());
+  const { http, ws: wsUrl } = await listen(hub);
+  const dev = connectDevice(wsUrl, { id: "win-1", name: "MySuperPC", os: "windows" });
+  t.after(() => dev.ws.close());
+  await dev.opened;
+  await waitType(dev.inbox, "hello_ok");
+  dev.ws.send(
+    JSON.stringify({
+      v: 1,
+      type: "hello",
+      id: "h1",
+      t: now,
+      body: { os: "windows", hostname: "MySuperPC", agent_ver: "0.2.5" },
+    }),
+  );
+  await waitAgentVer(http, "win-1", "0.2.5");
+  now = 3_000;
+  dev.ws.send(JSON.stringify({ v: 1, type: "ping", id: "p-old", t: now, body: {} }));
+  await waitType(dev.inbox, "pong");
+  const listed = await post(http, "/v1/list_computers", {});
+  const row = listed.json.computers.find((c) => c.id === "win-1");
+  assert.equal(row.agentVer, "0.2.5");
+  assert.equal(row.lastSeen, 3_000);
+});
+
+test("get_computer returns one catalog row; unknown id is 404", async (t) => {
+  const hub = createHub();
+  t.after(() => hub.close());
+  const { http, ws: wsUrl } = await listen(hub);
+  const missing = await post(http, "/v1/get_computer", { device_id: "ghost" });
+  assert.equal(missing.status, 404);
+
+  const bad = await post(http, "/v1/get_computer", {});
+  assert.equal(bad.status, 400);
+
+  const dev = connectDevice(wsUrl, { id: "mac-1", name: "Mac mini", os: "darwin" });
+  t.after(() => dev.ws.close());
+  await dev.opened;
+  await waitType(dev.inbox, "hello_ok");
+  dev.ws.send(
+    JSON.stringify({
+      v: 1,
+      type: "hello",
+      id: "h1",
+      t: Date.now(),
+      body: { os: "darwin", hostname: "Mac mini", agent_ver: "0.2.8" },
+    }),
+  );
+  await waitAgentVer(http, "mac-1", "0.2.8");
+
+  const got = await post(http, "/v1/get_computer", { device_id: "mac-1" });
+  assert.equal(got.status, 200);
+  assert.equal(got.json.id, "mac-1");
+  assert.equal(got.json.name, "Mac mini");
+  assert.equal(got.json.os, "darwin");
+  assert.equal(got.json.online, true);
+  assert.equal(got.json.agentVer, "0.2.8");
+  assert.equal("userId" in got.json, false);
+  assert.equal("ip" in got.json, false);
+});
+
+test("manual heartbeat asks a live client and stores agent_ver from the reply", async (t) => {
+  let now = 1_000;
+  const hub = createHub({ now: () => now });
+  t.after(() => hub.close());
+  const { http, ws: wsUrl } = await listen(hub);
+  const dev = connectDevice(wsUrl, { id: "win-1", name: "MySuperPC", os: "windows" });
+  t.after(() => dev.ws.close());
+  await dev.opened;
+  await waitType(dev.inbox, "hello_ok");
+  dev.ws.send(
+    JSON.stringify({
+      v: 1,
+      type: "hello",
+      id: "h1",
+      t: now,
+      body: { os: "windows", hostname: "MySuperPC", agent_ver: "0.2.5" },
+    }),
+  );
+  await waitAgentVer(http, "win-1", "0.2.5");
+
+  now = 4_000;
+  const asked = post(http, "/v1/heartbeat", { device_id: "win-1", wait_ms: 1000 });
+  const down = await waitType(dev.inbox, "ask_heartbeat");
+  assert.equal(down.type, "ask_heartbeat");
+  dev.ws.send(
+    JSON.stringify({ v: 1, type: "heartbeat", id: "hb1", t: now, body: { agent_ver: "0.2.8" } }),
+  );
+  const res = await asked;
+  assert.equal(res.status, 200);
+  assert.equal(res.json.id, "win-1");
+  assert.equal(res.json.online, true);
+  assert.equal(res.json.agentVer, "0.2.8");
+  assert.equal(res.json.lastSeen, 4_000);
+
+  const listed = await post(http, "/v1/list_computers", {});
+  assert.equal(listed.json.computers[0].agentVer, "0.2.8");
+});
+
+test("manual heartbeat on offline or mute device is 409 and does not hang", async (t) => {
+  const hub = createHub();
+  t.after(() => hub.close());
+  const { http, ws: wsUrl } = await listen(hub);
+
+  const ghost = await post(http, "/v1/heartbeat", { device_id: "ghost" });
+  assert.equal(ghost.status, 404);
+
+  const dev = connectDevice(wsUrl, { id: "win-1" });
+  t.after(() => {
+    try {
+      dev.ws.close();
+    } catch {
+      /* ignore */
+    }
+  });
+  await dev.opened;
+  await waitType(dev.inbox, "hello_ok");
+
+  const tMute = Date.now();
+  const mute = await post(http, "/v1/heartbeat", { device_id: "win-1", wait_ms: 80 });
+  assert.ok(Date.now() - tMute < 400, `mute hung ${Date.now() - tMute}ms`);
+  assert.equal(mute.status, 409);
+  assert.equal(mute.json.error, "no heartbeat");
+
+  const closed = once(dev.ws, "close");
+  dev.ws.close();
+  await closed;
+  const tOff = Date.now();
+  const off = await post(http, "/v1/heartbeat", { device_id: "win-1" });
+  assert.ok(Date.now() - tOff < 200, `offline hung ${Date.now() - tOff}ms`);
+  assert.equal(off.status, 409);
+  assert.equal(off.json.error, "offline");
+});
+
 test("new socket kicks the old one", async (t) => {
   const hub = createHub();
   t.after(() => hub.close());

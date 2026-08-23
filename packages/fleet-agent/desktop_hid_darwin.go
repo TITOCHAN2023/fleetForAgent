@@ -43,6 +43,10 @@ static void fleetMouseButton(double x, double y, int button, int down) {
 	CFRelease(e);
 }
 
+static int fleetAXTrustedHID(void) {
+	return AXIsProcessTrusted() ? 1 : 0;
+}
+
 static void fleetCursorPos(double *x, double *y) {
 	CGEventRef e = CGEventCreate(NULL);
 	if (!e) { *x = 0; *y = 0; return; }
@@ -110,7 +114,18 @@ func (p *darwinPointer) toPoints(x, y float64) (float64, float64) {
 	return x / s, y / s
 }
 
+func darwinNeedAX() error {
+	if C.fleetAXTrustedHID() == 0 {
+		return desktopError{code: "os_permission", permission: "accessibility",
+			msg: "fleet: enable Accessibility for Fleet Agent in System Settings → Privacy & Security"}
+	}
+	return nil
+}
+
 func (p *darwinPointer) MoveAbs(x, y float64) error {
+	if err := darwinNeedAX(); err != nil {
+		return err
+	}
 	p.x, p.y = x, y
 	px, py := p.toPoints(x, y)
 	dragged := 0
@@ -124,6 +139,9 @@ func (p *darwinPointer) MoveAbs(x, y float64) error {
 }
 
 func (p *darwinPointer) Button(button pointerButton, down bool) error {
+	if err := darwinNeedAX(); err != nil {
+		return err
+	}
 	p.button = button
 	p.held = down
 	px, py := p.toPoints(p.x, p.y)

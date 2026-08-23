@@ -10,9 +10,27 @@ import (
 	_ "image/png"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
+	"time"
 )
+
+func runBounded(cmd *exec.Cmd, d time.Duration) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(d):
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		<-done
+		return fmt.Errorf("timeout")
+	}
+}
 
 func desktopSupported() bool { return true }
 
@@ -37,13 +55,9 @@ func nativeCapture() (*image.RGBA, DisplayInfo, error) {
 }
 
 func linuxGrab() (image.Image, error) {
-	tmp := filepath.Join(os.TempDir(), "fleet-desktop-capture.png")
-	_ = os.Remove(tmp)
 	try := [][]string{
-		{"grim", tmp},
-		{"import", "-window", "root", tmp},
-		{"scrot", "-z", tmp},
-		{"gnome-screenshot", "-f", tmp},
+		{"grim", "-"},
+		{"import", "-window", "root", "png:-"},
 	}
 	var last error
 	for _, args := range try {
@@ -52,20 +66,51 @@ func linuxGrab() (image.Image, error) {
 			continue
 		}
 		cmd := exec.Command(args[0], args[1:]...)
-		var stderr bytes.Buffer
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
+		if err := runBounded(cmd, 3*time.Second); err != nil {
 			last = fmt.Errorf("%s: %v %s", args[0], err, strings.TrimSpace(stderr.String()))
 			continue
 		}
-		f, err := os.Open(tmp)
+		img, _, err := image.Decode(&stdout)
 		if err != nil {
 			last = err
 			continue
 		}
-		img, _, err := image.Decode(f)
-		_ = f.Close()
-		_ = os.Remove(tmp)
+		return img, nil
+	}
+	f, err := os.CreateTemp("", "fleet-desk-*.png")
+	if err != nil {
+		return nil, desktopError{code: "capture_failed", msg: "fleet: temp file: " + err.Error()}
+	}
+	tmp := f.Name()
+	_ = f.Close()
+	defer os.Remove(tmp)
+	_ = os.Chmod(tmp, 0o600)
+	fileTry := [][]string{
+		{"scrot", "-z", tmp},
+		{"gnome-screenshot", "-f", tmp},
+	}
+	for _, args := range fileTry {
+		if _, err := exec.LookPath(args[0]); err != nil {
+			last = err
+			continue
+		}
+		cmd := exec.Command(args[0], args[1:]...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := runBounded(cmd, 3*time.Second); err != nil {
+			last = fmt.Errorf("%s: %v %s", args[0], err, strings.TrimSpace(stderr.String()))
+			continue
+		}
+		rf, err := os.Open(tmp)
+		if err != nil {
+			last = err
+			continue
+		}
+		img, _, err := image.Decode(rf)
+		_ = rf.Close()
 		if err != nil {
 			last = err
 			continue
@@ -123,7 +168,22 @@ func nativeTypeText(text string) error {
 	if !ok || lp == nil {
 		return desktopError{code: "no_input_backend", msg: "no_input_backend"}
 	}
-	return lp.cmd("type -- " + text)
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if line != "" {
+			if err := lp.cmd("type -- " + line); err != nil {
+				return err
+			}
+		}
+		if i < len(lines)-1 {
+			if err := lp.cmd("key Return"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func nativeKey(spec string) error {

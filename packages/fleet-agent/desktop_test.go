@@ -237,6 +237,21 @@ func TestBlankFrameDetectsSolidBlack(t *testing.T) {
 	}
 }
 
+func TestAskGrantsDieWithSocketClose(t *testing.T) {
+	f := &fakeDesk{}
+	a := &Agent{enabled: true, permit: PermitAsk, backend: f, desktopShotGranted: true, desktopInputGranted: true, lastFrame: &DesktopFrame{ID: "f", ViewportW: 10, ViewportH: 10, DisplayW: 10, DisplayH: 10}}
+	a.clearDesktopSessionLocked()
+	body := a.desktopScreenshotBody("n", nil)
+	if body["code"] != "consent" {
+		t.Fatalf("shot after WS drop %+v", body)
+	}
+	a.desktopPending = nil
+	body = a.desktopActionBody(map[string]any{"action": "left_click", "x": 1, "y": 1})
+	if body["code"] != "consent" && body["code"] != "no_frame" {
+		t.Fatalf("input after WS drop %+v", body)
+	}
+}
+
 func TestAgentCapsAdvertiseComputerUse(t *testing.T) {
 	caps := agentCaps()
 	if desktopSupported() && !containsStr(caps, "computer_use") {

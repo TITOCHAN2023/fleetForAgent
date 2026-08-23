@@ -319,13 +319,17 @@ func (a *Agent) disconnectLocked(reason string) {
 		a.ws = nil
 	}
 	a.pending = nil
+	a.clearDesktopSessionLocked()
+	a.conn = "offline"
+	a.log("warn", reason)
+}
+
+func (a *Agent) clearDesktopSessionLocked() {
 	a.desktopPending = nil
 	a.desktopShotGranted = false
 	a.desktopInputGranted = false
 	a.lastFrame = nil
 	a.lastDigest = ""
-	a.conn = "offline"
-	a.log("warn", reason)
 }
 
 func (a *Agent) connect(hub string) error {
@@ -495,6 +499,7 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 		if a.ws == c {
 			a.ws = nil
 			a.conn = "offline"
+			a.clearDesktopSessionLocked()
 			a.log("warn", "socket closed")
 		}
 		a.mu.Unlock()

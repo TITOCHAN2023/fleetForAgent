@@ -9,13 +9,13 @@
  * agents present Fleet-OAEP wraps, not plaintext Bearer. Optional secret
  * HUB_TOKEN is a super operator for HTTP list/run only — it cannot steal a
  * device WebSocket. Empty HUB_TOKEN = no super user. Optional ADMIN_EMAILS
- * is a logged-in list for /ops on this same Worker. Empty = no admins.
+ * is a cookie-session list for /ops on this same Worker. Empty = no admins.
  */
 
 import { handleOAuth } from "./oauth";
 import { applyBannedState, rejectIfBanned } from "./ban.mjs";
 import { canClaimDevice, deviceOwnerConflict } from "./bind.mjs";
-import { handleOpsRoute, isOpsAdmin, opsNotFound } from "./ops.mjs";
+import { handleOpsRoute } from "./ops.mjs";
 import {
   agentVerFromBody,
   archFromBody,
@@ -961,53 +961,48 @@ export class DeviceDO implements DurableObject {
   }
 }
 
+async function resolveSession(request: Request, fleet: DurableObjectStub): Promise<Actor | null> {
+  const res = await fleet.fetch(new Request("https://fleet/resolve", { headers: request.headers }));
+  const sess = (await res.json()) as Actor;
+  return sess.id ? sess : null;
+}
+
+async function putOpsBanned(fleet: DurableObjectStub, id: string, banned: boolean) {
+  const res = await fleet.fetch(
+    new Request("https://fleet/ops-banned", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id, banned }),
+    }),
+  );
+  if (!res.ok) return null;
+  return (await res.json()) as { id: string; banned: boolean };
+}
+
 async function dispatchOps(
   request: Request,
   env: Env,
   fleet: DurableObjectStub,
   path: string,
 ): Promise<Response> {
-  const resolved = await resolveActor(request, env, fleet);
-  const actor = "actor" in resolved ? resolved.actor : undefined;
-  if (!isOpsAdmin(actor, env.ADMIN_EMAILS)) return opsNotFound(path === "/ops" ? "html" : "json");
-  if (path === "/v1/ops/overview") {
-    const catalogRes = await fleet.fetch(new Request("https://fleet/ops-catalog"));
-    const catalog = (await catalogRes.json()) as { users?: unknown[]; devices?: unknown[] };
-    return handleOpsRoute({
-      path,
-      method: request.method,
-      actor,
-      adminEmails: env.ADMIN_EMAILS,
-      users: catalog.users,
-      devices: catalog.devices,
-    });
-  }
-  if (path === "/v1/ops/banned") {
-    const body = (await request.json().catch(() => ({}))) as { id?: string; banned?: boolean };
-    return handleOpsRoute({
-      path,
-      method: request.method,
-      actor,
-      adminEmails: env.ADMIN_EMAILS,
-      body,
-      setBanned: async (id, banned) => {
-        const res = await fleet.fetch(
-          new Request("https://fleet/ops-banned", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ id, banned }),
-          }),
-        );
-        if (!res.ok) return null;
-        return (await res.json()) as { id: string; banned: boolean };
-      },
-    });
+  const sess = await resolveSession(request, fleet);
+  let catalog: { users?: unknown[]; devices?: unknown[] } = {};
+  if (path !== "/ops") {
+    const res = await fleet.fetch(new Request("https://fleet/ops-catalog"));
+    catalog = (await res.json()) as { users?: unknown[]; devices?: unknown[] };
   }
   return handleOpsRoute({
     path,
     method: request.method,
-    actor,
+    actor: sess,
     adminEmails: env.ADMIN_EMAILS,
+    users: catalog.users,
+    devices: catalog.devices,
+    body:
+      path === "/v1/ops/banned"
+        ? ((await request.json().catch(() => ({}))) as { id?: string; banned?: boolean })
+        : undefined,
+    setBanned: (id, banned) => putOpsBanned(fleet, id, banned),
   });
 }
 
@@ -1044,9 +1039,8 @@ async function resolveActor(
   const auth = parseAuthorization(request.headers.get("authorization"));
   if (need && auth.kind === "bearer" && auth.token === need) return { actor: { id: "*", super: true } };
 
-  const sessRes = await fleet.fetch(new Request("https://fleet/resolve", { headers: request.headers }));
-  const sess = (await sessRes.json()) as Actor;
-  if (sess.id) {
+  const sess = await resolveSession(request, fleet);
+  if (sess) {
     if (sess.banned) return { error: "banned", status: 403 };
     return { actor: sess };
   }

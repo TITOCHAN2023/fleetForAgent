@@ -1,6 +1,7 @@
 /**
- * In-Worker ops console. Logged-in ADMIN_EMAILS only — not HUB_TOKEN / actor.super.
- * Empty ADMIN_EMAILS = nobody is an admin. Non-admins get 404 (no teaser).
+ * In-Worker ops console. Cookie session + ADMIN_EMAILS only — not HUB_TOKEN,
+ * actor.super, or Fleet-OAEP. Empty ADMIN_EMAILS = nobody is an admin.
+ * Non-admins get 404 (no teaser).
  */
 
 export const BAN_COPY_ZH = "操作不了你的机子，只是用于异常账号识别";
@@ -32,12 +33,27 @@ export function parseAdminEmails(raw) {
 }
 
 export function isOpsAdmin(actor, adminEmailsRaw) {
-  if (!actor || actor.super) return false;
+  if (!actor || actor.super || actor.banned) return false;
   const email = String(actor.email || "")
     .trim()
     .toLowerCase();
   if (!email) return false;
   return parseAdminEmails(adminEmailsRaw).includes(email);
+}
+
+export function banTargetError(actor, targetId, banned, adminEmailsRaw, users) {
+  const id = String(targetId || "").trim();
+  if (!id || typeof banned !== "boolean") return "id and banned required";
+  if (id === String(actor?.id || "").trim()) return "cannot ban yourself";
+  if (banned) {
+    const emails = parseAdminEmails(adminEmailsRaw);
+    const row = Array.isArray(users) ? users.find((u) => u && String(u.id) === id) : null;
+    const email = String(row?.email || "")
+      .trim()
+      .toLowerCase();
+    if (email && emails.includes(email)) return "cannot ban an admin";
+  }
+  return "";
 }
 
 export function opsNotFound(kind = "json") {
@@ -193,13 +209,15 @@ export async function handleOpsRoute(input) {
   }
 
   if (path === "/v1/ops/overview" && method === "GET") {
-    return json(buildOverview({ users: input.users, devices: input.devices }));
+    const body = buildOverview({ users: input.users, devices: input.devices });
+    return json({ ...body, me: String(input.actor?.id || "") });
   }
 
   if (path === "/v1/ops/banned" && method === "POST") {
     const id = String(input.body?.id || "").trim();
     const banned = input.body?.banned;
-    if (!id || typeof banned !== "boolean") return json({ error: "id and banned required" }, 400);
+    const deny = banTargetError(input.actor, id, banned, input.adminEmails, input.users);
+    if (deny) return json({ error: deny }, 400);
     if (typeof input.setBanned !== "function") return json({ error: "not found" }, 404);
     const row = await input.setBanned(id, banned);
     if (!row) return json({ error: "not found" }, 404);
@@ -312,6 +330,7 @@ export function opsPageHtml() {
           tokenYes: "有 token", tokenNo: "无 token",
           ban: "标记异常", unban: "取消标记",
           banned: "已标记",
+          you: "当前账号",
           empty: "还没有数据。",
           themeL: "浅色", themeD: "深色", themeS: "系统",
         },
@@ -326,6 +345,7 @@ export function opsPageHtml() {
           tokenYes: "token", tokenNo: "no token",
           ban: "Ban", unban: "Unban",
           banned: "banned",
+          you: "you",
           empty: "Nothing here yet.",
           themeL: "Light", themeD: "Dark", themeS: "System",
         },
@@ -376,11 +396,14 @@ export function opsPageHtml() {
       function accountView(a) {
         const mark = a.banned ? t("banned") : "";
         const action = a.banned ? t("unban") : t("ban");
+        const self = state.data && String(a.id) === String(state.data.me);
         return '<div class="machine">'
           + '<div class="row"><div><strong>'+esc(a.email)+'</strong>'
           + '<div class="subtle" style="font-family:var(--mono)">'+esc(a.id)+' · '+esc(a.token ? t("tokenYes") : t("tokenNo"))
-          + (mark ? " · "+esc(mark) : "")+'</div></div>'
-          + '<button class="btn'+(a.banned ? "" : " warn")+'" data-ban="'+esc(a.id)+'" data-next="'+(a.banned ? "0" : "1")+'">'+esc(action)+"</button></div>"
+          + (mark ? " · "+esc(mark) : "")
+          + (self ? " · "+esc(t("you")) : "")+'</div></div>'
+          + (self ? "" : '<button class="btn'+(a.banned ? "" : " warn")+'" data-ban="'+esc(a.id)+'" data-next="'+(a.banned ? "0" : "1")+'">'+esc(action)+"</button>")
+          + "</div>"
           + '<p class="subtle" style="margin:10px 0 0">'+esc((a.devices||0)+" · "+JSON.stringify(a.os||{})+" · "+JSON.stringify(a.arch||{})+" · "+JSON.stringify(a.agentVer||{}))+'</p>'
           + "</div>";
       }

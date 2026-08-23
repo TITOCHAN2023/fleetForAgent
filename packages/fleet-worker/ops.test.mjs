@@ -7,6 +7,7 @@ import { applyBannedState, rejectIfBanned } from "./src/ban.mjs";
 import {
   BAN_COPY_EN,
   BAN_COPY_ZH,
+  banTargetError,
   buildOverview,
   handleOpsRoute,
   isOpsAdmin,
@@ -88,6 +89,13 @@ test("HUB_TOKEN super is not an ops admin", async () => {
   assert.equal(isOpsAdmin({ id: "*", super: true, email: "ops@example.com" }, "ops@example.com"), false);
 });
 
+test("id looking like an admin email is not an ops admin", () => {
+  assert.equal(isOpsAdmin({ id: "ops@example.com" }, "ops@example.com"), false);
+  assert.equal(isOpsAdmin({ id: "ops@example.com", email: "ada@example.com" }, "ops@example.com"), false);
+  assert.equal(isOpsAdmin({ id: "user-ops", email: "ops@example.com" }, "ops@example.com"), true);
+  assert.equal(isOpsAdmin({ ...OPS, banned: true }, "ops@example.com"), false);
+});
+
 test("matching email → overview", async () => {
   const now = Date.now();
   const res = await handleOpsRoute({
@@ -140,6 +148,7 @@ test("matching email → overview", async () => {
   assert.equal(body.accounts[0].token, true);
   assert.equal(body.accounts[0].devices, 2);
   assert.equal(body.accounts[1].banned, true);
+  assert.equal(body.me, "user-ops");
 });
 
 test("overview JSON never includes name / hostname / ip fields", () => {
@@ -177,6 +186,68 @@ test("banned 403 still works on login/invoke after ops sets the flag", () => {
   assert.equal(user.banned, false);
 });
 
+test("cannot ban yourself or another ADMIN_EMAILS row", async () => {
+  const calls = [];
+  const setBanned = async (id, banned) => {
+    calls.push({ id, banned });
+    return { id, banned };
+  };
+  const users = [
+    { id: OPS.id, email: OPS.email },
+    { id: USER.id, email: USER.email },
+  ];
+
+  const selfBan = await handleOpsRoute({
+    path: "/v1/ops/banned",
+    method: "POST",
+    actor: OPS,
+    adminEmails: "ops@example.com, ada@example.com",
+    users,
+    body: { id: OPS.id, banned: true },
+    setBanned,
+  });
+  assert.equal(selfBan.status, 400);
+  assert.deepEqual(await selfBan.json(), { error: "cannot ban yourself" });
+
+  const selfUnban = await handleOpsRoute({
+    path: "/v1/ops/banned",
+    method: "POST",
+    actor: OPS,
+    adminEmails: "ops@example.com",
+    users,
+    body: { id: OPS.id, banned: false },
+    setBanned,
+  });
+  assert.equal(selfUnban.status, 400);
+
+  const otherAdmin = await handleOpsRoute({
+    path: "/v1/ops/banned",
+    method: "POST",
+    actor: OPS,
+    adminEmails: "ops@example.com, ada@example.com",
+    users,
+    body: { id: USER.id, banned: true },
+    setBanned,
+  });
+  assert.equal(otherAdmin.status, 400);
+  assert.deepEqual(await otherAdmin.json(), { error: "cannot ban an admin" });
+
+  const unbanAdmin = await handleOpsRoute({
+    path: "/v1/ops/banned",
+    method: "POST",
+    actor: OPS,
+    adminEmails: "ops@example.com, ada@example.com",
+    users,
+    body: { id: USER.id, banned: false },
+    setBanned,
+  });
+  assert.equal(unbanAdmin.status, 200);
+  assert.deepEqual(calls, [{ id: USER.id, banned: false }]);
+
+  assert.equal(banTargetError(OPS, OPS.id, true, "ops@example.com", users), "cannot ban yourself");
+  assert.equal(banTargetError(OPS, USER.id, true, "ops@example.com", users), "");
+});
+
 test("ops banned sets the flag and does not run, type, or kick", async () => {
   const calls = [];
   const res = await handleOpsRoute({
@@ -208,6 +279,8 @@ test("ops page copy is Ban, not Delete/Restore, and matches public wording", () 
   assert.equal(/delete/i.test(html), false);
   assert.equal(/restore/i.test(html), false);
   assert.match(html, /data-theme-set="system"/);
+  assert.match(html, /state\.data\.me/);
+  assert.match(html, /t\("you"\)/);
 });
 
 test("worker gates /ops before assets and /v1/ops before the catch-all actor", () => {
@@ -219,10 +292,24 @@ test("worker gates /ops before assets and /v1/ops before the catch-all actor", (
   );
   assert.ok(ops !== -1 && ops < assets);
   assert.ok(overview !== -1 && overview < catchAll);
-  assert.match(worker, /resolveActor/);
-  assert.match(worker, /isOpsAdmin/);
+  assert.match(worker, /handleOpsRoute/);
   assert.match(worker, /archFromBody/);
   assert.match(worker, /ADMIN_EMAILS/);
+});
+
+test("dispatchOps uses the cookie session and ignores Authorization", () => {
+  const start = worker.indexOf("async function dispatchOps");
+  const end = worker.indexOf("function configuredOrigin");
+  assert.notEqual(start, -1);
+  assert.ok(end > start);
+  const fn = worker.slice(start, end);
+  assert.match(fn, /resolveSession/);
+  assert.equal(fn.includes("resolveActor"), false);
+  assert.equal(fn.includes("parseAuthorization"), false);
+  assert.equal(fn.includes("resolve-wrap"), false);
+  assert.equal(fn.includes("HUB_TOKEN"), false);
+  assert.match(worker, /async function resolveSession/);
+  assert.match(readme, /cookie/i);
 });
 
 test("committed config does not list admin emails or put ADMIN_EMAILS in vars", () => {

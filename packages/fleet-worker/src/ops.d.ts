@@ -2,10 +2,17 @@ export const BAN_COPY_ZH: string;
 export const BAN_COPY_EN: string;
 export const FRESHNESS_NOTE: string;
 
-export type OpsActor = { id?: string; email?: string; super?: boolean } | null | undefined;
+export type OpsActor = { id?: string; email?: string; super?: boolean; banned?: boolean } | null | undefined;
 
 export function parseAdminEmails(raw: string | null | undefined): string[];
 export function isOpsAdmin(actor: OpsActor, adminEmailsRaw: string | null | undefined): boolean;
+export function banTargetError(
+  actor: OpsActor,
+  targetId: unknown,
+  banned: unknown,
+  adminEmailsRaw?: string | null,
+  users?: unknown[],
+): string;
 export function opsNotFound(kind?: "json" | "html"): Response;
 export function classifyOs(os: unknown): "mac" | "windows" | "linux" | "unknown";
 export function classifyArch(arch: unknown): "arm64" | "amd64" | "unknown";

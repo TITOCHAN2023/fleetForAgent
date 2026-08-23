@@ -52,7 +52,7 @@ Resetting the token deletes the old keypair and closes every live device WebSock
 
 `HUB_ORIGIN` is set in `packages/fleet-worker/wrangler.toml` `[vars]`. Optional `HUB_TOKEN` remains HTTP-only super for list/run; it cannot steal a device WebSocket.
 
-Optional `ADMIN_EMAILS` is a different secret: logged-in session emails that may open `/ops` on this Worker. Empty = no admins. Not `HUB_TOKEN` / `actor.super`.
+Optional `ADMIN_EMAILS` is a different secret: cookie-session emails that may open `/ops` on this Worker. Empty = no admins. Not `HUB_TOKEN` / `actor.super` / `Fleet-OAEP`.
 
 ```bash
 npx wrangler secret put ADMIN_EMAILS

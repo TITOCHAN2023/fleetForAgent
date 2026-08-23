@@ -52,7 +52,7 @@ Agent 和 MCP 不会把整串当 `Authorization: Bearer` 发出去。它们会�
 
 `HUB_ORIGIN` 写在 `packages/fleet-worker/wrangler.toml` 的 `[vars]`。可选的 `HUB_TOKEN` 仍只是 HTTP list/run 的超级令牌，抢不走设备 WebSocket。
 
-可选的 `ADMIN_EMAILS` 是另一回事：登录会话邮箱才能打开同一 Worker 的 `/ops`。空 = 没有管理员。不是 `HUB_TOKEN` / `actor.super`。
+可选的 `ADMIN_EMAILS` 是另一回事：cookie 登录会话的邮箱才能打开同一 Worker 的 `/ops`。空 = 没有管理员。不是 `HUB_TOKEN` / `actor.super` / `Fleet-OAEP`。
 
 ```bash
 npx wrangler secret put ADMIN_EMAILS

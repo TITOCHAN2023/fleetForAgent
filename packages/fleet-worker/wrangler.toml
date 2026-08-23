@@ -7,7 +7,7 @@ workers_dev = false
 #   npx wrangler secret put HUB_TOKEN
 # [vars] must not hold the token.
 #
-# Optional logged-in ops emails (not HUB_TOKEN). Empty = no admins:
+# Optional cookie-session ops emails (not HUB_TOKEN / Fleet-OAEP). Empty = no admins:
 #   npx wrangler secret put ADMIN_EMAILS
 # [vars] must not hold emails.
 #

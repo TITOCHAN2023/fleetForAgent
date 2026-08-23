@@ -283,6 +283,18 @@ test("ops page copy is Ban, not Delete/Restore, and matches public wording", () 
   assert.match(html, /t\("you"\)/);
 });
 
+test("ops page body script parses", () => {
+  const html = opsPageHtml();
+  const bodyStart = html.search(/<body[\s>]/i);
+  assert.ok(bodyStart !== -1, "expected <body>");
+  const scripts = [...html.slice(bodyStart).matchAll(/<script>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts.length > 0, "expected a <script> in <body>");
+  const script = scripts[scripts.length - 1][1];
+  assert.doesNotThrow(() => {
+    new Function(script);
+  });
+});
+
 test("opsPageHtml first paint has visible title chrome and no Google Fonts", () => {
   const html = opsPageHtml();
   const bodyStart = html.indexOf("<body>");

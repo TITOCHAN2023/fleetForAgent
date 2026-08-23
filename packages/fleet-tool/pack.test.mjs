@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -39,15 +40,15 @@ function extractPackage(tgz) {
   return { stage, pkgDir: join(stage, "package") };
 }
 
-function initializeMcp(bin) {
+function initializeMcp(command, args, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [bin], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
     let out = "";
     let err = "";
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
       reject(new Error(`MCP initialize timed out: stdout=${out} stderr=${err}`));
-    }, 8000);
+    }, timeoutMs);
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
@@ -130,11 +131,34 @@ test("packed tarball has a name + bin and no escaping imports", () => {
 test("packed index.mjs with no args starts MCP stdio", async () => {
   const extracted = extractPackage(committedTgz);
   try {
-    const out = await initializeMcp(join(extracted.pkgDir, "index.mjs"));
+    const out = await initializeMcp(process.execPath, [join(extracted.pkgDir, "index.mjs")]);
     const msg = JSON.parse(out.trim().split("\n")[0]);
     assert.equal(msg.result.serverInfo.name, "fleet");
     assert.equal(msg.result.protocolVersion, "2024-11-05");
   } finally {
     rmSync(extracted.stage, { recursive: true, force: true });
+  }
+});
+
+test("npx -y <origin>/fleet-tool.tgz starts MCP stdio", async () => {
+  const body = readFileSync(committedTgz);
+  const server = createServer((req, res) => {
+    if (req.url === "/fleet-tool.tgz") {
+      res.writeHead(200, { "content-type": "application/gzip", "content-length": body.length });
+      res.end(body);
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  try {
+    const out = await initializeMcp("npx", ["-y", `http://127.0.0.1:${port}/fleet-tool.tgz`], 30000);
+    const msg = JSON.parse(out.trim().split("\n")[0]);
+    assert.equal(msg.result.serverInfo.name, "fleet");
+    assert.equal(msg.result.protocolVersion, "2024-11-05");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
   }
 });

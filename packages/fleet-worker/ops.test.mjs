@@ -283,6 +283,26 @@ test("ops page copy is Ban, not Delete/Restore, and matches public wording", () 
   assert.match(html, /t\("you"\)/);
 });
 
+test("opsPageHtml first paint has visible title chrome and no Google Fonts", () => {
+  const html = opsPageHtml();
+  const bodyStart = html.indexOf("<body>");
+  assert.notEqual(bodyStart, -1);
+  const scriptInBody = html.indexOf("<script>", bodyStart);
+  const initial = html.slice(bodyStart, scriptInBody);
+  assert.match(initial, /用量与健康/);
+  assert.match(initial, /加载中/);
+  assert.match(initial, /fleet\.ginfo\.cc/);
+  assert.match(initial, /<header class="top">/);
+  assert.equal(html.includes("fonts.googleapis.com"), false);
+  assert.equal(html.includes("fonts.gstatic.com"), false);
+  assert.match(html, /ui-sans-serif/);
+  assert.match(html, /system-ui/);
+  const loadStart = html.indexOf("async function load()");
+  const load = html.slice(loadStart, html.indexOf("load();", loadStart));
+  assert.ok(load.includes("render()"));
+  assert.ok(load.indexOf("render()") < load.indexOf("/v1/ops/overview"));
+});
+
 test("worker gates /ops before assets and /v1/ops before the catch-all actor", () => {
   const ops = worker.indexOf('path === "/ops"');
   const assets = worker.indexOf("env.ASSETS.fetch");

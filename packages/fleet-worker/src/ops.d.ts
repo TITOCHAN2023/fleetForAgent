@@ -20,6 +20,8 @@ export function freshnessBucket(
   lastSeen: unknown,
   now?: number,
 ): "recent" | "hour" | "day" | "stale" | "unknown";
+export function sortByLastSeen<T>(rows: T[]): T[];
+export function matchOpsSearch(row: unknown, query: string): boolean;
 export function userHasToken(user: unknown): boolean;
 export function stripSensitive<T>(value: T): T;
 export function deviceOpsPublic(row: unknown): {

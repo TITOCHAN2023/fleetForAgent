@@ -27,7 +27,7 @@ Same Worker (`fleet-hub` on `fleet.ginfo.cc`). Not a new Worker or repo.
 
 `GET /ops` is an in-Worker page for usage and last-seen freshness (online/offline, OS / arch / agent version, stale vs recent). It does **not** claim packet loss, congestion, or traffic Mbps. Ban marks a row for abnormal-account identification; it cannot operate machines.
 
-Only a **cookie session** whose email is listed in the `ADMIN_EMAILS` secret can open `/ops` or `/v1/ops/*`. `Authorization` (`Fleet-OAEP` hub tokens, `HUB_TOKEN`) is ignored. Everyone else gets 404 — the page does not exist. Empty / unset secret means no admins (forks stay closed). Comma or whitespace separated; compared case-insensitively.
+Only a **cookie session** whose email is listed in the `ADMIN_EMAILS` secret can open `/ops` or `/v1/ops/*`. `Authorization` (`Fleet-OAEP` hub tokens, `HUB_TOKEN`) is ignored. Everyone else gets 404 — the page does not exist. Empty / unset secret means no admins (forks stay closed). Comma or whitespace separated; compared case-insensitively. Admins see a muted **Ops** control in the site header (no URL to type); it switches to the ops view, which searches accounts/devices and lists them by most recently active.
 
 ```bash
 npx wrangler secret put ADMIN_EMAILS

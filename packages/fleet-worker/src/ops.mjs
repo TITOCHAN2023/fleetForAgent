@@ -95,6 +95,29 @@ export function freshnessBucket(lastSeen, now = Date.now()) {
   return "stale";
 }
 
+export function sortByLastSeen(rows) {
+  return [...(Array.isArray(rows) ? rows : [])].sort((a, b) => {
+    const d = (Number(b?.lastSeen) || 0) - (Number(a?.lastSeen) || 0);
+    if (d) return d;
+    return String(a?.email || a?.id || "").localeCompare(String(b?.email || b?.id || ""));
+  });
+}
+
+export function matchOpsSearch(row, query) {
+  const q = String(query || "")
+    .trim()
+    .toLowerCase();
+  if (!q) return true;
+  if (!row || typeof row !== "object") return false;
+  const parts = [row.email, row.id, row.os, row.arch, row.agentVer];
+  if (Array.isArray(row.deviceIds)) parts.push(...row.deviceIds);
+  return parts
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+    .includes(q);
+}
+
 export function userHasToken(user) {
   if (!user || typeof user !== "object") return false;
   return Boolean(user.token || user.hasToken || user.tokenHash || user.kid);
@@ -164,10 +187,14 @@ export function buildOverview(catalog = {}, now = Date.now()) {
   const accounts = users.map((u) => {
     const mine = devices.map(deviceOpsPublic).filter((d) => d && d.userId === u.id);
     const breakdown = { os: {}, arch: {}, agentVer: {} };
+    let lastSeen = 0;
+    let accountOnline = false;
     for (const d of mine) {
       bump(breakdown.os, classifyOs(d.os));
       bump(breakdown.arch, classifyArch(d.arch));
       bump(breakdown.agentVer, d.agentVer.trim() ? d.agentVer.trim() : "unknown");
+      lastSeen = Math.max(lastSeen, d.lastSeen || 0);
+      if (d.online) accountOnline = true;
     }
     return {
       id: String(u.id),
@@ -175,6 +202,9 @@ export function buildOverview(catalog = {}, now = Date.now()) {
       banned: Boolean(u.banned),
       token: userHasToken(u),
       devices: mine.length,
+      deviceIds: mine.map((d) => d.id),
+      lastSeen,
+      online: accountOnline,
       os: breakdown.os,
       arch: breakdown.arch,
       agentVer: breakdown.agentVer,
@@ -190,8 +220,8 @@ export function buildOverview(catalog = {}, now = Date.now()) {
     agentVer,
     freshness,
     freshnessNote: FRESHNESS_NOTE,
-    accounts,
-    deviceRows,
+    accounts: sortByLastSeen(accounts),
+    deviceRows: sortByLastSeen(deviceRows),
   });
 }
 
@@ -308,6 +338,11 @@ export function opsPageHtml() {
       .machine { border: 1px solid var(--border); border-radius: 12px; padding: 16px; background: var(--surface); }
       code { font-family: var(--mono); font-size: 12px; }
       .kv { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; padding: 4px 0; }
+      .ops-switch { height: 32px; padding: 0 10px; border: 0; border-radius: 999px; background: transparent; color: var(--subtle); font-size: 12px; display: inline-flex; align-items: center; }
+      .ops-switch:hover { color: var(--muted); background: var(--elevated); }
+      .ops-switch.on { color: var(--muted); }
+      .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 28px; }
+      .toolbar input[type="search"] { flex: 1 1 16rem; height: 40px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); }
     </style>
   </head>
   <body>
@@ -339,7 +374,16 @@ export function opsPageHtml() {
           banned: "已标记",
           you: "当前账号",
           empty: "还没有数据。",
+          noneMatch: "没有匹配的账号或设备。",
           loading: "加载中",
+          ops: "管理",
+          site: "站点",
+          search: "搜索邮箱、账号或设备 id",
+          byRecent: "按最近活跃",
+          justNow: "刚刚",
+          minAgo: " 分钟前",
+          hourAgo: " 小时前",
+          dayAgo: " 天前",
           themeL: "浅色", themeD: "深色", themeS: "系统",
         },
         en: {
@@ -355,7 +399,16 @@ export function opsPageHtml() {
           banned: "banned",
           you: "you",
           empty: "Nothing here yet.",
+          noneMatch: "No matching accounts or devices.",
           loading: "Loading",
+          ops: "Ops",
+          site: "Site",
+          search: "Search email, account, or device id",
+          byRecent: "Most recently active",
+          justNow: "just now",
+          minAgo: "m ago",
+          hourAgo: "h ago",
+          dayAgo: "d ago",
           themeL: "Light", themeD: "Dark", themeS: "System",
         },
       };
@@ -365,6 +418,7 @@ export function opsPageHtml() {
         data: null,
         err: "",
         loading: true,
+        q: "",
       };
       const t = (k) => T[state.locale][k];
       function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
@@ -394,6 +448,8 @@ export function opsPageHtml() {
       function chrome() {
         return '<header class="top">'
           + '<a class="brand" href="/"><img src="/logo.png" width="28" height="28" alt="" />Fleet</a>'
+          + '<a class="ops-switch" href="/">'+t("site")+'</a>'
+          + '<a class="ops-switch on" href="/ops">'+t("ops")+'</a>'
           + '<span class="spacer"></span>'+themeBar()+langBar()
           + "</header>";
       }
@@ -402,6 +458,22 @@ export function opsPageHtml() {
       }
       function freshLabel(k) {
         return t(k) || k;
+      }
+      function ago(ts) {
+        const t0 = Number(ts);
+        if (!t0) return t("unknown");
+        const s = Math.max(0, (Date.now() - t0) / 1000);
+        if (s < 60) return t("justNow");
+        if (s < 3600) return Math.floor(s / 60) + t("minAgo");
+        if (s < 86400) return Math.floor(s / 3600) + t("hourAgo");
+        return Math.floor(s / 86400) + t("dayAgo");
+      }
+      function matchRow(row) {
+        const q = String(state.q || "").trim().toLowerCase();
+        if (!q) return true;
+        const parts = [row.email, row.id, row.os, row.arch, row.agentVer];
+        if (Array.isArray(row.deviceIds)) parts.push.apply(parts, row.deviceIds);
+        return parts.filter(Boolean).join(" ").toLowerCase().indexOf(q) !== -1;
       }
       function accountView(a) {
         const mark = a.banned ? t("banned") : "";
@@ -414,7 +486,8 @@ export function opsPageHtml() {
           + (self ? " · "+esc(t("you")) : "")+'</div></div>'
           + (self ? "" : '<button class="btn'+(a.banned ? "" : " warn")+'" data-ban="'+esc(a.id)+'" data-next="'+(a.banned ? "0" : "1")+'">'+esc(action)+"</button>")
           + "</div>"
-          + '<p class="subtle" style="margin:10px 0 0">'+esc((a.devices||0)+" · "+JSON.stringify(a.os||{})+" · "+JSON.stringify(a.arch||{})+" · "+JSON.stringify(a.agentVer||{}))+'</p>'
+          + '<p class="subtle" style="margin:10px 0 0"><span class="dot'+(a.online ? " on" : "")+'"></span> '
+          + esc(ago(a.lastSeen))+' · '+esc((a.devices||0)+" · "+JSON.stringify(a.os||{})+" · "+JSON.stringify(a.arch||{})+" · "+JSON.stringify(a.agentVer||{}))+'</p>'
           + "</div>";
       }
       function deviceView(d) {
@@ -422,7 +495,7 @@ export function opsPageHtml() {
           + '<code>'+esc(d.id)+'</code>'
           + '<div class="subtle">'+esc([d.os, d.arch, d.agentVer].filter(Boolean).join(" · "))+'</div></div>'
           + '<span class="muted"><span class="dot'+(d.online ? " on" : "")+'"></span> '
-          + esc(d.online ? t("online") : "")+' · '+esc(freshLabel(freshBucket(d.lastSeen)))+"</span></div>";
+          + esc(d.online ? t("online") : "")+' · '+esc(ago(d.lastSeen))+"</span></div>";
       }
       function freshBucket(lastSeen) {
         var t0 = Number(lastSeen), now = Date.now();
@@ -446,6 +519,9 @@ export function opsPageHtml() {
           return;
         }
         var fresh = d.freshness || {};
+        var accounts = (d.accounts || []).filter(matchRow);
+        var devices = (d.deviceRows || []).filter(matchRow);
+        var emptyList = !accounts.length && !devices.length;
         root.innerHTML = chrome()+'<div class="wrap">'
           + '<p class="kicker">'+t("kicker")+"</p>"
           + "<h1>"+t("title")+"</h1>"
@@ -466,10 +542,14 @@ export function opsPageHtml() {
           + '<div class="stack" style="margin-top:8px">'
           + [["recent","hour","day","stale","unknown"].map(function(k){return '<div class="kv"><span class="muted">'+esc(freshLabel(k))+'</span><span>'+esc(fresh[k]||0)+"</span></div>";}).join("")]
           + "</div></article></div>"
-          + '<h2 style="margin-top:64px">'+t("accounts")+"</h2>"
-          + '<div class="stack" style="margin-top:16px">'+(d.accounts&&d.accounts.length ? d.accounts.map(accountView).join("") : '<p class="muted">'+t("empty")+"</p>")+"</div>"
+          + '<div class="toolbar">'
+          + '<input type="search" id="ops-q" value="'+esc(state.q)+'" placeholder="'+esc(t("search"))+'" autocomplete="off" />'
+          + '<span class="subtle">'+t("byRecent")+"</span>"
+          + "</div>"
+          + '<h2 style="margin-top:36px">'+t("accounts")+"</h2>"
+          + '<div class="stack" style="margin-top:16px">'+(accounts.length ? accounts.map(accountView).join("") : '<p class="muted">'+(emptyList && state.q ? t("noneMatch") : t("empty"))+"</p>")+"</div>"
           + '<h2 style="margin-top:64px">'+t("deviceRows")+"</h2>"
-          + '<div class="stack" style="margin-top:16px">'+(d.deviceRows&&d.deviceRows.length ? d.deviceRows.map(deviceView).join("") : '<p class="muted">'+t("empty")+"</p>")+"</div>"
+          + '<div class="stack" style="margin-top:16px">'+(devices.length ? devices.map(deviceView).join("") : '<p class="muted">'+(emptyList && state.q ? t("noneMatch") : t("empty"))+"</p>")+"</div>"
           + "</div>";
         bind();
       }
@@ -480,6 +560,19 @@ export function opsPageHtml() {
         document.querySelectorAll("[data-theme-set]").forEach(function (b) {
           b.onclick = function () { applyTheme(b.dataset.themeSet); render(); };
         });
+        var search = document.getElementById("ops-q");
+        if (search) {
+          search.addEventListener("input", function () {
+            state.q = search.value;
+            var pos = search.selectionStart;
+            render();
+            var again = document.getElementById("ops-q");
+            if (again) {
+              again.focus();
+              try { again.setSelectionRange(pos, pos); } catch (e) {}
+            }
+          });
+        }
         document.querySelectorAll("[data-ban]").forEach(function (b) {
           b.onclick = async function () {
             state.err = "";

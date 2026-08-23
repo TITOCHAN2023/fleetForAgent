@@ -92,6 +92,9 @@
       .tab { border: 0; background: transparent; color: var(--muted); padding: 8px 12px; border-radius: 999px; font-size: 14px; }
       .tab.on { background: var(--elevated); color: var(--fg); }
       .who { font-size: 14px; color: var(--muted); max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .ops-switch { height: 32px; padding: 0 10px; border: 0; border-radius: 999px; background: transparent; color: var(--subtle); font-size: 12px; display: inline-flex; align-items: center; text-decoration: none; }
+      .ops-switch:hover { color: var(--muted); background: var(--elevated); }
+      .ops-switch.on { color: var(--muted); }
       .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
       .row > code.box { min-width: 0; flex: 1 1 12rem; }
       code, pre { font-family: var(--mono); font-size: 12px; }
@@ -122,7 +125,7 @@
       function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\"/g,"&quot;"); }
       const T = {
         zh: {
-          help: "帮助", downloads: "下载", signOut: "退出", settings: "设置", fleet: "机器",
+          help: "帮助", downloads: "下载", signOut: "退出", settings: "设置", fleet: "机器", ops: "管理",
           kicker: "fleet.ginfo.cc",
           hero: "一个工具，连上你所有电脑。随时随地。",
           body: "用本站地址和 token 导入工具。Windows、Linux、macOS 上的 Agent 会通过 WebSocket 主动连出来。",
@@ -171,7 +174,7 @@
           themeL: "浅色", themeD: "深色", themeS: "系统",
         },
         en: {
-          help: "Help", downloads: "Downloads", signOut: "Sign out", settings: "Settings", fleet: "Machines",
+          help: "Help", downloads: "Downloads", signOut: "Sign out", settings: "Settings", fleet: "Machines", ops: "Ops",
           kicker: "fleet.ginfo.cc",
           hero: "One tool. Every computer. Anywhere.",
           body: "Import the MCP tool with this URL and a token. Agents on Windows, Linux, and macOS dial out over WebSocket.",
@@ -318,10 +321,15 @@
           <button type="button" data-theme-set="system" class="${p==="system"?"on":""}">${t("themeS")}</button>
         </div>`;
       }
+      function opsSwitch() {
+        if (!(state.user && state.user.ops)) return "";
+        return `<a class="ops-switch" href="/ops">${t("ops")}</a>`;
+      }
       function chrome(extra) {
         return `<header class="top">
           <a class="brand" href="/" data-go="/"><img src="/logo.png" width="28" height="28" alt="" />Fleet</a>
           <a class="nav-link" href="/help" data-go="/help">${t("help")}</a>
+          ${opsSwitch()}
           <span class="spacer"></span>
           ${extra || ""}
           ${themeBar()}

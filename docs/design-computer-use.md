@@ -5,7 +5,7 @@
 | Title | Fleet Computer Use: 跨 Windows / macOS / Linux 的桌面截图与 HID 控制 |
 | Author | TBD |
 | Date | 2026-08-23 |
-| Status | Draft（review revision 2） |
+| Status | Draft（review revision 3） |
 | Branch | `feat/computer-use`（worktree `G:\project\fleetForAgent-computer-use`，基于 `origin/main` `b022f52` “Bump Fleet Agent to 0.2.10”） |
 | Agent 现状 | `packages/fleet-agent/main.go` `agentVersion = "0.2.10"` |
 | 范围 | 设计 only；不改生产代码。本文同时落盘到 `docs/design-computer-use.md`。 |
@@ -62,7 +62,7 @@ flowchart LR
 
 1. 一套 WSS 信封 + 一套 HTTP + 一套 MCP schema；Windows / macOS / Linux 只在 Agent 内用 build tags 分叉。Hub 永远看不到 DXGI / CGDisplay / X11 / Wayland。
 2. 可独立合并的增量 PR：**先 Hub（caps + 409 + waiter，不依赖 Agent 二进制）**，再单 OS 截图，再 MCP，再 HID。每一 PR 对旧 Agent 安全（结构化错误，不挂死）。BitBlt 若延期，hang-prevention 仍可单独合入。
-3. hello `caps` 增加 `computer_use`；Hub **仅在 hello 带数组时**写入现有 `DeviceRow`/`devices.caps`；heartbeat/offline **不得**把 caps 写成 `[]`。`list_computers` / `get_computer` 返回 caps。缺 cap → HTTP **409** `UNSUPPORTED_CAP`，**先于任何 WSS send**。
+3. hello `caps` 增加 `computer_use`；Hub **仅在 hello 带数组时**写入现有 `DeviceRow`/`devices.caps`；heartbeat/offline **不得**把 caps 写成 `[]`。hello 已有的 `permit`（`off|ask|allow`）**同样在 PR0** 写入并出现在 `list_computers` / `get_computer`。缺 cap → HTTP **409** `UNSUPPORTED_CAP`，**先于任何 WSS send**。
 4. 坐标空间定义清楚：模型只看见返回图像的像素，原点左上；Agent 负责缩放到原生显示与 OS 事件坐标。v1 **仅主显示器**。
 5. 截图默认 JPEG、长边 ≤ 1280、quality 70；Hub **不持久化像素**；日志禁止写 image bytes。
 6. Permit 默认不静默 allow。截图与 HID 分两次会话授权（截图 PR 先授权看，键鼠 PR 再授权动手）。
@@ -148,34 +148,39 @@ func agentCaps() []string {
 - PR1：仅 Windows 报 `computer_use`。darwin/linux stub **不上 cap**。
 - PR3/PR4 落地后，该 OS **只要编进真实 backend 就报 cap**，即使启动时没有 `DISPLAY`。装完桌面不用重编；运行时失败用 `no_session`。
 
-Hub 持久化（**无新 DO**）。**不变量：只在 hello 提供 `caps` 数组时写入；ping / close / heartbeat 不得带 `caps: []`。**
+Hub 持久化（**无新 DO**）。**不变量：只在 hello（或后续带值的 ping）提供 `caps` 数组 / 合法 `permit` 枚举时写入；ping / close / heartbeat 不得带 `caps: []` 或 `permit: ""`。**
 
-- Worker `DeviceRow` 增加 `caps?: string[]`。`DeviceDO.webSocketMessage` 的 `hello` 分支把 `body.caps` 交给 `mark()`。`mark()` **仅当 `extra.caps` 是数组时**把该字段放进 POST `/upsert` 的 JSON；缺省 **省略 key**（`JSON.stringify` 丢掉 `undefined`）。FleetDO `{...prev, ...row}` 因此在 ping 时保留 `prev.caps`。
-- hello 更新 WS attachment 必须是 **读-改-写整对象**。Cloudflare `serializeAttachment` **替换**而不合并。accept 时已有 `{ deviceId, name, os, userId }`（`packages/fleet-worker/src/index.ts`）。hello **禁止** `serializeAttachment({ caps })` 或只带 caps 的新对象——那会丢掉 `deviceId`，close/heartbeat 的 `mark()` 会打到 `"unknown"`。正确：
+- Worker `DeviceRow` 增加 `caps?: string[]` 与 `permit?: "off"|"ask"|"allow"`。`hello` 把 `body.caps` / `body.permit` 交给 `mark()`。`mark()` **仅当字段合法时**放进 POST `/upsert` JSON；缺省 **省略 key**。FleetDO `{...prev, ...row}` 因此在 ping 无这些字段时保留 `prev.caps` / `prev.permit`。
+- hello 更新 WS attachment 必须是 **读-改-写整对象**。Cloudflare `serializeAttachment` **替换**而不合并。accept 时已有 `{ deviceId, name, os, userId }`（`packages/fleet-worker/src/index.ts`）。hello **禁止**只序列化 `{ caps }` / `{ permit }`——会丢掉 `deviceId`。正确：
 
 ```ts
 const att = (ws.deserializeAttachment() ?? {}) as {
-  deviceId?: string; name?: string; os?: string; userId?: string; caps?: string[];
+  deviceId?: string; name?: string; os?: string; userId?: string;
+  caps?: string[]; permit?: string;
 };
 if (Array.isArray(parsed.body.caps)) att.caps = parsed.body.caps.map(String);
+const p = normalizePermit(parsed.body.permit);
+if (p) att.permit = p;
 ws.serializeAttachment({
   deviceId: att.deviceId,
   name: String(parsed.body.hostname ?? att.name ?? att.deviceId ?? "device"),
   os: String(parsed.body.os ?? att.os ?? "linux"),
   userId: att.userId,
   caps: att.caps,
+  permit: att.permit,
 });
 ```
 
-DeviceDO 发 `desktop_*` **之前**读 attachment.caps（hello 未到 → 无 `computer_use` → 409）。PR0 测试：hello 之后 attachment **仍有** `deviceId`，且 `caps` 含 `computer_use`。
-- `FleetDO.list()` 今天投影为 `id,name,os,online,lastSeen,agentVer`，必须把 `caps` 加进 map（保持 **数组**）。旧行缺字段 → `caps: []`，**绝不**推断 `computer_use`。
-- **App hub Postgres `devices.caps` 是 text**（`migrations/0002_fleet.sql` default `'shell'`）。**不要**把 SQL 字符串原样塞进 JSON 或 `computerPublic`：`Array.isArray("shell,pane,computer_use")` 为 false，会得到 `caps: []`，MCP 以为没 cap。约定：
-  - 写入（仅 hello）：`helloCaps.join(",")`，与 `src/lib/fleet/actions.ts` `mapDevice` 对称。
-  - 读出：`normalizeCaps(row.caps)`（见下）再放进 HTTP。`listComputers` / `get_computer` **必须** `SELECT caps` 且对外 `string[]`。
-  - heartbeat/`online` **不得**再写死 `"shell,pane"`，也不得 `caps = ''`。
-- Node in-memory 存数组。三套 Hub 的 `list_computers` JSON **形状必须一致**：`Array.isArray(caps) === true`。
+DeviceDO 发 `desktop_*` **之前**读 attachment.caps（hello 未到 → 无 `computer_use` → 409）。PR0 测试：hello 之后 attachment **仍有** `deviceId`，`caps` 含 `computer_use`，`permit` 为 hello 所报枚举。
+- `FleetDO.list()` 今天投影为 `id,name,os,online,lastSeen,agentVer`，必须加上 `caps`（**数组**）和 `permit`（**字符串枚举或 `null`**）。旧行缺 `caps` → `[]`，**绝不**推断 `computer_use`。旧行缺 `permit` → `null`，**绝不**推断 `ask`（机器默认 ask 不等于 Hub 见过 hello）。
+- **App hub Postgres `devices.caps` 是 text**（`migrations/0002_fleet.sql` default `'shell'`）。**不要**把 SQL 字符串原样塞进 JSON 或 `computerPublic`。约定：
+  - 写入 caps（仅 hello）：`helloCaps.join(",")`，与 `mapDevice` 对称。
+  - 读出 caps：`normalizeCaps(row.caps)`。`listComputers` / `get_computer` **必须** `SELECT caps, permit` 且 `caps` 对外 `string[]`。
+  - heartbeat/`online` **不得**再写死 `"shell,pane"`，也不得 `caps = ''` 或 `permit = ''`。
+  - `permit`：Worker/Node 行上就是 `"off"|"ask"|"allow"`。App hub 表 **没有** 该列 → PR0 加 `migrations/0005_device_permit.sql`：`alter table devices add column if not exists permit text;`（**无 default**，旧行保持 NULL）。写入：仅当 `normalizePermit(hello.permit)` 非空。读出：`normalizePermit(row.permit)`，HTTP 为枚举或 `null`。
+- Node in-memory 存 `caps: string[]` 与 `permit: string | null`。三套 Hub 的 `list_computers` JSON **形状必须一致**：`Array.isArray(caps)`；`permit` 为 `"off"|"ask"|"allow"|null`。
 
-测试（PR0 必过）：hello `caps: ["shell","pane","computer_use"]` → ping `{agent_ver}` → Worker / Node / **app hub** 的 `get_computer` 与 `list_computers` 均 `Array.isArray(caps)` 且含 `computer_use`。
+测试（PR0 必过）：hello `caps: ["shell","pane","computer_use"], permit: "ask"` → ping `{agent_ver}` → Worker / Node / **app hub** 的 `get_computer` 与 `list_computers` 均 `Array.isArray(caps)` 且含 `computer_use`，且 `permit === "ask"`。
 
 `get_computer` / `list_computers` 返回示例：
 
@@ -187,7 +192,8 @@ DeviceDO 发 `desktop_*` **之前**读 attachment.caps（hello 未到 → 无 `c
   "online": true,
   "lastSeen": 1770000000000,
   "agentVer": "0.3.0",
-  "caps": ["shell", "pane", "computer_use"]
+  "caps": ["shell", "pane", "computer_use"],
+  "permit": "ask"
 }
 ```
 
@@ -609,7 +615,7 @@ type Agent struct {
 | `allow` | 执行 | 执行（PR1 设置页必须写明：allow = 看屏幕 + 键鼠） |
 | `ask` + 无对应会话授权 | 设 `desktopPending`，**立即**写 consent 包，再 `notify`/托盘 | 同，文案不同；**不得**因已有 shot grant 而放行 HID |
 | `ask` + 已 shot grant | 截图执行 | 仍要 input grant（PR5 引入 Kind，PR6 起 HID 强制） |
-| 改 permit / disconnect | 清 grant、pending、lastFrame | 同 |
+| 改 permit / **本 WS disconnect** | 清 grant、pending、lastFrame | 同。**v1 无 30 分钟墙钟** |
 
 Ask **立即**回 consent，模型重试。批准后 **不** 用旧 corr 补发 JPEG（waiter 已拆）。`approve()`/`deny()` 在 **PR1** 就必须分支 `pendingKindDesktopShot`（否则托盘 Approve 会把 GUI pending 当成 `run` 去 `spawnPane`）。`pendingKindDesktopInput` 在 **PR5** 与 shot UX 一起加，**不要**拖到 PR8 macOS HID。
 
@@ -621,6 +627,8 @@ Consent 文案：
 Windows 无 `notify-send`/`osascript` 分支（`notifyConsent` 只实现 darwin/linux）。**Windows UX = 托盘 Allow/Deny + 设置页**（PR1 最小可用，PR5 打磨）。托盘若同时有 shell pending 与 desktop pending：`Needs approval` 在任一非空时点亮；Approve **优先** `desktopPending`，否则 `pending`。设置页列出两项。
 
 默认 permit 仍是 `ask`。`allow` 对该 Hub token 就是完整 GUI；此警告不得拖出 PR1。
+
+Ask 会话授权（`desktopShotGranted` / `desktopInputGranted`）**只**活到当前 WebSocket 断开或本机 `setPermit`，**v1 不加 30 分钟墙钟**（已决）。不落盘。PR1 `setPermit` 除清 grant 外，应立刻发一条带合法 `permit` 的 `ping`/`hello`，让 Hub 目录更新（PR0 的 `mark` 已在字段合法时写入）。
 
 ### 速率与安全护栏
 
@@ -722,6 +730,13 @@ export function normalizeCaps(caps) {
   return [];
 }
 
+/** Hello/SQL: "off"|"ask"|"allow". Anything else (including missing) → null. Never invent ask. */
+export function normalizePermit(value) {
+  const s = String(value ?? "").trim().toLowerCase();
+  if (s === "off" || s === "ask" || s === "allow") return s;
+  return null;
+}
+
 export function computerPublic(row) {
   if (!row || typeof row !== "object" || !row.id) return null;
   return {
@@ -732,13 +747,14 @@ export function computerPublic(row) {
     lastSeen: row.lastSeen,
     agentVer: row.agentVer,
     caps: normalizeCaps(row.caps),
+    permit: normalizePermit(row.permit),
   };
 }
 ```
 
-App `listComputers` / `get_computer`：`SELECT caps`，用 `normalizeCaps`（或先 split 再交给 `computerPublic`）。**不要** `caps: r.caps` 把 text 漏到 HTTP。写入 hello：`normalizeCaps(hello.body.caps).join(",")`，与 `mapDevice` 一致。
+App `listComputers` / `get_computer`：`SELECT caps, permit`，用 `normalizeCaps` / `normalizePermit`（或交给 `computerPublic`）。**不要** `caps: r.caps` 把 text 漏到 HTTP。写入 hello：`normalizeCaps(hello.body.caps).join(",")`，`permit` 仅在 `normalizePermit` 非空时 UPDATE。
 
-`presence.test.mjs`：数组进数组出；`"shell,pane,computer_use"` → 含 `computer_use` 的数组；缺字段 → `[]`；禁止 `userId`/`ip`。hello 后 ping 不丢 cap。PR0 再断言 Worker 与 app hub list JSON 同形：`Array.isArray(caps)`。
+`presence.test.mjs`：数组进数组出；`"shell,pane,computer_use"` → 含 `computer_use`；缺 caps → `[]`；`permit: "allow"` 出 `"allow"`；缺 permit / `"nope"` → `null`；禁止 `userId`/`ip`。hello 后 ping 不丢 cap **也不丢 permit**。PR0 再断言三套 Hub list JSON 同形：`Array.isArray(caps)` 且 `permit` 为枚举或 `null`。
 
 ### MCP tools（追加）
 
@@ -794,9 +810,7 @@ hello := Envelope{V: 1, Type: "hello", Body: map[string]any{
 }}
 ```
 
-heartbeat/`ping` body 今天只有 `agent_ver`（`presenceEnvelope()`）。**不必**每次 ping 重发 caps；hello 一次 + 重连即可。`get_computer` 在 Agent 升级后需重连（或用户调一次 `heartbeat` 也不带 caps——所以 hello 必须存）。文档写：升级 Agent 后看新 cap 需要重连；`heartbeat` 工具只刷新 `agentVer`/`lastSeen`。
-
-可选后续：ping 带 caps。v1 不做，避免心跳变大。
+heartbeat/`ping` body 今天只有 `agent_ver`（`presenceEnvelope()`）。caps 仍以 hello 为准（升级 Agent 后需重连才见新 cap）。**`permit` 例外：** 本机改档不必重连——PR1 起 `presenceEnvelope` / `setPermit` 后的 ping **带上当前 `permit` 枚举**；Hub `mark` 见合法值就写，与 caps 一样缺省省略。PR0 Hub 已能从 hello 或带值的 ping 收下 `permit`。`heartbeat` 工具仍主要刷新 `lastSeen`/`agentVer`；有 permit 字段则一并更新目录。
 
 ---
 
@@ -804,13 +818,15 @@ heartbeat/`ping` body 今天只有 `agent_ver`（`presenceEnvelope()`）。**不
 
 ### Worker / Node（无迁移、无新 binding）
 
-`DeviceRow` 多一个 `caps` 数组，写在现有 `d:${id}` JSON。旧行缺字段 → 视为无 `computer_use`。hello 写入；**heartbeat/close 的 mark 不得带空 caps**。`FleetDO.list` 投影、`computerPublic`、Node list、app `SELECT caps` 必须一起改，否则 upsert 了也看不见。
+`DeviceRow` 增加 `caps: string[]` 与 `permit: "off"|"ask"|"allow"`，写在现有 `d:${id}` JSON。旧行缺 `caps` → 无 `computer_use`；缺 `permit` → HTTP `null`。hello（及带合法枚举的 ping）写入；**heartbeat/close 的 mark 不得带空 caps/permit**。`FleetDO.list` 投影、`computerPublic`、Node list、app `SELECT caps, permit` 必须一起改。
 
 **不**把 `desktop` 帧写入 `res:` / `screen:` / SQLite。Waiter 纯内存；DO 休眠/重启丢失 in-flight 请求（与 heartbeat waiter 相同，可接受）。测试 spy `storage.put`。
 
 ### App hub Postgres
 
-`migrations/0002_fleet.sql` 已有 `devices.caps text not null default 'shell'`。**不需要新 migration**。存储仍是逗号文本；HTTP 边界必须变成 `string[]`（`normalizeCaps` / `join(",")`）。`upsertDevice` 仅 hello 写真实 caps；list/get **SELECT + split**。把 text 直接 JSON 出去会让 `computer_use` 从 MCP 视角消失。
+`migrations/0002_fleet.sql` 已有 `devices.caps text not null default 'shell'`。caps **不需要**新列：存储逗号文本，HTTP 用 `normalizeCaps`。`upsertDevice` 仅在 hello 写真实 caps；list/get **SELECT + split**。把 text 直接 JSON 出去会让 `computer_use` 从 MCP 视角消失。
+
+`permit` 列今天不存在。PR0 增加 `migrations/0005_device_permit.sql`（`permit text`，无 default）。Agent 设置页的 permit 活在本机 cfg，Hub 目录靠 hello/ping 同步。list/get 必须 SELECT 该列并 `normalizePermit`。
 
 明确禁止：
 
@@ -820,7 +836,7 @@ heartbeat/`ping` body 今天只有 `agent_ver`（`presenceEnvelope()`）。**不
 
 ### Agent 本地 cfg
 
-`cfgPath` JSON 仍是 `enabled/permit/hubInput/hubToken/deviceId`。会话授权 **不落盘**（断开即失效）。这是有意的：重启必须重新同意 Ask。
+`cfgPath` JSON 仍是 `enabled/permit/hubInput/hubToken/deviceId`。会话授权 **不落盘**，并在 **WS 断开或 `setPermit`** 时清掉。v1 **没有** 30 分钟墙钟。重启/重连必须重新同意 Ask。
 
 ---
 
@@ -931,7 +947,7 @@ Hub：现有 hop timing（`FLEET_DEV`）对 new path 照旧。建议字段：`co
 
 ```mermaid
 flowchart LR
-  PR0["PR0 Hub: caps+409+waiter+两条 HTTP"] --> PR1["PR1 Agent 0.3.0 Windows 截图"]
+  PR0["PR0 Hub: caps+permit+409+waiter"] --> PR1["PR1 Agent 0.3.0 Windows 截图"]
   PR0 --> PR2["PR2 MCP desktop_screenshot"]
   PR1 --> PR2
   PR1 --> PR3["PR3 Linux 截图"]
@@ -947,7 +963,7 @@ flowchart LR
   PR9 --> PR10
 ```
 
-1. **PR0 先发 Hub**（Worker + Node + app）：存 caps、list 返回 caps、两条 HTTP、409-before-send、waiter。旧 MCP 不受影响。BitBlt 延期也不挡 hang-prevention。
+1. **PR0 先发 Hub**（Worker + Node + app）：存 caps **与 permit**、list/get 返回二者、两条 HTTP、409-before-send、waiter。旧 MCP 不受影响。BitBlt 延期也不挡 hang-prevention。
 2. **PR1 Agent 0.3.0** Windows 截图 + 最小 permit。未升级 → 409，文案含 `agentVer`+`os`+支持矩阵。
 3. **PR2 fleet-tool** 截图工具。`FLEET_VERSION` 在这一 PR bump，不在 PR1。
 4. Linux / macOS 截图独立。HID 在该 OS 截图之后。
@@ -959,9 +975,9 @@ Feature flag：v1 用 caps + 工具是否发布，不另做远程 flag。Agent �
 
 ## Open Questions
 
-1. **Ask 会话授权时长：** v1 = 直到 disconnect 或改 permit。是否加 30 分钟墙钟仍开放。
+1. **Ask 会话授权时长（已决）：** 直到 **当前 WebSocket 断开** 或本机 **改 permit**。v1 **不加** 30 分钟墙钟，不落盘。
 2. **Linux cap vs `no_session`（已决）：** 真实 backend 编进二进制就报 `computer_use`（Windows 自 PR1；Linux/macOS 自其截图 PR）。运行时无图形会话 → `no_session`。Hub 409 = “这颗二进制不能”；`no_session` = “这次启动不能”。装完桌面不用重编。
-3. **是否在 `get_computer` 暴露 `permit`：** hello 已有、Hub 丢掉。建议后续 PR。
+3. **`list_computers` / `get_computer` 暴露 `permit`（已决）：** **PR0** 与 caps 一起落地。hello 已发 `permit`，Hub 不再丢掉。对外 `"off"|"ask"|"allow"|null`（未见过 hello → `null`，不推断 `ask`）。MCP 据此知道这台机是 off/ask/allow。
 4. **Cursor MCP image block：** PR2 用真 Cursor 点一次；host 丢 image 则 v1 不退化成临时文件协议。
 5. **多屏 / 窗口截图：** follow-up（PR11）。
 6. **键位语言（已决）：** 线协议与 MCP 同时收 `key`（`ctrl+c`）与 `keys`（`["ctrl","c"]`）；两者都给时 `key` 优先。
@@ -1013,12 +1029,12 @@ Feature flag：v1 用 caps + 工具是否发布，不另做远程 flag。Agent �
 5. **Hub 不持久化像素。** 请求期 in-memory corr waiter（对标 `beatWaiters`）：先注册再 send，超时 delete，禁止 `storage.put` / 轮询 `screen:`。DO await 会放 input gate，这是特性不是 bug。
 6. **坐标系 = 模型看过的那一帧。** Agent 存 `lastFrame`；HID 用其 `scale_*`。无帧 → `no_frame`。v1 单操作者 + 主屏。原点左上。
 7. **默认 JPEG，长边 1280，quality 70。** 目标 wire ~100 KiB。PNG 非默认。
-8. **Permit 扩展而非旁路。** 独立 `desktopPending`，禁止复用 `inputVerdict()`。Ask 立即 `ok:false, status:consent, code:consent`。shot grant ≠ input grant。`allow` 的 GUI 含义写进 PR1。
+8. **Permit 扩展而非旁路。** 独立 `desktopPending`，禁止复用 `inputVerdict()`。Ask 立即 `ok:false, status:consent, code:consent`。shot grant ≠ input grant；grant 活到 **WS 断开或改 permit**，无墙钟。`list_computers`/`get_computer` 在 **PR0** 返回 `permit` 枚举。`allow` 的 GUI 含义写进 PR1。
 9. **Ask 不阻塞 HTTP。** 批准后模型重试，不复用旧 corr。`deny` → 下一次 `code:denied` 一次。
 10. **Fleet 是 harness。** 循环在 LLM；Agent 不含厂商 SDK。
 11. **必须发新 Agent 构建才能截图（Windows 0.3.0）。** Hub（PR0）可先于 Agent。`FLEET_VERSION` 是 MCP 包版本，不与 0.3.0 绑死。
 12. **第一张真实截图 OS = Windows**（无 CGO BitBlt：进程启动 DPI、LockOSThread GDI、BGRA→RGBA、虚拟桌面公式、黑帧=`capture_failed`）。Linux/macOS stub 不上 cap。
-13. **MCP 仅在 `ok && image_b64` 时发 image block**；consent/error 纯 text + `isError`。409 文案含 os+矩阵，不是 “≥0.3.0”。对外 `caps` 恒为 `string[]`（app hub SQL text 必须 split）。
+13. **MCP 仅在 `ok && image_b64` 时发 image block**；consent/error 纯 text + `isError`。409 文案含 os+矩阵，不是 “≥0.3.0”。对外 `caps` 恒为 `string[]`（app hub SQL text 必须 split）；`permit` 恒为 `"off"|"ask"|"allow"|null`。
 14. **桌面是设备级，不走 pane fingerprint。** 所有权 `owns()`；super token 与 `run` 同权。
 
 ---
@@ -1027,20 +1043,20 @@ Feature flag：v1 用 caps + 工具是否发布，不另做远程 flag。Agent �
 
 原则：每个 PR 可单独合并、有测试、不破坏 pane 工具。Hang-prevention（PR0）不绑 BitBlt。
 
-### PR0 — `feat(computer-use): hub caps, 409, desktop waiter`
+### PR0 — `feat(computer-use): hub caps, permit, 409, desktop waiter`
 
 **依赖：** 无。 **无 Agent 发版。**  
-**描述：** 三套 Hub 持久化 hello `caps`（ping 不擦除）；`computerPublic` / `FleetDO.list` / Node list / app `listComputers` SELECT 返回 `caps`；`POST /v1/desktop_screenshot` 与 `POST /v1/desktop_action`（含 `action=screenshot` 别名）走 in-memory waiter；缺 cap → **send 前** 409 `UNSUPPORTED_CAP`；超时 409 `TIMEOUT`；**不** `storage.put` 像素。DeviceDO 两条路由与 Worker 前门同一 PR 落地，避免内部 `ok: true`。
+**描述：** 三套 Hub 持久化 hello `caps` **与** `permit`（ping 缺字段不擦除）；`computerPublic` / `FleetDO.list` / Node list / app `listComputers` 返回 `caps: string[]` 与 `permit: "off"|"ask"|"allow"|null`；app hub `migrations/0005_device_permit.sql` + `SELECT caps, permit`；`POST /v1/desktop_screenshot` 与 `POST /v1/desktop_action`（含 `action=screenshot` 别名）走 in-memory waiter；缺 cap → **send 前** 409 `UNSUPPORTED_CAP`；超时 409 `TIMEOUT`；**不** `storage.put` 像素。DeviceDO 两条路由与 Worker 前门同一 PR 落地，避免内部 `ok: true`。
 
-**文件：** `packages/fleet-worker/src/index.ts`、`presence.mjs`、`presence.d.ts`、`presence.test.mjs`；`packages/fleet-hub/index.mjs`、`index.test.mjs`；`src/lib/fleet/v1.server.ts`、`live.ts`、`live.test.ts`；可选 `lab.ts` hello caps（无图像）。
+**文件：** `packages/fleet-worker/src/index.ts`、`presence.mjs`、`presence.d.ts`、`presence.test.mjs`；`packages/fleet-hub/index.mjs`、`index.test.mjs`；`src/lib/fleet/v1.server.ts`、`live.ts`、`live.test.ts`；`migrations/0005_device_permit.sql`；可选 `lab.ts` hello caps（无图像）。
 
-**测试：** hello 后 ping 仍有 `computer_use`；online + caps `["shell","pane"]` → 409 且 **零** WS 帧；fake Agent 回 `desktop` 则 200；spy `storage.put` 不见 `image_b64`；超时 delete waiter；hello 后 attachment 仍含 `deviceId` 且 `caps` 含 `computer_use`；app hub 与 Worker 的 list JSON 均为 `Array.isArray(caps)` 且 hello 后含 `computer_use`（SQL text 不得原样出现）。
+**测试：** hello 后 ping 仍有 `computer_use` **和** `permit`；online + caps `["shell","pane"]` → 409 且 **零** WS 帧；fake Agent 回 `desktop` 则 200；spy `storage.put` 不见 `image_b64`；超时 delete waiter；hello 后 attachment 仍含 `deviceId`、`caps` 含 `computer_use`、`permit` 为 hello 枚举；三套 Hub list JSON `Array.isArray(caps)`，hello `permit:"ask"` 后 `permit==="ask"`，未见 hello 的行 `permit===null`（不得推断 `ask`）；app hub SQL text caps 不得原样出现。
 
 ### PR1 — `feat(computer-use): Windows screenshot Agent 0.3.0`
 
 **依赖：** PR0。  
 **Agent 版本：** 0.3.0（`main.go` + `package-agent.sh`）。**不** bump `FLEET_VERSION`。  
-**描述：** Windows BitBlt JPEG；darwin/linux 编译进 stub backend 但 **不上** cap；`readLoop` 处理两 type。`desktop_screenshot` 走最小 permit（off 拒、allow 放行、ask **立即** consent + `desktopPending` shot）。**`handleDesktopAction`：除 Hub 已转走的 screenshot 外全部 `unsupported_action`，不弹 input consent、不实现 `wait`。** `approve`/`deny` 分支 `pendingKindDesktopShot`（否则会 `spawnPane`）；成功截图写 `lastFrame`；设置页一句 allow=GUI。测试用注入 fake `desktopBackend`，不加 `desktop_stub.go`。`curl` 打 PR0 Hub 可通。
+**描述：** Windows BitBlt JPEG；darwin/linux 编译进 stub backend 但 **不上** cap；`readLoop` 处理两 type。`desktop_screenshot` 走最小 permit（off 拒、allow 放行、ask **立即** consent + `desktopPending` shot）。**`handleDesktopAction`：除 Hub 已转走的 screenshot 外全部 `unsupported_action`，不弹 input consent、不实现 `wait`。** `approve`/`deny` 分支 `pendingKindDesktopShot`（否则会 `spawnPane`）；成功截图写 `lastFrame`；设置页一句 allow=GUI。Ask grant 活到 WS 断开或改 permit（无墙钟）。`setPermit` 清 grant 并 ping 带当前 `permit` 枚举。测试用注入 fake `desktopBackend`，不加 `desktop_stub.go`。`curl` 打 PR0 Hub 可通。
 
 **文件：** `main.go`、`desktop.go`、`desktop_scale.go`、`desktop_windows.go`、`desktop_darwin.go`、`desktop_linux.go`、`desktop_test.go`、`desktop_scale_test.go`、`permit_test.go`；设置页/托盘最小文案。
 
@@ -1116,7 +1132,7 @@ Feature flag：v1 用 caps + 工具是否发布，不另做远程 flag。Agent �
 - [ ] 缺权限返回 actionable `os_permission` / `capture_failed`（不交黑图）
 - [ ] 坐标测试覆盖 scale ≠ 1 与 `lastFrame`/`no_frame`
 - [ ] consent 包含 `ok:false`
-- [ ] HTTP `caps` 恒为 `string[]`（app hub 从 text split）
+- [ ] HTTP `caps` 恒为 `string[]`（app hub 从 text split）；`permit` 恒为 `"off"|"ask"|"allow"|null`（缺省不推断 ask）
 - [ ] hello 后 WS attachment 仍含 `deviceId`
 - [ ] MCP image block 仅出现在 `ok && image_b64`
 - [ ] DeviceDO 新 HTTP 不是内部 `ok: true` 空壳

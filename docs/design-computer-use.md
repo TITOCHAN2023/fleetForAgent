@@ -64,7 +64,7 @@ flowchart LR
 2. 可独立合并的增量 PR：**先 Hub（caps + 409 + waiter，不依赖 Agent 二进制）**，再单 OS 截图，再 MCP，再 HID。每一 PR 对旧 Agent 安全（结构化错误，不挂死）。BitBlt 若延期，hang-prevention 仍可单独合入。
 3. hello `caps` 增加 `computer_use`；Hub **仅在 hello 带数组时**写入现有 `DeviceRow`/`devices.caps`；heartbeat/offline **不得**把 caps 写成 `[]`。hello 已有的 `permit`（`off|ask|allow`）**同样在 PR0** 写入并出现在 `list_computers` / `get_computer`。缺 cap → HTTP **409** `UNSUPPORTED_CAP`，**先于任何 WSS send**。
 4. 坐标空间定义清楚：模型只看见返回图像的像素，原点左上；Agent 负责缩放到原生显示与 OS 事件坐标。v1 **仅主显示器**。
-5. 截图默认 JPEG、长边 ≤ 1280、quality 70；Hub **不持久化像素**；日志禁止写 image bytes。
+5. 截图先归一化到模型视口（默认长边 1280）再按 **120 KiB 压缩预算** 出 JPEG；Hub **不持久化像素**；日志禁止写 image bytes。
 6. Permit 默认不静默 allow。截图与 HID 分两次会话授权（截图 PR 先授权看，键鼠 PR 再授权动手）。
 7. 缺 OS 权限时返回可操作错误（macOS TCC、Wayland portal、Windows 会话 0）。
 
@@ -221,6 +221,8 @@ DeviceDO 发 `desktop_*` **之前**读 attachment.caps（hello 未到 → 无 `c
 
 #### 下行：截图
 
+请求只表达 **视口预算**，不表达「把原生分辨率原样传上来」。4K/5K 在 Agent 内归一化，永远不出现在 WSS 上。
+
 ```json
 {
   "v": 1,
@@ -230,16 +232,14 @@ DeviceDO 发 `desktop_*` **之前**读 attachment.caps（hello 未到 → 无 `c
   "t": 1770000000000,
   "body": {
     "max_width": 1280,
-    "max_height": 1280,
-    "quality": 70,
-    "format": "jpeg"
+    "max_height": 1280
   }
 }
 ```
 
-- `max_width` / `max_height`：对图像长边的上限，Agent clamp 到 `[320, 1920]`，默认 1280。
-- `format`：`jpeg`（默认）| `png`。v1 实现 jpeg；png 可后补，未知 format → 当 jpeg。
-- 无 pane / fingerprint。桌面是设备级，不走 `resolveSession` / `X-Fleet-Operator` 票。所有权仍是 `owns(fleet, actor, device_id)`。
+- `max_width` / `max_height`：模型视口上限，Agent clamp 到 `[320, 1920]`，默认 **1280**。禁止大于 1920（那是给模型的坐标纸，不是显示器）。
+- **没有 `quality` / `format` 请求字段。** 编码是 Agent 的流量策略（JPEG + 字节预算），调用方不能点名 4K PNG。
+- 无 pane / fingerprint。桌面是设备级。所有权仍是 `owns(fleet, actor, device_id)`。
 
 #### 下行：动作
 
@@ -287,6 +287,8 @@ DeviceDO 发 `desktop_*` **之前**读 attachment.caps（hello 未到 → 无 `c
 
 #### 上行：统一 `desktop`（不要复用 `screen`）
 
+成功截图的 **唯一数据结构** 是 `frame`。顶层 `width` / `display_width` / `image_b64` 是给 OpenAI CUA / 旧客户端的扁平别名，值必须与 `frame` 一致，禁止两套数。
+
 ```json
 {
   "v": 1,
@@ -299,36 +301,48 @@ DeviceDO 发 `desktop_*` **之前**读 attachment.caps（hello 未到 → 无 `c
     "status": "ok",
     "code": "",
     "error": "",
-    "mime": "image/jpeg",
-    "image_b64": "<...>",
+    "unchanged": false,
+    "frame_id": "<uuid>",
     "width": 1280,
     "height": 720,
-    "display_width": 1920,
-    "display_height": 1080,
-    "scale_x": 1.5,
-    "scale_y": 1.5,
+    "display_width": 3840,
+    "display_height": 2160,
+    "scale_x": 3,
+    "scale_y": 3,
     "display_id": "primary",
     "origin": "top-left",
+    "dpr": 1,
+    "mime": "image/jpeg",
+    "encoding": "base64",
     "bytes": 91234,
-    "frame_id": "<uuid, screenshot corr>"
+    "digest": "aabbcc...",
+    "image_b64": "<...>",
+    "frame": {
+      "id": "<uuid>",
+      "viewport": { "width": 1280, "height": 720 },
+      "display": { "id": "primary", "width": 3840, "height": 2160, "dpr": 1 },
+      "transform": { "scale_x": 3, "scale_y": 3, "origin": "top-left" },
+      "image": { "mime": "image/jpeg", "encoding": "base64", "bytes": 91234 },
+      "digest": "aabbcc..."
+    }
   }
 }
 ```
 
 | 字段 | 含义 |
 | --- | --- |
-| `width`/`height` | **返回图像**像素。这是模型坐标系。 |
-| `display_width`/`display_height` | 捕获用的原生像素（Retina 上是 backing pixels）。 |
-| `scale_x`/`scale_y` | `display_* / image_*`。动作：`native = image * scale`。 |
-| `origin` | 恒为 `top-left`。 |
-| `image_b64` | 仅截图成功时出现。动作回包省略。consent/error 包不得带此字段。 |
-| `bytes` | 原始 JPEG 大小（解码前），供观测；**日志只记这个数字**。 |
-| `frame_id` | 成功截图时 = 该次 `corr`。HID 可选带回。 |
+| `frame.viewport` | **模型坐标系** = 实际发出去的 JPEG 像素。OpenAI 的 `display_width/height` 应对齐这里，不是 4K。 |
+| `frame.display` | 原生捕获（Retina backing pixels）。只作映射，不上线。 |
+| `frame.transform` | `native = map(viewport, scale)`；原点恒 `top-left`。 |
+| `frame.image.encoding` | v1 为 `base64`（JSON Envelope 与 MCP image block 都要）。逻辑上可换成 `raw` 而不改 viewport。 |
+| `image_b64` | 仅 `ok && !unchanged`。consent/error/unchanged **不得**带图。 |
+| `bytes` | 压缩后、base64 前的 JPEG 大小。日志只记这个数字。 |
+| `digest` | 视口 RGBA 的截断 SHA-256。相同桌面 → `unchanged:true`，不重传 JPEG。 |
+| `unchanged` | 与上一次成功视口像素相同。HTTP 仍 200，`ok:true`，无 `image_b64`，`frame_id` 仍是上一帧。 |
+| `frame_id` | 成功截图 = 该次 `corr`；unchanged 复用上一帧 id。 |
 | `status` | `ok` \| `consent` \| `error` |
-| `ok` | **始终存在。** 成功 `true`；consent / 一切设备失败 `false`。 |
-| `code` | 成功为空字符串；失败见下表。 |
-| `error` | 人类可读；consent 用稳定句（见下）。 |
-| `permission` | 仅 `os_permission`：`screen_recording` \| `accessibility` \| `portal` 等 |
+| `ok` | **始终存在。** |
+| `permission` | 仅 `os_permission` |
 
 **禁止**把上述 body 写入 `screen:last` / `screen:${corr}` / `protocol_events.envelope` / `commands.stdout`。
 
@@ -416,26 +430,27 @@ Cloudflare 约束（量化）：
 
 | 项 | 预算 | 结论 |
 | --- | --- | --- |
-| 1280×720 JPEG q70 | 典型 40–120 KiB，base64 ≈ 55–160 KiB | 远低于 WS 32 MiB、HTTP 响应上限 |
-| 1920 边 PNG 桌面 | 常 > 2 MiB | v1 默认禁止；format=png 且预估超 1.5 MiB 时 Agent 改 jpeg |
+| 4K 原图 PNG/JPEG | 数百 KiB–数 MiB | **禁止上线**；只作 Agent 内存捕获 |
+| 视口 JPEG ≤ 120 KiB | base64 ≈ ≤ 160 KiB | 硬预算；质量从 78 降到 46，再缩边 |
+| 相同 digest | 0 图字节 | `unchanged`；Computer Use 循环的主要省流 |
 | DO `storage.put` | ~2 MiB/value | **不把像素放进去** |
 | 首张 DXGI/BitBlt | 冷启动可数百 ms | 8s 等待足够 |
 | 目标 | 截图 p95 < 2s（本机已授权） | 超时当错误，MCP 可重试 |
 
-`github.com/coder/websocket` 默认 **读**限制 32768，**不限制 Agent 发送**。v1 下行仍是小 JSON，Agent `SetReadLimit(1<<20)` 与 Node `maxPayload: 2_000_000` 可选，不挡 PR0。Cloudflare 单值 / WS 上限无法从本仓库核实；1280 JPEG q70 远小于公开的 32MiB WS / ~2MiB `storage.put`，**不存像素**仍是保守选择。
+`github.com/coder/websocket` 默认 **读**限制 32768，**不限制 Agent 发送**。v1 下行仍是小 JSON，Agent `SetReadLimit(1<<20)` 与 Node `maxPayload: 2_000_000` 可选，不挡 PR0。Cloudflare 单值 / WS 上限无法从本仓库核实；预算内 JPEG 远小于公开的 32MiB WS / ~2MiB `storage.put`，**不存像素**仍是保守选择。
 
 ### Agent 内部结构（build tags）
 
 ```
 packages/fleet-agent/
-  desktop.go              # 类型、handleDesktop*、缩放、JPEG、permit、错误码；Agent.backend 可注入
-  desktop_scale.go        # 纯函数：fitBox、imageToNative、nativeToOS（单测）
+  desktop.go              # 类型、handleDesktop*、permit、错误码；Agent.backend 可注入
+  desktop_norm.go         # 视口、双线性、JPEG 预算、digest、frame JSON（无 OS）
   desktop_keys.go         # 命名键 → 跨平台键名（与 type_keys.go 分离）
   desktop_windows.go      # //go:build windows  BitBlt/SendInput，无 CGO
   desktop_darwin.go       # //go:build darwin   CGO CoreGraphics / CGEvent
   desktop_linux.go        # //go:build linux    portal/DBus + X11 fallback，无 CGO
   desktop_test.go         # 注入 fake backend；每 OS 都能跑，不调用 BitBlt
-  desktop_scale_test.go
+  desktop_norm_test.go
 ```
 
 **不要**加 `desktop_stub.go`。它若无 tag 会与 `desktop_windows.go` 的 `Supported()` 重复定义；若 `//go:build !windows` 则 Windows 开发机/CI 跑不到需要 fake 捕获的 permit/JPEG 测试。正确做法：`Agent` 持有 `desktopBackend`（默认 `newOSBackend()`），测试里赋 fake。`desktopSupported()` 问的是编译进来的真实 backend，不是测试注入。
@@ -505,7 +520,7 @@ case "desktop_action":
     go a.handleDesktopAction(ctx, c, env)
 ```
 
-JPEG：标准库 `image/jpeg`。缩放：`golang.org/x/image/draw`（需加依赖）或简单 `nearest` 先上、双线性后补。不引入 `kbinani/screenshot`：它在 Linux 上 CGO+X11，且 Wayland 差，和 `package-agent.sh` 冲突。
+归一化在 `desktop_norm.go`（无 CGO、无第三方图像库）：双线性缩放到视口 → JPEG 质量从 78 降到 46 直到 ≤ **120 KiB** 压缩体积 → 仍超则再缩 85% 重试。4K 原图不得出现在 `JPEG` 字段里。不引入 `kbinani/screenshot` / libwebp（CGO）。`golang.org/x/image` 也不加，避免抬高 `go` 版本。
 
 ### 坐标系（硬约束）
 
@@ -527,10 +542,33 @@ flowchart TB
   N --> L
 ```
 
+### 截图流水线（4K 不得出门）
+
+```mermaid
+flowchart LR
+  Cap["捕获原生 BGRA\n3840x2160"] --> RGBA["BGRA→RGBA"]
+  RGBA --> Fit["fitBox 长边≤1280\n不放大"]
+  Fit --> Scale["双线性 → 视口"]
+  Scale --> JPEG["JPEG q78→46\n预算 120KiB"]
+  JPEG --> Hash["digest 视口像素"]
+  Hash -->|相同| Skip["unchanged 无图"]
+  Hash -->|不同| Wire["frame + image_b64\nbase64 ≈ 160KiB 上限"]
+```
+
+Anthropic 官方 demo 要求工具侧缩到约 XGA 再映射坐标，不要把超清图丢给模型。我们更硬：
+
+1. **视口是坐标纸，不是显示器。** 模型看到的永远是 `frame.viewport`。OpenAI tool 上的 `display_width/height` 填视口，填 3840 是错误。
+2. **先缩小再压缩。** 4K JPEG q70 仍可能数百 KiB；缩到 1280 再自适应质量，busy desktop 也压进 120 KiB。
+3. **预算是字节不是质量旋钮。** 调用方不能 `quality: 100`。Hub/MCP 只看到已经过预算的 JPEG。
+4. **循环截图去重。** Computer Use 常 wait 后再 screenshot；像素没变就 `unchanged`，省一整帧 base64。
+5. **一套 `DesktopFrame`。** WS body、HTTP JSON、MCP 文本元数据都是它；MCP image block 只复制 `image.data`。以后若上二进制 WS，只改 `encoding`。
+
+实现：`packages/fleet-agent/desktop_norm.go`（`fitBox`、`scaleBilinear`、`encodeJPEGBudget`、`mapViewportToNative`、`desktopFrameBody`）。单测覆盖 4K→1280、预算、digest、CUA 扁平别名。
+
 规则：
 
 1. 模型 **只**使用返回图的像素坐标，原点左上。
-2. Agent 用 **`lastFrame`**，不是现场重测显示器：`natX = round(x * lastFrame.ScaleX)`，clamp 到 `[0, lastFrame.DisplayW-1]`。
+2. Agent 用 **`lastFrame`**（整颗 `DesktopFrame`），不是现场重测显示器。映射：`mapAxis` 把视口闭区间映到原生闭区间。
 3. 缩放前越界 → `bad_coordinates`。尚无成功截图 → `no_frame`。
 4. 多显示器 v1 只捕获主屏。Windows `MOUSEEVENTF_ABSOLUTE` 公式见下，不能把图像坐标当成整桌面 0..65535。
 5. macOS Retina：捕获 backing pixels；`CGEvent` 用全局点。`desktop_darwin.go` 显式转换，单测 `scale=2`。
@@ -1028,7 +1066,7 @@ Feature flag：v1 用 caps + 工具是否发布，不另做远程 flag。Agent �
 4. **Cap 名 `computer_use`，仅 hello 写入现有 `DeviceRow`/`devices.caps`。** ping 不得清空。无新 DO。缺 cap → **发 WSS 前** 409。旧行缺字段 ≠ 拥有 cap。编进真实 backend 才广告；无显示器是运行时 `no_session`。
 5. **Hub 不持久化像素。** 请求期 in-memory corr waiter（对标 `beatWaiters`）：先注册再 send，超时 delete，禁止 `storage.put` / 轮询 `screen:`。DO await 会放 input gate，这是特性不是 bug。
 6. **坐标系 = 模型看过的那一帧。** Agent 存 `lastFrame`；HID 用其 `scale_*`。无帧 → `no_frame`。v1 单操作者 + 主屏。原点左上。
-7. **默认 JPEG，长边 1280，quality 70。** 目标 wire ~100 KiB。PNG 非默认。
+7. **视口 + 字节预算，不是「4K 原图」。** 默认长边 1280、JPEG 自适应质量、压缩体积 ≤ 120 KiB；相同 digest 不重传。扁平 CUA 别名与嵌套 `frame` 同一份数。PNG / WebP / 二进制 encoding 后补，v1 不提供请求侧 format。
 8. **Permit 扩展而非旁路。** 独立 `desktopPending`，禁止复用 `inputVerdict()`。Ask 立即 `ok:false, status:consent, code:consent`。shot grant ≠ input grant；grant 活到 **WS 断开或改 permit**，无墙钟。`list_computers`/`get_computer` 在 **PR0** 返回 `permit` 枚举。`allow` 的 GUI 含义写进 PR1。
 9. **Ask 不阻塞 HTTP。** 批准后模型重试，不复用旧 corr。`deny` → 下一次 `code:denied` 一次。
 10. **Fleet 是 harness。** 循环在 LLM；Agent 不含厂商 SDK。
@@ -1058,9 +1096,9 @@ Feature flag：v1 用 caps + 工具是否发布，不另做远程 flag。Agent �
 **Agent 版本：** 0.3.0（`main.go` + `package-agent.sh`）。**不** bump `FLEET_VERSION`。  
 **描述：** Windows BitBlt JPEG；darwin/linux 编译进 stub backend 但 **不上** cap；`readLoop` 处理两 type。`desktop_screenshot` 走最小 permit（off 拒、allow 放行、ask **立即** consent + `desktopPending` shot）。**`handleDesktopAction`：除 Hub 已转走的 screenshot 外全部 `unsupported_action`，不弹 input consent、不实现 `wait`。** `approve`/`deny` 分支 `pendingKindDesktopShot`（否则会 `spawnPane`）；成功截图写 `lastFrame`；设置页一句 allow=GUI。Ask grant 活到 WS 断开或改 permit（无墙钟）。`setPermit` 清 grant 并 ping 带当前 `permit` 枚举。测试用注入 fake `desktopBackend`，不加 `desktop_stub.go`。`curl` 打 PR0 Hub 可通。
 
-**文件：** `main.go`、`desktop.go`、`desktop_scale.go`、`desktop_windows.go`、`desktop_darwin.go`、`desktop_linux.go`、`desktop_test.go`、`desktop_scale_test.go`、`permit_test.go`；设置页/托盘最小文案。
+**文件：** `main.go`、`desktop.go`、`desktop_norm.go`、`desktop_windows.go`、`desktop_darwin.go`、`desktop_linux.go`、`desktop_test.go`、`desktop_norm_test.go`、`permit_test.go`；设置页/托盘最小文案。
 
-**测试：** `fitBox`；permit=off 不调 backend；consent 包 `ok:false`；`left_click`/`wait` → `unsupported_action` 且 `desktopPending` 仍空；`CGO_ENABLED=0 GOOS=windows go build`；日志无 `image_b64`。
+**测试：** `fitBox` 4K→1280；busy desktop JPEG ≤ 120 KiB；permit=off 不调 backend；consent 包 `ok:false`；相同 digest → `unchanged` 无 `image_b64`；`left_click`/`wait` → `unsupported_action` 且 `desktopPending` 仍空；`CGO_ENABLED=0 GOOS=windows go build`；日志无 `image_b64`。
 
 ### PR2 — `feat(computer-use): MCP desktop_screenshot + image blocks`
 

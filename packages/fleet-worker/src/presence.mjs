@@ -1,7 +1,4 @@
-/**
- * Device catalog view + heartbeat version. Shared by the Worker and Node hub.
- * Isolation / X-Fleet-Operator is not involved — presence is per device.
- */
+/** Catalog row fields and keep-stored `agent_ver` (missing/blank leaves the stored version). */
 
 export const HEARTBEAT_WAIT_DEFAULT_MS = 3_000;
 export const HEARTBEAT_WAIT_MAX_MS = 10_000;

@@ -15,7 +15,8 @@ type ScreenSlot = {
   byCorr: Map<string, Record<string, unknown>>;
 };
 
-type BeatSlot = { seq: number; waiters: Array<() => void> };
+type BeatWaiter = { resolve: (ok: boolean) => void; timer: ReturnType<typeof setTimeout> };
+type BeatSlot = { seq: number; waiters: BeatWaiter[] };
 
 type LiveStore = {
   byDevice: Map<string, LiveSlot>;
@@ -131,7 +132,11 @@ export function getResult(deviceId: string, corr: string): Record<string, unknow
 }
 
 export function putAgentVer(deviceId: string, ver?: string) {
-  if (!ver) return;
+  if (ver === undefined) return;
+  if (!ver) {
+    store().agentVer.delete(deviceId);
+    return;
+  }
   store().agentVer.set(deviceId, ver);
 }
 
@@ -153,23 +158,32 @@ export function noteHeartbeat(deviceId: string) {
   const slot = beatSlot(deviceId);
   slot.seq += 1;
   const waiters = slot.waiters.splice(0);
-  for (const w of waiters) w();
+  for (const w of waiters) w.resolve(true);
 }
 
 export function waitNextHeartbeat(deviceId: string, waitMs: number): Promise<boolean> {
   const slot = beatSlot(deviceId);
   const start = slot.seq;
   return new Promise((resolve) => {
-    const onBeat = () => {
-      clearTimeout(timer);
-      resolve(true);
+    const waiter: BeatWaiter = {
+      resolve: (ok) => {
+        clearTimeout(waiter.timer);
+        resolve(ok);
+      },
+      timer: setTimeout(() => {
+        slot.waiters = slot.waiters.filter((w) => w !== waiter);
+        resolve(slot.seq > start);
+      }, waitMs),
     };
-    const timer = setTimeout(() => {
-      slot.waiters = slot.waiters.filter((w) => w !== onBeat);
-      resolve(slot.seq > start);
-    }, waitMs);
-    slot.waiters.push(onBeat);
+    slot.waiters.push(waiter);
   });
+}
+
+export function cancelHeartbeatWait(deviceId: string) {
+  const slot = store().beats.get(deviceId);
+  if (!slot || slot.waiters.length === 0) return;
+  const waiter = slot.waiters.pop();
+  waiter?.resolve(false);
 }
 
 function userSet(userId: string): Set<string> {

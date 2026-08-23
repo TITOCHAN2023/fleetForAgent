@@ -21,6 +21,7 @@ import {
   putScreen,
   sendToDevice,
   waitNextHeartbeat,
+  cancelHeartbeatWait,
 } from "./live";
 import {
   CHALLENGE_TTL_MS,
@@ -35,20 +36,7 @@ import {
   signChallenge,
   unwrapAuth,
 } from "./token";
-
-function agentVerFromBody(body: Record<string, unknown> | undefined): string | undefined {
-  if (!body || !Object.prototype.hasOwnProperty.call(body, "agent_ver")) return undefined;
-  if (body.agent_ver == null) return undefined;
-  const s = String(body.agent_ver).trim();
-  return s === "" ? undefined : s;
-}
-
-function clampHeartbeatWaitMs(value: unknown): number {
-  if (value == null || value === "") return 3_000;
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return 3_000;
-  return Math.min(10_000, n);
-}
+import { agentVerFromBody, clampHeartbeatWaitMs } from "../../../packages/fleet-worker/src/presence.mjs";
 
 const HUB_WAIT_MAX_MS = 30_000;
 const HUB_WAIT_POLL_MS = 25;
@@ -235,7 +223,10 @@ export async function handleHubHttp(request: Request): Promise<Response> {
     const waitMs = clampHeartbeatWaitMs(body.wait_ms);
     const pending = waitNextHeartbeat(deviceId, waitMs);
     const ok = sendToDevice(userId, deviceId, envelope("ask_heartbeat", {}));
-    if (!ok) return json({ error: "offline" }, 409);
+    if (!ok) {
+      cancelHeartbeatWait(deviceId);
+      return json({ error: "offline" }, 409);
+    }
     const got = await pending;
     if (!got) return json({ error: "no heartbeat" }, 409);
     const row = (await listComputers(userId)).find((c) => c.id === deviceId);
@@ -384,7 +375,7 @@ async function onDeviceMessage(userId: string, deviceId: string, ws: WebSocket, 
     return;
   }
   if (parsed.type === "hello") {
-    const helloVer = agentVerFromBody(parsed.body) ?? String(parsed.body.agent_ver ?? "");
+    const helloVer = String(parsed.body.agent_ver ?? "");
     putAgentVer(deviceId, helloVer);
     await upsertDevice(userId, deviceId, {
       name: String(parsed.body.hostname ?? deviceId),

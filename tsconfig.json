@@ -11,7 +11,8 @@
     "noEmit": true,
     "types": ["vite/client", "node"],
     "baseUrl": ".",
+    "allowJs": true,
     "paths": { "@/*": ["./src/*"] }
   },
-  "include": ["src", "server"]
+  "include": ["src", "server", "packages/fleet-worker/src/presence.mjs", "packages/fleet-worker/src/presence.d.ts"]
 }

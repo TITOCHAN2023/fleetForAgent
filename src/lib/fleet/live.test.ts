@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   attachDevice,
+  cancelHeartbeatWait,
   detachDevice,
+  getAgentVer,
   isOnline,
   kickUser,
   noteHeartbeat,
   ownerOf,
+  putAgentVer,
   resetLive,
   sendToDevice,
   waitNextHeartbeat,
@@ -70,6 +73,24 @@ test("waitNextHeartbeat resolves on noteHeartbeat and times out without hanging"
   const missed = await waitNextHeartbeat("dev-1", 40);
   assert.equal(missed, false);
   assert.ok(Date.now() - t0 < 200, `wait hung ${Date.now() - t0}ms`);
+});
+
+test("cancelHeartbeatWait drops a waiter without waiting for the timer", async () => {
+  resetLive();
+  const t0 = Date.now();
+  const pending = waitNextHeartbeat("dev-1", 1000);
+  cancelHeartbeatWait("dev-1");
+  assert.equal(await pending, false);
+  assert.ok(Date.now() - t0 < 200, `cancel hung ${Date.now() - t0}ms`);
+});
+
+test("putAgentVer keeps stored on undefined and overwrites on hello empty", () => {
+  resetLive();
+  putAgentVer("dev-1", "0.2.5");
+  putAgentVer("dev-1", undefined);
+  assert.equal(getAgentVer("dev-1"), "0.2.5");
+  putAgentVer("dev-1", "");
+  assert.equal(getAgentVer("dev-1"), undefined);
 });
 
 test("new socket replaces the old one on the same device", () => {

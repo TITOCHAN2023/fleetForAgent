@@ -232,6 +232,10 @@ export default {
       const body = (await request.json()) as { device_id?: string; wait_ms?: number };
       if (!body.device_id) return json({ error: "device_id required" }, 400);
       if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
+      const catalog = await fleet.fetch(
+        new Request(`https://fleet/device?id=${encodeURIComponent(body.device_id)}`),
+      );
+      if (!computerPublic(await catalog.json())) return json({ error: "not found" }, 404);
       const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
       return stub.fetch(
         new Request("https://device/heartbeat", {
@@ -810,7 +814,6 @@ export class DeviceDO implements DurableObject {
 
   private waitNextBeat(waitMs: number): Promise<boolean> {
     const start = this.beatSeq;
-    if (this.beatSeq > start) return Promise.resolve(true);
     return new Promise((resolve) => {
       const onBeat = () => {
         clearTimeout(timer);

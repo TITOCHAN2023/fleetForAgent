@@ -478,9 +478,9 @@ export function opsPageHtml() {
           + '<article class="card"><p class="subtle">'+t("online")+'</p><div class="stat">'+((d.devices&&d.devices.online)||0)+" / "+((d.devices&&d.devices.offline)||0)+"</div></article>"
           + "</div>"
           + '<div class="grid-2" style="margin-top:36px">'
-          + '<article class="card"><h3>'+t("os")+"</h3><div class="stack">"+pairs(d.os)+"</div></article>"
-          + '<article class="card"><h3>'+t("arch")+"</h3><div class="stack">"+pairs(d.arch)+"</div></article>"
-          + '<article class="card"><h3>'+t("versions")+"</h3><div class="stack">"+pairs(d.agentVer)+"</div></article>"
+          + '<article class="card"><h3>'+t("os")+'</h3><div class="stack">'+pairs(d.os)+"</div></article>"
+          + '<article class="card"><h3>'+t("arch")+'</h3><div class="stack">'+pairs(d.arch)+"</div></article>"
+          + '<article class="card"><h3>'+t("versions")+'</h3><div class="stack">'+pairs(d.agentVer)+"</div></article>"
           + '<article class="card"><h3>'+t("freshness")+'</h3><p class="subtle" style="margin-top:8px">'+esc(d.freshnessNote||"")+"</p>"
           + '<div class="stack" style="margin-top:8px">'
           + [["recent","hour","day","stale","unknown"].map(function(k){return '<div class="kv"><span class="muted">'+esc(freshLabel(k))+'</span><span>'+esc(fresh[k]||0)+"</span></div>";}).join("")]

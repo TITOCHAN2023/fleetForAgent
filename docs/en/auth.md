@@ -57,3 +57,6 @@ Optional `ADMIN_EMAILS` is a different secret: cookie-session emails that may op
 ```bash
 npx wrangler secret put ADMIN_EMAILS
 ```
+
+Why MCP never puts the token on the wire, and why a database dump is not device control: [security.md](security.md).
+

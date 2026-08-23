@@ -57,3 +57,6 @@ Agent 和 MCP 不会把整串当 `Authorization: Bearer` 发出去。它们会�
 ```bash
 npx wrangler secret put ADMIN_EMAILS
 ```
+
+为什么 MCP 不把 token 放上线路、读库也拼不出控机身份：[security.md](security.md)。
+

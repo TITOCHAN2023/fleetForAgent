@@ -243,9 +243,6 @@ export function opsPageHtml() {
     <title>Fleet</title>
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <script>
       (function () {
         try {
@@ -259,7 +256,7 @@ export function opsPageHtml() {
       })();
     </script>
     <style>
-      :root { --sans: Inter, ui-sans-serif, system-ui, sans-serif; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      :root { --sans: ui-sans-serif, system-ui, sans-serif; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
       html[data-theme="light"] {
         color-scheme: light;
         --bg:#f7f7f8; --surface:#fff; --elevated:#ececec; --fg:#0d0d0d; --muted:#6e6e80; --subtle:#8e8ea0;
@@ -314,7 +311,17 @@ export function opsPageHtml() {
     </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <header class="top">
+        <a class="brand" href="/"><img src="/logo.png" width="28" height="28" alt="" />Fleet</a>
+        <span class="spacer"></span>
+      </header>
+      <div class="wrap">
+        <p class="kicker">fleet.ginfo.cc</p>
+        <h1>用量与健康</h1>
+        <p class="muted">加载中</p>
+      </div>
+    </div>
     <script>
       const BAN_ZH = ${JSON.stringify(BAN_COPY_ZH)};
       const BAN_EN = ${JSON.stringify(BAN_COPY_EN)};
@@ -332,6 +339,7 @@ export function opsPageHtml() {
           banned: "已标记",
           you: "当前账号",
           empty: "还没有数据。",
+          loading: "加载中",
           themeL: "浅色", themeD: "深色", themeS: "系统",
         },
         en: {
@@ -347,6 +355,7 @@ export function opsPageHtml() {
           banned: "banned",
           you: "you",
           empty: "Nothing here yet.",
+          loading: "Loading",
           themeL: "Light", themeD: "Dark", themeS: "System",
         },
       };
@@ -355,6 +364,7 @@ export function opsPageHtml() {
         themePref: localStorage.getItem("fleet-theme") || "system",
         data: null,
         err: "",
+        loading: true,
       };
       const t = (k) => T[state.locale][k];
       function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
@@ -428,7 +438,10 @@ export function opsPageHtml() {
         var root = document.getElementById("app");
         var d = state.data;
         if (!d) {
-          root.innerHTML = chrome()+'<div class="wrap"><p class="kicker">'+t("kicker")+'</p><h1>'+t("title")+'</h1><p class="err">'+esc(state.err)+"</p></div>";
+          root.innerHTML = chrome()+'<div class="wrap"><p class="kicker">'+t("kicker")+'</p><h1>'+t("title")+'</h1>'
+            + (state.err ? '<p class="err">'+esc(state.err)+"</p>" : "")
+            + (state.loading ? '<p class="muted">'+t("loading")+"</p>" : "")
+            + "</div>";
           bind();
           return;
         }
@@ -487,19 +500,25 @@ export function opsPageHtml() {
       }
       async function load() {
         applyTheme(state.themePref);
+        state.loading = true;
+        render();
         try {
           const res = await fetch("/v1/ops/overview", { credentials: "include" });
           if (res.status === 404) { document.body.textContent = "Not Found"; return; }
           const ct = res.headers.get("content-type") || "";
           if (!ct.includes("json")) throw new Error("not json");
+          if (!res.ok) {
+            const data = await res.json().catch(function () { return {}; });
+            throw new Error(data.error || res.statusText);
+          }
           const data = await res.json();
-          if (!res.ok) throw new Error(data.error || res.statusText);
           state.data = data;
           state.err = "";
         } catch (e) {
           state.data = null;
           state.err = e.message || String(e);
         }
+        state.loading = false;
         render();
       }
       window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {

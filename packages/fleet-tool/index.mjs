@@ -87,7 +87,12 @@ async function hubRpc(path, body, { timed = false } = {}) {
     body: JSON.stringify(payload),
   });
   const json = await res.json();
-  if (!res.ok) throw new Error(json.error || res.statusText);
+  if (!res.ok) {
+    const err = new Error(json.error || json.code || res.statusText);
+    err.status = res.status;
+    err.json = json;
+    throw err;
+  }
   return json;
 }
 
@@ -152,6 +157,23 @@ function mcp() {
         if (msg.method === "tools/call") {
           const out = await callTool(msg.params?.name, msg.params?.arguments ?? {});
           const payload = { content: [{ type: "text", text: formatMcpText(msg.params?.name, out, process.env) }] };
+          const b64 =
+            out &&
+            out.ok === true &&
+            typeof out.image_b64 === "string" &&
+            out.image_b64.length > 0
+              ? out.image_b64
+              : "";
+          if (b64) {
+            payload.content.push({
+              type: "image",
+              mimeType: out.mime || "image/jpeg",
+              data: b64,
+            });
+          }
+          if (out && typeof out === "object" && (out.isError === true || out.ok === false)) {
+            payload.isError = true;
+          }
           if (out && typeof out === "object" && out.dev && Number.isFinite(out.dev.total_ms)) {
             payload._meta = { duration_ms: out.dev.total_ms, fleet_dev: out.dev };
           }

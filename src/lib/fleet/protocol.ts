@@ -71,4 +71,14 @@ export const TOOLS = [
     description: "List live panes on the selected machine: id, command, running.",
     input: {},
   },
+  {
+    name: "desktop_screenshot",
+    description: "Primary display JPEG. Pixel coordinates of this image. Requires computer_use.",
+    input: { device_id: "string?" },
+  },
+  {
+    name: "desktop_action",
+    description: "HID on the last screenshot. Requires computer_use.",
+    input: { action: "string", x: "number?", y: "number?" },
+  },
 ] as const;

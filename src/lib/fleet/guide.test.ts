@@ -33,6 +33,8 @@ test("guide advertises only the MCP tools shipped on main", () => {
     "type",
     "set_computer",
     "get_current_computer",
+    "desktop_screenshot",
+    "desktop_action",
   ]);
 
   const guide = src("src/components/guide-panel.tsx");

@@ -249,10 +249,10 @@ func normalizeDesktop(src image.Image, displayID string, dpr float64, maxW, maxH
 
 func mapViewportToNative(fr DesktopFrame, x, y int) (int, int, error) {
 	if fr.ViewportW < 1 || fr.ViewportH < 1 {
-		return 0, 0, fmt.Errorf("no_frame")
+		return 0, 0, desktopError{code: "no_frame", msg: "fleet: screenshot first"}
 	}
 	if x < 0 || y < 0 || x >= fr.ViewportW || y >= fr.ViewportH {
-		return 0, 0, fmt.Errorf("bad_coordinates")
+		return 0, 0, desktopError{code: "bad_coordinates", msg: "fleet: coordinates out of image"}
 	}
 	nx := mapAxis(x, fr.ViewportW, fr.DisplayW)
 	ny := mapAxis(y, fr.ViewportH, fr.DisplayH)

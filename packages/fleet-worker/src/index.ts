@@ -8,7 +8,8 @@
  * Auth: per-account flt_1 tokens (RSA-2048, aud = HUB_ORIGIN). Operators and
  * agents present Fleet-OAEP wraps, not plaintext Bearer. Optional secret
  * HUB_TOKEN is a super operator for HTTP list/run only — it cannot steal a
- * device WebSocket. Empty HUB_TOKEN = no super user.
+ * device WebSocket. Empty HUB_TOKEN = no super user. Optional ADMIN_EMAILS
+ * is a logged-in list for /ops on this same Worker. Empty = no admins.
  */
 
 import { handleOAuth } from "./oauth";

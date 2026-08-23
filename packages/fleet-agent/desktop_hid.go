@@ -1,11 +1,16 @@
 package main
 
 func resolvePointerStart(dev pointerDevice) vec2 {
-	cur := vec2{}
-	if x, y, err := dev.CursorPos(); err == nil {
-		cur = vec2{x, y}
+	last := agentPointer.last(vec2{})
+	x, y, err := dev.CursorPos()
+	if err != nil {
+		return last
 	}
-	return agentPointer.last(cur)
+	os := vec2{x, y}
+	if !agentPointer.known() || os.sub(last).length() > 2.5 {
+		return os
+	}
+	return last
 }
 
 func pointerClickAt(x, y int, button pointerButton, count int) error {

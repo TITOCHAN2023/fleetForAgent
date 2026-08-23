@@ -153,6 +153,8 @@ export function createHub({
         os: prev?.os ?? "linux",
         online: true,
         ...(agentVer !== undefined ? { agentVer } : {}),
+        ...(Array.isArray(parsed.body?.caps) ? { caps: normalizeCaps(parsed.body.caps) } : {}),
+        ...(normalizePermit(parsed.body?.permit) ? { permit: normalizePermit(parsed.body.permit) } : {}),
       });
       noteBeat(id);
       ws.send(JSON.stringify(envelope("pong", {}, parsed.id)));

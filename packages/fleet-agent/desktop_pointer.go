@@ -73,6 +73,12 @@ func (s *pointerState) last(fallback vec2) vec2 {
 	return fallback
 }
 
+func (s *pointerState) known() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.have
+}
+
 func (s *pointerState) lastHeading() vec2 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -290,6 +296,13 @@ func playPointerOn(dev pointerDevice, overlay pointerOverlay, script pointerScri
 			X: ev.X, Y: ev.Y, Angle: ev.Angle, Pulse: ev.Pulse, Trail: ev.Trail, Pressed: ev.Pressed,
 		})
 	}
+	held := false
+	var heldBtn pointerButton
+	defer func() {
+		if held {
+			_ = dev.Button(heldBtn, false)
+		}
+	}()
 	for _, ev := range script.Events {
 		if ev.Sleep > 0 && ev.Kind != pointerMove {
 			paint(ev)
@@ -309,11 +322,14 @@ func playPointerOn(dev pointerDevice, overlay pointerOverlay, script pointerScri
 			if err := dev.Button(ev.Button, true); err != nil {
 				return err
 			}
+			held = true
+			heldBtn = ev.Button
 		case pointerUp:
 			paint(ev)
 			if err := dev.Button(ev.Button, false); err != nil {
 				return err
 			}
+			held = false
 		}
 	}
 	if len(script.Events) > 0 {

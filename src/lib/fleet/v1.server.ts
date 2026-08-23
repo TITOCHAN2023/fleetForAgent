@@ -450,6 +450,14 @@ async function onDeviceMessage(userId: string, deviceId: string, ws: WebSocket, 
       set status = ${"online"}, last_seen = now()
       where id = ${deviceId} and user_id = ${userId}
     `;
+    const pingCaps = Array.isArray(parsed.body.caps) ? joinCaps(normalizeCaps(parsed.body.caps)) : null;
+    const pingPermit = normalizePermit(parsed.body.permit);
+    if (pingCaps != null) {
+      await sql`update devices set caps = ${pingCaps} where id = ${deviceId} and user_id = ${userId}`;
+    }
+    if (pingPermit) {
+      await sql`update devices set permit = ${pingPermit} where id = ${deviceId} and user_id = ${userId}`;
+    }
     putAgentVer(deviceId, agentVerFromBody(parsed.body));
     noteHeartbeat(deviceId);
     ws.send(JSON.stringify(envelope("pong", {}, parsed.id)));

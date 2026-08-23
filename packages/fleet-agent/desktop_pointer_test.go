@@ -1,21 +1,26 @@
 package main
 
 import (
+	"fmt"
 	"image"
 	"testing"
 )
 
 type fakePointer struct {
-	moves []vec2
-	downs []pointerButton
-	ups   []pointerButton
-	pos   vec2
+	moves         []vec2
+	downs         []pointerButton
+	ups           []pointerButton
+	pos           vec2
+	failWhileHeld bool
 }
 
 func (f *fakePointer) CursorPos() (float64, float64, error) { return f.pos.X, f.pos.Y, nil }
 func (f *fakePointer) MoveAbs(x, y float64) error {
 	f.pos = vec2{x, y}
 	f.moves = append(f.moves, f.pos)
+	if f.failWhileHeld && len(f.downs) > len(f.ups) {
+		return fmt.Errorf("boom")
+	}
 	return nil
 }
 func (f *fakePointer) Button(button pointerButton, down bool) error {
@@ -117,6 +122,34 @@ func TestDragHoldsButtonAlongPath(t *testing.T) {
 	}
 	if movesWhileDown < 5 {
 		t.Fatalf("drag must move while held, got %d", movesWhileDown)
+	}
+}
+
+func TestPlayReleasesButtonOnMoveError(t *testing.T) {
+	old := pointerRest
+	pointerRest = 0
+	defer func() { pointerRest = old }()
+	dev := &fakePointer{pos: vec2{10, 10}, failWhileHeld: true}
+	script := planDragScript(vec2{10, 10}, vec2{20, 20}, vec2{220, 180}, motionBounds{0, 0, 400, 400})
+	err := playPointerOn(dev, &fakeOverlay{}, script)
+	if err == nil {
+		t.Fatal("expected move error")
+	}
+	if len(dev.downs) == 0 {
+		t.Fatal("expected a down before failure")
+	}
+	if len(dev.ups) != len(dev.downs) {
+		t.Fatalf("stuck button down=%d up=%d", len(dev.downs), len(dev.ups))
+	}
+}
+
+func TestResolvePointerStartPrefersOSCursor(t *testing.T) {
+	agentPointer = pointerState{have: true, pos: vec2{10, 10}}
+	defer func() { agentPointer = pointerState{} }()
+	dev := &fakePointer{pos: vec2{400, 300}}
+	got := resolvePointerStart(dev)
+	if got.sub(vec2{400, 300}).length() > 1 {
+		t.Fatalf("start %+v, want OS cursor", got)
 	}
 }
 

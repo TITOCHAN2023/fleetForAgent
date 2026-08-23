@@ -19,12 +19,34 @@ type linuxPointer struct {
 	x, y   float64
 }
 
+var (
+	linuxHIDOnce sync.Once
+	linuxPtr     *linuxPointer
+)
+
 func nativePointer() (pointerDevice, pointerOverlay) {
-	return &linuxPointer{}, noopOverlay{}
+	linuxHIDOnce.Do(func() { linuxPtr = &linuxPointer{} })
+	return linuxPtr, noopOverlay{}
 }
 
 func nativeMotionBounds() motionBounds {
-	return motionBounds{0, 0, 3840, 2160}
+	out, err := exec.Command("xdotool", "getdisplaygeometry").Output()
+	if err == nil {
+		var w, h int
+		if _, scanErr := fmt.Sscanf(strings.TrimSpace(string(out)), "%dx%d", &w, &h); scanErr == nil && w > 1 && h > 1 {
+			return motionBounds{0, 0, float64(w - 1), float64(h - 1)}
+		}
+	}
+	return motionBounds{0, 0, 1919, 1079}
+}
+
+func (p *linuxPointer) resetLocked() {
+	if p.dotool != nil && p.dotool.Process != nil {
+		_ = p.dotool.Process.Kill()
+		_, _ = p.dotool.Process.Wait()
+	}
+	p.dotool = nil
+	p.w = nil
 }
 
 func (p *linuxPointer) ensure() error {
@@ -56,10 +78,18 @@ func (p *linuxPointer) cmd(line string) error {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.w == nil {
+		return fmt.Errorf("no_input_backend: xdotool gone")
+	}
 	if _, err := p.w.WriteString(line + "\n"); err != nil {
+		p.resetLocked()
 		return err
 	}
-	return p.w.Flush()
+	if err := p.w.Flush(); err != nil {
+		p.resetLocked()
+		return err
+	}
+	return nil
 }
 
 func (p *linuxPointer) CursorPos() (float64, float64, error) {

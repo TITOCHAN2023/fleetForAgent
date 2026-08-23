@@ -5,9 +5,7 @@ import (
 	"math"
 )
 
-// OpenAI Codex Computer Use cursor geometry, ported from the public
-// reverse-engineering of SkyComputerUseService (iFurySt/open-codex-computer-use).
-// API click(x,y) is only the endpoint; this file plans the path.
+// Cursor path planner: click(x,y) is the endpoint, not a teleport.
 
 const (
 	motionEps              = 0.001
@@ -393,8 +391,7 @@ func buildSpring(response, damping float64) springConfig {
 }
 
 func springResponseForDistance(dist float64) float64 {
-	// Official response is 1.4s regardless of distance; that stalls 8px tweaks.
-	// Keep the spring character, scale duration like a soft Fitts law.
+	// Scale spring response with distance so an 8px tweak is not a 1.4s settle.
 	return clampFloat(0.28+0.00072*dist, 0.28, 1.1)
 }
 

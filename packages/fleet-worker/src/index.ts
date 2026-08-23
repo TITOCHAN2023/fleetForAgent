@@ -756,7 +756,7 @@ export class DeviceDO implements DurableObject {
       if (sockets.length === 0) return json({ error: "offline" }, 409);
       const ws = sockets[0]!;
       const att = (ws.deserializeAttachment() ?? {}) as WsAttachment;
-      if (Array.isArray(att.caps) && !hasComputerUse({ caps: att.caps })) {
+      if (!hasComputerUse({ caps: att.caps })) {
         return json(unsupportedCapBody({ agentVer: "", os: att.os ?? "" }), 409);
       }
       const plan = (await request.json()) as { type?: string; body?: Record<string, unknown> };
@@ -835,13 +835,27 @@ export class DeviceDO implements DurableObject {
     }
 
     if (parsed.type === "ping" || parsed.type === "heartbeat") {
-      const agentVer = agentVerFromBody(parsed.body);
+      const body = parsed.body ?? {};
+      const agentVer = agentVerFromBody(body);
+      if (Array.isArray(body.caps)) att.caps = normalizeCaps(body.caps);
+      const permit = normalizePermit(body.permit);
+      if (permit) att.permit = permit;
+      ws.serializeAttachment({
+        deviceId: att.deviceId,
+        name: att.name ?? att.deviceId ?? "device",
+        os: att.os ?? "linux",
+        userId: att.userId,
+        caps: att.caps,
+        permit: att.permit,
+      });
       await this.mark(att.deviceId ?? "unknown", {
         name: att.name ?? att.deviceId ?? "device",
         os: att.os ?? "linux",
         online: true,
         userId: att.userId,
         ...(agentVer !== undefined ? { agentVer } : {}),
+        ...(Array.isArray(body.caps) ? { caps: normalizeCaps(body.caps) } : {}),
+        ...(permit ? { permit } : {}),
       });
       this.noteBeat();
       ws.send(JSON.stringify(envelope("pong", {}, parsed.id)));

@@ -71,10 +71,8 @@ func drawCursorOverlay(fr cursorFrame) *image.RGBA {
 	fillCircle(img, origin.X+3, origin.Y+6, glowR, cursorGlow)
 
 	pts := make([]vec2, len(cursorPoly))
-	cs, sn := math.Cos(fr.Angle), math.Sin(fr.Angle)
-	// Resting pose is the classic NW arrow; heading 0 means "up-left-ish".
 	rest := -0.55
-	cs, sn = math.Cos(fr.Angle+rest), math.Sin(fr.Angle+rest)
+	cs, sn := math.Cos(fr.Angle+rest), math.Sin(fr.Angle+rest)
 	for i, p := range cursorPoly {
 		x, y := p.X*scale, p.Y*scale
 		pts[i] = vec2{

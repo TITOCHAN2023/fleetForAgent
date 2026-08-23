@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -54,6 +55,9 @@ var (
 	procUpdateLayered    = user32.NewProc("UpdateLayeredWindow")
 	procRegisterClassExW = user32.NewProc("RegisterClassExW")
 	procDefWindowProcW   = user32.NewProc("DefWindowProcW")
+	procPeekMessageW     = user32.NewProc("PeekMessageW")
+	procTranslateMessage = user32.NewProc("TranslateMessage")
+	procDispatchMessageW = user32.NewProc("DispatchMessageW")
 	procGetModuleHandleW = syscall.NewLazyDLL("kernel32.dll").NewProc("GetModuleHandleW")
 	procGetDC            = user32.NewProc("GetDC")
 	procReleaseDC        = user32.NewProc("ReleaseDC")
@@ -65,6 +69,16 @@ var (
 )
 
 type winPoint struct{ X, Y int32 }
+
+type winMsg struct {
+	Hwnd    uintptr
+	Message uint32
+	WParam  uintptr
+	LParam  uintptr
+	Time    uint32
+	Pt      winPoint
+	_       [4]byte
+}
 
 type winInput struct {
 	Type uint32
@@ -134,8 +148,29 @@ var (
 func winDo(fn func() error) error {
 	winHIDOnce.Do(startWinHID)
 	j := winJob{fn: fn, done: make(chan error, 1)}
-	winJobs <- j
-	return <-j.done
+	select {
+	case winJobs <- j:
+	case <-time.After(2 * time.Second):
+		return fmt.Errorf("hid thread stuck")
+	}
+	select {
+	case err := <-j.done:
+		return err
+	case <-time.After(8 * time.Second):
+		return fmt.Errorf("hid timeout")
+	}
+}
+
+func pumpWinMsgs() {
+	var m winMsg
+	for {
+		r, _, _ := procPeekMessageW.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0, 1)
+		if r == 0 {
+			return
+		}
+		_, _, _ = procTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
+		_, _, _ = procDispatchMessageW.Call(uintptr(unsafe.Pointer(&m)))
+	}
 }
 
 func startWinHID() {
@@ -143,12 +178,24 @@ func startWinHID() {
 	ready := make(chan struct{})
 	go func() {
 		runtime.LockOSThread()
+		defer func() { _, _, _ = procShowCursor.Call(1) }()
 		if err := winPtr.overlay.create(); err != nil {
 			winPtr.overlay = nil
 		}
 		close(ready)
-		for j := range winJobs {
-			j.done <- j.fn()
+		ticker := time.NewTicker(16 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case j, ok := <-winJobs:
+				if !ok {
+					return
+				}
+				pumpWinMsgs()
+				j.done <- j.fn()
+			case <-ticker.C:
+				pumpWinMsgs()
+			}
 		}
 	}()
 	<-ready

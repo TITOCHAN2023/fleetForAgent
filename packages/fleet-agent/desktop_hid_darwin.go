@@ -57,6 +57,14 @@ static void fleetDisplaySize(double *w, double *h) {
 	*w = (double)CGDisplayPixelsWide(id);
 	*h = (double)CGDisplayPixelsHigh(id);
 }
+
+static double fleetBackingScale(void) {
+	CGDirectDisplayID id = CGMainDisplayID();
+	double pts = CGDisplayBounds(id).size.width;
+	double px = (double)CGDisplayPixelsWide(id);
+	if (pts < 1.0) return 1.0;
+	return px / pts;
+}
 */
 import "C"
 
@@ -82,28 +90,44 @@ func nativeMotionBounds() motionBounds {
 	return motionBounds{0, 0, float64(w - 1), float64(h - 1)}
 }
 
+func darwinBackingScale() float64 {
+	s := float64(C.fleetBackingScale())
+	if s < 1 {
+		return 1
+	}
+	return s
+}
+
 func (p *darwinPointer) CursorPos() (float64, float64, error) {
 	var x, y C.double
 	C.fleetCursorPos(&x, &y)
-	return float64(x), float64(y), nil
+	s := darwinBackingScale()
+	return float64(x) * s, float64(y) * s, nil
+}
+
+func (p *darwinPointer) toPoints(x, y float64) (float64, float64) {
+	s := darwinBackingScale()
+	return x / s, y / s
 }
 
 func (p *darwinPointer) MoveAbs(x, y float64) error {
 	p.x, p.y = x, y
+	px, py := p.toPoints(x, y)
 	dragged := 0
 	btn := 0
 	if p.held {
 		dragged = 1
 		btn = int(p.button)
 	}
-	C.fleetMouseMove(C.double(x), C.double(y), C.int(dragged), C.int(btn))
+	C.fleetMouseMove(C.double(px), C.double(py), C.int(dragged), C.int(btn))
 	return nil
 }
 
 func (p *darwinPointer) Button(button pointerButton, down bool) error {
 	p.button = button
 	p.held = down
-	C.fleetMouseButton(C.double(p.x), C.double(p.y), C.int(button), boolInt(down))
+	px, py := p.toPoints(p.x, p.y)
+	C.fleetMouseButton(C.double(px), C.double(py), C.int(button), boolInt(down))
 	return nil
 }
 

@@ -607,6 +607,20 @@ test("hello caps and permit survive a ping without those fields", async (t) => {
   assert.deepEqual(after.json.caps, ["shell", "pane", "computer_use"]);
   assert.equal(after.json.permit, "ask");
   assert.equal("userId" in after.json, false);
+
+  dev.ws.send(
+    JSON.stringify({
+      v: 1,
+      type: "ping",
+      id: "p2",
+      t: Date.now(),
+      body: { agent_ver: "0.3.0", permit: "allow" },
+    }),
+  );
+  await waitType(dev.inbox, "pong");
+  const allowed = await post(http, "/v1/get_computer", { device_id: "win-cu" });
+  assert.equal(allowed.json.permit, "allow");
+  assert.deepEqual(allowed.json.caps, ["shell", "pane", "computer_use"]);
 });
 
 test("desktop_screenshot 409s without computer_use and sends no WS frame", async (t) => {

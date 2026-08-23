@@ -65,9 +65,12 @@ npx wrangler deploy
 
 ```bash
 npx wrangler secret put HUB_TOKEN
+npx wrangler secret put ADMIN_EMAILS
 ```
 
-After that, device connections and control-plane calls must send:
+`ADMIN_EMAILS` is a comma or whitespace list of cookie-session emails that may open `/ops` on this same Worker. Empty / unset = no admins. Not `HUB_TOKEN` / `Fleet-OAEP`. Do not put emails in `[vars]`.
+
+After `HUB_TOKEN`, device connections and control-plane calls must send:
 
 ```
 Authorization: Bearer <HUB_TOKEN>

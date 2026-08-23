@@ -33,6 +33,8 @@ English: [../en/README.md](../en/README.md)
 FLEET_URL=https://fleet.ginfo.cc FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
 ```
 
+同一 Worker 上的 `/ops` 给 `ADMIN_EMAILS` 里的登录邮箱看用量和 last-seen 新鲜度，并可以 Ban。空 secret = 没有管理员。不是单独的 Worker。Ban 操作不了机器。
+
 完整步骤：[deploy.md](deploy.md) · [auth.md](auth.md)
 
 ## 本地只是命令行

@@ -43,11 +43,14 @@
       .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px; box-shadow: var(--shadow); }
       .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
       input { flex: 1; min-width: 180px; height: 44px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); padding: 0 12px; font: inherit; }
-      button { height: 44px; padding: 0 16px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); font: inherit; cursor: pointer; }
+      button { height: 44px; padding: 0 16px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); font: inherit; cursor: pointer; transition: transform 150ms ease, opacity 150ms ease, background-color 170ms ease; }
+      button:active { transform: scale(.98); opacity: .92; }
       button.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
       button.danger { color: var(--bad); }
-      .level { display: block; width: 100%; text-align: left; margin-top: 8px; padding: 12px 14px; border-radius: 12px; height: auto; min-height: 44px; }
-      .level.on { background: var(--elevated); border-color: var(--fg); }
+      .level { display: block; width: 100%; text-align: left; margin-top: 8px; padding: 12px 14px; border-radius: 12px; height: auto; min-height: 44px; border: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 86%, transparent); backdrop-filter: saturate(160%) blur(8px); transition: transform 170ms cubic-bezier(.22,1,.36,1), background-color 170ms ease, border-color 170ms ease, box-shadow 200ms ease; }
+      .level-title { display: block; font-weight: 600; color: var(--fg); }
+      .level-sub { display: block; margin-top: 2px; color: var(--muted); font-size: 13px; }
+      .level.on { background: color-mix(in srgb, var(--surface) 78%, var(--fg) 22%); border-color: color-mix(in srgb, var(--fg) 40%, var(--border)); box-shadow: 0 8px 18px rgba(0,0,0,.08); transform: translateY(-1px); }
       .badge { font-size: 12px; border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; color: var(--muted); }
       .badge.ok { color: var(--ok); }
       .badge.bad { color: var(--bad); }
@@ -56,16 +59,22 @@
       .log { max-height: 280px; overflow: auto; font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
       .log div.warn { color: var(--warn); }
       .log div.error { color: var(--bad); }
-      .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; padding: 2px; }
+      .seg { --seg-x: 0px; --seg-w: 0px; position: relative; display: inline-grid; grid-auto-flow: column; align-items: center; border: 1px solid color-mix(in srgb, var(--border) 85%, transparent); border-radius: 999px; padding: 2px; overflow: hidden; isolation: isolate; background: color-mix(in srgb, var(--surface) 38%, transparent); backdrop-filter: saturate(180%) blur(14px); }
       .top-end { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       .gh { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; color: var(--fg); border-radius: 8px; flex-shrink: 0; }
       .gh:hover { background: var(--elevated); color: var(--fg); }
       .gh svg { width: 20px; height: 20px; display: block; }
-      .seg button { height: 32px; padding: 0 10px; font-size: 12px; border: 0; background: transparent; color: var(--muted); }
-      .seg button.on { background: var(--fg); color: var(--bg); }
+      .seg .seg-thumb { position: absolute; top: 2px; left: 2px; z-index: 0; width: var(--seg-w); height: calc(100% - 4px); border-radius: 999px; transform: translateX(var(--seg-x)); transition: transform 240ms cubic-bezier(.22,1,.36,1), width 240ms cubic-bezier(.22,1,.36,1); background: color-mix(in srgb, var(--surface) 84%, var(--fg) 16%); box-shadow: 0 1px 0 rgba(255,255,255,.35) inset, 0 10px 24px rgba(0,0,0,.12); pointer-events: none; }
+      html[data-theme="dark"] .seg .seg-thumb { box-shadow: 0 1px 0 rgba(255,255,255,.09) inset, 0 10px 22px rgba(0,0,0,.35); background: color-mix(in srgb, var(--surface) 88%, var(--fg) 12%); }
+      .seg button { position: relative; z-index: 1; height: 32px; padding: 0 10px; font-size: 12px; border: 0; background: transparent; color: var(--muted); transition: color 150ms ease, transform 140ms ease, opacity 140ms ease; }
+      .seg button.on { color: var(--fg); }
+      .seg button:active { transform: scale(.98); opacity: .9; }
       .help-link { font-size: 13px; color: var(--muted); }
       .help-link:hover { color: var(--fg); }
       .mark { width: 28px; height: 28px; border-radius: 7px; display: block; }
+      @media (prefers-reduced-motion: reduce) {
+        button, .level, .seg .seg-thumb, .seg button { transition: none !important; transform: none !important; }
+      }
     </style>
   </head>
   <body>
@@ -77,11 +86,13 @@
         <a class="help-link" href="https://fleet.ginfo.cc/help" target="_blank" rel="noreferrer" id="t-help">Help</a>
         <div class="top-end">
           <div class="seg" role="group" aria-label="Theme">
+          <span class="seg-thumb" aria-hidden="true"></span>
           <button type="button" data-theme-set="light" id="th-light">Light</button>
           <button type="button" data-theme-set="dark" id="th-dark">Dark</button>
           <button type="button" data-theme-set="system" id="th-system">System</button>
         </div>
         <div class="seg" role="group" aria-label="Language">
+          <span class="seg-thumb" aria-hidden="true"></span>
           <button type="button" id="en">EN</button>
           <button type="button" id="zh">中文</button>
         </div>
@@ -107,9 +118,9 @@
       </section>
       <section class="card">
         <h2 id="t-permit">Run policy</h2>
-        <button class="level" data-permit="off" id="lv-off"></button>
-        <button class="level" data-permit="ask" id="lv-ask"></button>
-        <button class="level" data-permit="allow" id="lv-allow"></button>
+        <button class="level" data-permit="off" id="lv-off"><span class="level-title" id="lv-off-title"></span><span class="level-sub" id="lv-off-sub"></span></button>
+        <button class="level" data-permit="ask" id="lv-ask"><span class="level-title" id="lv-ask-title"></span><span class="level-sub" id="lv-ask-sub"></span></button>
+        <button class="level" data-permit="allow" id="lv-allow"><span class="level-title" id="lv-allow-title"></span><span class="level-sub" id="lv-allow-sub"></span></button>
       </section>
       <section class="card" id="pendingCard" style="display:none">
         <h2 id="t-consent">Needs approval here</h2>
@@ -136,9 +147,12 @@
           themeL: "Light", themeD: "Dark", themeS: "System",
           offline: "Offline", connecting: "Connecting", online: "Connected to hub", error: "Connect failed",
           permit: "Run policy",
-          off: "<b>Off</b><br><span class='muted'>Refuse every command</span>",
-          ask: "<b>Ask at the machine</b><br><span class='muted'>Someone here must tap Allow</span>",
-          allowLv: "<b>Allow all</b><br><span class='muted'>Shell and desktop (screen + mouse/keyboard) run immediately</span>",
+          offTitle: "Off",
+          offSub: "Refuse every command",
+          askTitle: "Ask at the machine",
+          askSub: "Someone here must tap Allow",
+          allowTitle: "Allow all",
+          allowSub: "Shell and desktop (screen + mouse/keyboard) run immediately",
           consent: "Needs approval here", approve: "Allow", deny: "Deny", logs: "Logs",
         },
         zh: {
@@ -151,9 +165,12 @@
           themeL: "浅色", themeD: "深色", themeS: "系统",
           offline: "未连接", connecting: "连接中", online: "已连接中枢", error: "连接失败",
           permit: "执行权限",
-          off: "<b>停用</b><br><span class='muted'>什么命令都不执行</span>",
-          ask: "<b>需当面同意</b><br><span class='muted'>有人在电脑前点同意才跑</span>",
-          allowLv: "<b>自动执行</b><br><span class='muted'>命令和桌面（看屏+键鼠）都立刻执行</span>",
+          offTitle: "停用",
+          offSub: "什么命令都不执行",
+          askTitle: "需当面同意",
+          askSub: "有人在电脑前点同意才跑",
+          allowTitle: "自动执行",
+          allowSub: "命令和桌面（看屏+键鼠）都立刻执行",
           consent: "需要当面同意", approve: "同意执行", deny: "拒绝", logs: "运行日志",
         }
       };
@@ -168,6 +185,17 @@
         document.documentElement.setAttribute("data-theme", r);
         document.documentElement.style.colorScheme = r;
         document.querySelectorAll("[data-theme-set]").forEach((b) => b.classList.toggle("on", b.dataset.themeSet === themePref));
+        syncSegments();
+      }
+      function syncSegments() {
+        document.querySelectorAll(".seg").forEach((seg) => {
+          const active = seg.querySelector("button.on") || seg.querySelector("button");
+          if (!active) return;
+          const s = seg.getBoundingClientRect();
+          const b = active.getBoundingClientRect();
+          seg.style.setProperty("--seg-x", (b.left - s.left) + "px");
+          seg.style.setProperty("--seg-w", b.width + "px");
+        });
       }
       function applyLang() {
         const t = I18N[locale];
@@ -181,15 +209,19 @@
         $("th-dark").textContent = t.themeD;
         $("th-system").textContent = t.themeS;
         $("t-permit").textContent = t.permit;
-        $("lv-off").innerHTML = t.off;
-        $("lv-ask").innerHTML = t.ask;
-        $("lv-allow").innerHTML = t.allowLv;
+        $("lv-off-title").textContent = t.offTitle;
+        $("lv-off-sub").textContent = t.offSub;
+        $("lv-ask-title").textContent = t.askTitle;
+        $("lv-ask-sub").textContent = t.askSub;
+        $("lv-allow-title").textContent = t.allowTitle;
+        $("lv-allow-sub").textContent = t.allowSub;
         $("t-consent").textContent = t.consent;
         $("approve").textContent = t.approve;
         $("deny").textContent = t.deny;
         $("t-logs").textContent = t.logs;
         $("en").classList.toggle("on", locale === "en");
         $("zh").classList.toggle("on", locale === "zh");
+        requestAnimationFrame(syncSegments);
       }
       $("en").onclick = () => { locale = "en"; localStorage.setItem("fleet-locale", "en"); applyLang(); };
       $("zh").onclick = () => { locale = "zh"; localStorage.setItem("fleet-locale", "zh"); applyLang(); };
@@ -199,6 +231,7 @@
       window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
         if (themePref === "system") applyTheme("system");
       });
+      window.addEventListener("resize", syncSegments);
       async function api(path, body) {
         const res = await fetch(path, {
           method: body ? "POST" : "GET",

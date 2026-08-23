@@ -52,6 +52,31 @@ export function isTokenV1(raw) {
   return i > 0 && i < rest.length - 1;
 }
 
+/** Public anatomy of a pasted flt_1 token. Never returns sec or pub. */
+export function inspectTokenV1(raw) {
+  const t = String(raw || "").trim();
+  if (!isTokenV1(t)) return null;
+  const rest = t.slice(TOKEN_V1_PREFIX.length);
+  const dot = rest.lastIndexOf(".");
+  const payloadB64 = rest.slice(0, dot);
+  const sigB64 = rest.slice(dot + 1);
+  let obj;
+  try {
+    obj = JSON.parse(new TextDecoder().decode(b64urlDecode(payloadB64)));
+  } catch {
+    return null;
+  }
+  if (obj?.v !== 1 || !obj.aud || !obj.kid) return null;
+  return {
+    prefix: TOKEN_V1_PREFIX,
+    aud: String(obj.aud),
+    kid: String(obj.kid),
+    iat: Number(obj.iat) || 0,
+    sig: String(sigB64).slice(0, 12),
+    rsa: RSA_MODULUS,
+  };
+}
+
 export function isLegacyFlt(raw) {
   const t = String(raw || "").trim();
   return t.startsWith("flt_") && !t.startsWith(TOKEN_V1_PREFIX);

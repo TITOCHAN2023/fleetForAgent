@@ -14,6 +14,15 @@ export function agentVerFromBody(body) {
   return s === "" ? undefined : s;
 }
 
+/** Non-empty arch (GOARCH) from hello / heartbeat. Missing/blank → undefined (keep stored). */
+export function archFromBody(body) {
+  if (!body || typeof body !== "object") return undefined;
+  if (!Object.prototype.hasOwnProperty.call(body, "arch")) return undefined;
+  if (body.arch == null) return undefined;
+  const s = String(body.arch).trim();
+  return s === "" ? undefined : s;
+}
+
 export function normalizeCaps(raw) {
   if (Array.isArray(raw)) return raw.map(String).map((s) => s.trim()).filter(Boolean);
   if (typeof raw === "string" && raw.trim()) {

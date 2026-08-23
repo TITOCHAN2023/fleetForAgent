@@ -9,9 +9,12 @@ import {
   WAIT_MAX_MS,
   WAIT_POLL_MS,
   WAIT_TOOL_DEFAULT_MS,
+  buildPrompts,
   buildTools,
   clampWaitMs,
   createOperator,
+  getPrompt,
+  MCP_INSTRUCTIONS,
   FLEET_OPERATOR_HEADER,
   fleetHubHeaders,
   formatMcpText,
@@ -129,6 +132,20 @@ test("existing five tools remain; device_id stays in schemas and is optional", (
   assert.equal(tools.find((x) => x.name === "wait").inputSchema.properties.wait_ms.default, WAIT_TOOL_DEFAULT_MS);
 });
 
+test("MCP prompts cover generate/reset and token anatomy", () => {
+  const names = buildPrompts().map((p) => p.name);
+  assert.deepEqual(names, ["hub_token", "hub_token_anatomy"]);
+  const mint = getPrompt("hub_token");
+  assert.match(mint.messages[0].content.text, /Reset token/);
+  assert.match(mint.messages[0].content.text, /1008 token reset/);
+  const anatomy = getPrompt("hub_token_anatomy");
+  assert.match(anatomy.messages[0].content.text, /flt_1\.<payload>\.<sig>/);
+  assert.match(anatomy.messages[0].content.text, /Fleet-OAEP/);
+  assert.match(anatomy.messages[0].content.text, /RSA-2048/);
+  assert.equal(getPrompt("nope"), null);
+  assert.match(MCP_INSTRUCTIONS, /flt_1/);
+});
+
 test("run wait_ms omitted waits and returns the finished payload", async () => {
   const time = clock();
   let peeks = 0;
@@ -153,7 +170,8 @@ test("run wait_ms omitted waits and returns the finished payload", async () => {
     ["/v1/run"],
   );
   assert.ok(calls.some((c) => c.path === "/v1/get_result"));
-  assert.equal(calls[0].body.wait_ms, RUN_WAIT_DEFAULT_MS);
+  assert.equal("wait_ms" in calls[0].body, false);
+  assert.ok(calls.filter((c) => c.path === "/v1/get_result").every((c) => !("wait_ms" in c.body)));
   assertSentCommand(calls[0].body.command, "pwd");
 });
 
@@ -203,7 +221,7 @@ test("run wait_ms returns the full result when get_result finishes", async () =>
 test("finished /v1/run skips get_result", async () => {
   const { rpc, calls } = mockRpc({
     "/v1/run": (body) => {
-      assert.equal(body.wait_ms, RUN_WAIT_DEFAULT_MS);
+      assert.equal("wait_ms" in body, false);
       return { status: "done", corr: "c-fast", ok: true, exit_code: 0, stdout: "hi" };
     },
   });
@@ -223,7 +241,7 @@ test("running /v1/run still polls get_result", async () => {
   let peeks = 0;
   const { rpc, calls } = mockRpc({
     "/v1/run": (body) => {
-      assert.equal(body.wait_ms, 2000);
+      assert.equal("wait_ms" in body, false);
       return { corr: "c-old", status: "running" };
     },
     "/v1/get_result": () => {
@@ -258,6 +276,24 @@ test("run wait_ms timeout keeps the job and returns running plus snapshot", asyn
   assert.ok(calls.some((c) => c.path === "/v1/get_result"));
   assert.ok(time.t >= 1500);
   assert.equal("isError" in out, false);
+});
+
+test("wait cancel returns still-running without killing", async () => {
+  const time = clock();
+  let cancelled = false;
+  const { rpc, calls } = mockRpc({
+    "/v1/get_result": () => ({ status: "running", pane_id: "p" }),
+  });
+  const op = createOperator({ rpc, now: time.now, sleep: time.sleep });
+  const pending = op.callTool("wait", { device_id: "mac-1", wait_ms: 5000 }, {
+    isCancelled: () => cancelled,
+  });
+  cancelled = true;
+  const out = await pending;
+  assert.equal(out.status, "running");
+  assert.equal("isError" in out, false);
+  assert.ok(calls.every((c) => c.path === "/v1/get_result"));
+  assert.ok(calls.every((c) => !("wait_ms" in c.body)));
 });
 
 test("wait tool polls get_result; omitted wait_ms uses the 30s cap", async () => {

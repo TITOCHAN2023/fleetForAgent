@@ -45,7 +45,7 @@
       button { cursor: pointer; }
       #app { min-height: 100svh; }
       .top { position: sticky; top: 0; z-index: 20; display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
-        border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 80%, transparent); backdrop-filter: blur(12px);
+        border-bottom: 1px solid color-mix(in srgb, var(--border) 88%, transparent); background: color-mix(in srgb, var(--bg) 74%, transparent); backdrop-filter: saturate(185%) blur(18px);
         padding: 12px 20px; }
       .brand { font-weight: 600; letter-spacing: -0.03em; display: inline-flex; align-items: center; gap: 8px; }
       .brand img { width: 28px; height: 28px; }
@@ -55,9 +55,12 @@
       .gh { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; color: var(--fg); border-radius: 8px; flex-shrink: 0; }
       .gh:hover { background: var(--elevated); color: var(--fg); }
       .gh svg { width: 20px; height: 20px; display: block; }
-      .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; padding: 2px; gap: 0; }
-      .seg button { height: 32px; padding: 0 10px; border: 0; background: transparent; color: var(--muted); border-radius: 999px; font-size: 12px; }
-      .seg button.on { background: var(--fg); color: var(--bg); }
+      .seg { --seg-x: 0px; --seg-w: 0px; position: relative; display: inline-grid; grid-auto-flow: column; align-items: center; border: 1px solid color-mix(in srgb, var(--border) 85%, transparent); border-radius: 999px; padding: 2px; gap: 0; overflow: hidden; isolation: isolate; background: color-mix(in srgb, var(--surface) 38%, transparent); backdrop-filter: saturate(180%) blur(14px); }
+      .seg .seg-thumb { position: absolute; top: 2px; left: 2px; z-index: 0; width: var(--seg-w); height: calc(100% - 4px); border-radius: 999px; transform: translateX(var(--seg-x)); transition: transform 240ms cubic-bezier(.22,1,.36,1), width 240ms cubic-bezier(.22,1,.36,1); background: color-mix(in srgb, var(--surface) 84%, var(--fg) 16%); box-shadow: 0 1px 0 rgba(255,255,255,.35) inset, 0 10px 24px rgba(0,0,0,.12); pointer-events: none; }
+      html[data-theme="dark"] .seg .seg-thumb { box-shadow: 0 1px 0 rgba(255,255,255,.09) inset, 0 10px 22px rgba(0,0,0,.35); background: color-mix(in srgb, var(--surface) 88%, var(--fg) 12%); }
+      .seg button { position: relative; z-index: 1; height: 32px; padding: 0 10px; border: 0; background: transparent; color: var(--muted); border-radius: 999px; font-size: 12px; transition: color 150ms ease, transform 140ms ease, opacity 140ms ease; }
+      .seg button.on { color: var(--fg); }
+      .seg button:active { transform: scale(.98); opacity: .9; }
       .wrap { max-width: 960px; margin: 0 auto; padding: 64px 20px 80px; }
       .kicker { font-size: 13px; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }
       h1 { font-size: clamp(32px, 6vw, 56px); font-weight: 600; letter-spacing: -0.04em; line-height: 1.1; margin: 16px 0 0; max-width: 16ch; }
@@ -66,8 +69,9 @@
       .lead { margin-top: 20px; max-width: 40em; color: var(--muted); font-size: 16px; }
       .stack { margin-top: 32px; display: flex; flex-direction: column; gap: 10px; max-width: 22rem; }
       .btn { height: 44px; padding: 0 18px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface);
-        color: var(--fg); display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+        color: var(--fg); display: inline-flex; align-items: center; justify-content: center; gap: 8px; transition: transform 150ms ease, opacity 150ms ease, background-color 170ms ease; }
       .btn:hover { background: var(--elevated); }
+      .btn:active { transform: scale(.98); opacity: .92; }
       .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
       .btn.primary:hover { opacity: 0.9; background: var(--accent); }
       .btn.ghost { background: transparent; border: 0; color: var(--muted); height: auto; padding: 8px; }
@@ -92,6 +96,9 @@
       .tab { border: 0; background: transparent; color: var(--muted); padding: 8px 12px; border-radius: 999px; font-size: 14px; }
       .tab.on { background: var(--elevated); color: var(--fg); }
       .who { font-size: 14px; color: var(--muted); max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .ops-switch { height: 32px; padding: 0 10px; border: 0; border-radius: 999px; background: transparent; color: var(--subtle); font-size: 12px; display: inline-flex; align-items: center; text-decoration: none; }
+      .ops-switch:hover { color: var(--muted); background: var(--elevated); }
+      .ops-switch.on { color: var(--muted); }
       .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
       .row > code.box { min-width: 0; flex: 1 1 12rem; }
       code, pre { font-family: var(--mono); font-size: 12px; }
@@ -99,6 +106,10 @@
       pre { overflow: auto; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all; }
       .secret { display: flex; flex-direction: column; align-items: stretch; gap: 8px; max-width: 100%; }
       .secret code.box { display: block; width: 100%; max-height: 9.5em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all; line-height: 1.45; }
+      .shade { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(0,0,0,.45); }
+      .prompt { background: var(--surface); color: var(--fg); border: 1px solid var(--border); border-radius: 16px; padding: 24px; width: min(36rem, 100%); max-height: 90vh; overflow: auto; box-shadow: var(--shadow); display: grid; gap: 14px; }
+      .kv { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; font-family: var(--mono); }
+      .kv span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; text-align: right; }
       input { height: 44px; padding: 0 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); width: 100%; }
       .err { color: var(--bad); font-size: 13px; min-height: 1.2em; }
       .machine { border: 1px solid var(--border); border-radius: 12px; padding: 16px; background: var(--surface); }
@@ -110,6 +121,9 @@
       .help li { margin: 8px 0; }
       .dl { display: grid; gap: 12px; }
       @media (min-width: 800px) { .dl { grid-template-columns: 1fr 1fr; } }
+      @media (prefers-reduced-motion: reduce) {
+        .seg .seg-thumb, .seg button, .btn { transition: none !important; transform: none !important; }
+      }
     </style>
   </head>
   <body>
@@ -118,7 +132,7 @@
       function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\"/g,"&quot;"); }
       const T = {
         zh: {
-          help: "帮助", downloads: "下载", signOut: "退出", settings: "设置", fleet: "机器",
+          help: "帮助", downloads: "下载", signOut: "退出", settings: "设置", fleet: "机器", ops: "管理",
           kicker: "fleet.ginfo.cc",
           hero: "一个工具，连上你所有电脑。随时随地。",
           body: "用本站地址和 token 导入工具。Windows、Linux、macOS 上的 Agent 会通过 WebSocket 主动连出来。",
@@ -150,6 +164,14 @@
           generate: "生成 token", reset: "重置 token",
           resetHint: "旧钥匙立刻作废。每个 Agent、每个工具都要重新填。",
           copy: "复制", secretOnce: "只显示一次，现在就复制走。",
+          resetConfirm: "重置这把 token？",
+          resetConfirmBody: "旧的 RSA 钥匙立刻作废。每台 Agent、每个 MCP 客户端都要重新填新 token。在线设备连接会断开（1008 token reset）。",
+          minting: "正在生成 RSA-2048 钥匙…",
+          anatomy: "这把钥匙怎么组成",
+          anatomyPrefix: "前缀", anatomyAud: "受众（HUB_ORIGIN）", anatomyKid: "钥匙 id",
+          anatomyIat: "签发时间", anatomySig: "签名",
+          anatomyRsa: "RSA-2048 PSS。Agent 发送 Fleet-OAEP，不是 Bearer。",
+          promptCancel: "取消", promptContinue: "重置", promptClose: "完成",
           toolHint: "FLEET_URL 用本站，FLEET_TOKEN 用这把钥匙。",
           empty: "还没有机器。装 Agent，填本站地址和 token，连上后会出现在这里。",
           online: "在线", offline: "离线",
@@ -159,7 +181,7 @@
           themeL: "浅色", themeD: "深色", themeS: "系统",
         },
         en: {
-          help: "Help", downloads: "Downloads", signOut: "Sign out", settings: "Settings", fleet: "Machines",
+          help: "Help", downloads: "Downloads", signOut: "Sign out", settings: "Settings", fleet: "Machines", ops: "Ops",
           kicker: "fleet.ginfo.cc",
           hero: "One tool. Every computer. Anywhere.",
           body: "Import the MCP tool with this URL and a token. Agents on Windows, Linux, and macOS dial out over WebSocket.",
@@ -191,6 +213,14 @@
           generate: "Generate token", reset: "Reset token",
           resetHint: "Old tokens die immediately. Re-paste on every agent and tool.",
           copy: "Copy", secretOnce: "Shown once. Copy it now.",
+          resetConfirm: "Reset this token?",
+          resetConfirmBody: "The old RSA key dies immediately. Every agent and MCP client must be given the new token. Live device sockets close (1008 token reset).",
+          minting: "Minting RSA-2048 key…",
+          anatomy: "How this token is composed",
+          anatomyPrefix: "Prefix", anatomyAud: "Audience (HUB_ORIGIN)", anatomyKid: "Key id",
+          anatomyIat: "Issued", anatomySig: "Signature",
+          anatomyRsa: "RSA-2048 PSS. Agents send Fleet-OAEP, not Bearer.",
+          promptCancel: "Cancel", promptContinue: "Reset", promptClose: "Done",
           toolHint: "FLEET_URL is this origin. FLEET_TOKEN is this key.",
           empty: "No machines yet. Install an agent, paste this origin and token, then it shows up here.",
           online: "online", offline: "offline",
@@ -210,6 +240,8 @@
         secret: "",
         meta: null,
         computers: [],
+        prompt: null,
+        metaReady: false,
       };
       const t = (k) => T[state.locale][k];
       const $ = (s) => document.querySelector(s);
@@ -252,6 +284,20 @@
       function signedIn() {
         return !!(state.user && state.user.id);
       }
+      async function mintToken() {
+        state.prompt = "busy";
+        render();
+        try {
+          const out = await api("/v1/hub_token", { method: "POST", body: "{}" });
+          state.secret = out.token;
+          state.meta = { hasToken: true, prefix: out.prefix };
+          state.prompt = "shown";
+        } catch (e) {
+          state.prompt = null;
+          state.err = e.message || String(e);
+        }
+        render();
+      }
       async function boot() {
         applyTheme(state.themePref);
         try {
@@ -259,7 +305,8 @@
           state.user = me && me.id ? me : null;
         } catch { state.user = null; }
         if (signedIn()) {
-          try { state.meta = await api("/v1/hub_token"); } catch { state.meta = null; }
+          try { state.meta = await api("/v1/hub_token"); } catch { state.meta = { hasToken: true, prefix: "" }; }
+          state.metaReady = true;
           try { const j = await api("/v1/list_computers", { method: "POST", body: "{}" }); state.computers = j.computers || []; } catch { state.computers = []; }
         }
         render();
@@ -269,6 +316,7 @@
       }
       function langBar() {
         return `<div class="seg" role="group" aria-label="Language">
+          <span class="seg-thumb" aria-hidden="true"></span>
           <button type="button" data-loc="en" class="${state.locale==="en"?"on":""}">EN</button>
           <button type="button" data-loc="zh" class="${state.locale==="zh"?"on":""}">中文</button>
         </div>`;
@@ -276,15 +324,31 @@
       function themeBar() {
         const p = state.themePref;
         return `<div class="seg" role="group" aria-label="Theme">
+          <span class="seg-thumb" aria-hidden="true"></span>
           <button type="button" data-theme-set="light" class="${p==="light"?"on":""}">${t("themeL")}</button>
           <button type="button" data-theme-set="dark" class="${p==="dark"?"on":""}">${t("themeD")}</button>
           <button type="button" data-theme-set="system" class="${p==="system"?"on":""}">${t("themeS")}</button>
         </div>`;
       }
+      function syncSegments() {
+        document.querySelectorAll(".seg").forEach((seg) => {
+          const active = seg.querySelector("button.on") || seg.querySelector("button");
+          if (!active) return;
+          const s = seg.getBoundingClientRect();
+          const b = active.getBoundingClientRect();
+          seg.style.setProperty("--seg-x", (b.left - s.left) + "px");
+          seg.style.setProperty("--seg-w", b.width + "px");
+        });
+      }
+      function opsSwitch() {
+        if (!(state.user && state.user.ops)) return "";
+        return `<a class="ops-switch" href="/ops">${t("ops")}</a>`;
+      }
       function chrome(extra) {
         return `<header class="top">
           <a class="brand" href="/" data-go="/"><img src="/logo.png" width="28" height="28" alt="" />Fleet</a>
           <a class="nav-link" href="/help" data-go="/help">${t("help")}</a>
+          ${opsSwitch()}
           <span class="spacer"></span>
           ${extra || ""}
           ${themeBar()}
@@ -308,6 +372,51 @@
       function keys() {
         const items = [["k1t","k1s"],["k2t","k2s"],["k3t","k3s"],["k4t","k4s"]];
         return `<div class="grid-4">${items.map(([a,b],i)=>`<article class="card"><p class="subtle">0${i+1}</p><h3 style="margin-top:12px">${t(a)}</h3><p class="muted" style="margin-top:6px">${t(b)}</p></article>`).join("")}</div>`;
+      }
+      function b64urlJson(s) {
+        try {
+          const t = String(s || "").replace(/-/g, "+").replace(/_/g, "/");
+          const pad = t.length % 4 === 0 ? "" : "=".repeat(4 - (t.length % 4));
+          return JSON.parse(atob(t + pad));
+        } catch { return null; }
+      }
+      function inspectToken(raw) {
+        const tkn = String(raw || "").trim();
+        if (!tkn.startsWith("flt_1.")) return null;
+        const rest = tkn.slice(6);
+        const dot = rest.lastIndexOf(".");
+        if (dot < 1) return null;
+        const obj = b64urlJson(rest.slice(0, dot));
+        if (!obj || obj.v !== 1 || !obj.aud || !obj.kid) return null;
+        return { prefix: "flt_1.", aud: obj.aud, kid: obj.kid, iat: obj.iat, sig: rest.slice(dot + 1).slice(0, 12) };
+      }
+      function anatomyHtml(raw) {
+        const view = inspectToken(raw);
+        if (!view) return "";
+        const issued = view.iat ? new Date(view.iat).toISOString() : "";
+        const rows = [
+          [t("anatomyPrefix"), view.prefix],
+          [t("anatomyAud"), view.aud],
+          [t("anatomyKid"), view.kid],
+          [t("anatomyIat"), issued],
+          [t("anatomySig"), view.sig + "…"],
+        ];
+        return `<div><p style="font-weight:600;margin:0 0 8px">${t("anatomy")}</p>${rows.map(([k,v]) => `<div class="kv"><span class="subtle">${esc(k)}</span><span>${esc(v)}</span></div>`).join("")}<p class="subtle" style="margin:8px 0 0">${t("anatomyRsa")}</p></div>`;
+      }
+      function promptView() {
+        if (!state.prompt) return "";
+        let inner = "";
+        if (state.prompt === "confirm") {
+          inner = `<h3>${t("resetConfirm")}</h3><p class="muted">${t("resetConfirmBody")}</p>
+            <div class="row" style="justify-content:flex-end"><button class="btn" data-prompt="close">${t("promptCancel")}</button><button class="btn danger" data-prompt="mint">${t("promptContinue")}</button></div>`;
+        } else if (state.prompt === "busy") {
+          inner = `<p class="muted">${t("minting")}</p>`;
+        } else if (state.prompt === "shown" && state.secret) {
+          inner = `<p class="warn">${t("secretOnce")}</p><div class="secret"><code class="box">${esc(state.secret)}</code><button class="btn" type="button" data-copy-secret="1">${t("copy")}</button></div>
+            ${anatomyHtml(state.secret)}
+            <div class="row" style="justify-content:flex-end"><button class="btn primary" data-prompt="close">${t("promptClose")}</button></div>`;
+        }
+        return `<div class="shade" data-prompt="shade"><div class="prompt" role="dialog" aria-modal="true">${inner}</div></div>`;
       }
       function homeView() {
         return `${chrome()}
@@ -400,7 +509,7 @@ node packages/fleet-tool/index.mjs list</pre>
             </div>
           </div>
           <div class="row" style="margin-top:16px">
-            <button class="btn primary" id="mint">${state.meta && state.meta.hasToken ? t("reset") : t("generate")}</button>
+            <button class="btn primary" id="mint"${state.metaReady ? "" : " disabled"}>${state.meta && state.meta.hasToken ? t("reset") : t("generate")}</button>
             ${state.meta && state.meta.hasToken ? `<span class="subtle">${t("resetHint")}</span>` : ""}
           </div>
           <p class="muted" style="margin-top:16px">${t("toolHint")}</p>
@@ -443,6 +552,7 @@ node packages/fleet-tool/index.mjs list</pre>
         if (isHelp()) root.innerHTML = helpView(signedIn());
         else if (signedIn()) root.innerHTML = appView();
         else root.innerHTML = homeView();
+        root.insertAdjacentHTML("beforeend", promptView());
         bind();
       }
       function bind() {
@@ -450,7 +560,9 @@ node packages/fleet-tool/index.mjs list</pre>
           state.locale = b.dataset.loc; localStorage.setItem("fleet-locale", state.locale); render();
         });
         document.querySelectorAll("[data-theme-set]").forEach((b) => b.onclick = () => {
-          applyTheme(b.dataset.themeSet); render();
+          applyTheme(b.dataset.themeSet);
+          document.querySelectorAll("[data-theme-set]").forEach((x) => x.classList.toggle("on", x.dataset.themeSet === state.themePref));
+          syncSegments();
         });
         document.querySelectorAll("[data-go]").forEach((b) => b.onclick = (e) => {
           e.preventDefault();
@@ -465,18 +577,26 @@ node packages/fleet-tool/index.mjs list</pre>
         const out = $("#out");
         if (out) out.onclick = async () => { try { await api("/v1/logout", { method: "POST", body: "{}" }); } catch {} state.user = null; state.secret = ""; go("/"); };
         const mint = $("#mint");
-        if (mint) mint.onclick = async () => {
-          const out = await api("/v1/hub_token", { method: "POST", body: "{}" });
-          state.secret = out.token;
-          state.meta = { hasToken: true, prefix: out.prefix };
-          render();
+        if (mint) mint.onclick = () => {
+          if (state.meta && state.meta.hasToken) { state.prompt = "confirm"; render(); return; }
+          void mintToken();
         };
+        document.querySelectorAll("[data-prompt]").forEach((b) => {
+          b.onclick = (e) => {
+            const act = b.dataset.prompt;
+            if (act === "shade" && e.target !== b) return;
+            if (act === "close" || act === "shade") { state.prompt = null; render(); return; }
+            if (act === "mint") void mintToken();
+          };
+        });
         document.querySelectorAll("[data-copy]").forEach((b) => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy));
         document.querySelectorAll("[data-copy-secret]").forEach((b) => b.onclick = () => { if (state.secret) navigator.clipboard.writeText(state.secret); });
+        requestAnimationFrame(syncSegments);
       }
       window.addEventListener("popstate", render);
+      window.addEventListener("resize", syncSegments);
       window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-        if (state.themePref === "system") { applyTheme("system"); render(); }
+        if (state.themePref === "system") { applyTheme("system"); syncSegments(); }
       });
       boot();
     </script>

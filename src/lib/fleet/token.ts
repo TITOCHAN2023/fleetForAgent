@@ -10,6 +10,7 @@ export {
   highSecAuthorization,
   hubOrigin,
   isLegacyFlt,
+  inspectTokenV1,
   isTokenV1,
   mintTokenV1,
   parseAuthorization,

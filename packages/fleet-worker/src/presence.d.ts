@@ -3,6 +3,7 @@ export const HEARTBEAT_WAIT_MAX_MS: 10000;
 export const DESKTOP_WAIT_MS: 8000;
 export const COMPUTER_USE_CAP: "computer_use";
 export function agentVerFromBody(body: unknown): string | undefined;
+export function archFromBody(body: unknown): string | undefined;
 export function normalizeCaps(raw: unknown): string[];
 export function normalizePermit(raw: unknown): "off" | "ask" | "allow" | null;
 export function joinCaps(caps: unknown): string;

@@ -15,11 +15,16 @@ type ScreenSlot = {
   byCorr: Map<string, Record<string, unknown>>;
 };
 
+type BeatWaiter = { resolve: (ok: boolean) => void; timer: ReturnType<typeof setTimeout> };
+type BeatSlot = { seq: number; waiters: BeatWaiter[] };
+
 type LiveStore = {
   byDevice: Map<string, LiveSlot>;
   byUser: Map<string, Set<string>>;
   screens: Map<string, ScreenSlot>;
   results: Map<string, Map<string, Record<string, unknown>>>;
+  agentVer: Map<string, string>;
+  beats: Map<string, BeatSlot>;
 };
 
 const OPEN = 1;
@@ -32,8 +37,13 @@ function store(): LiveStore {
     byUser: new Map(),
     screens: new Map(),
     results: new Map(),
+    agentVer: new Map(),
+    beats: new Map(),
   };
-  return g.__fleetLive__;
+  const s = g.__fleetLive__;
+  s.agentVer ??= new Map();
+  s.beats ??= new Map();
+  return s;
 }
 
 export function attachDevice(userId: string, deviceId: string, ws: WsLike) {
@@ -121,6 +131,61 @@ export function getResult(deviceId: string, corr: string): Record<string, unknow
   return store().results.get(deviceId)?.get(corr);
 }
 
+export function putAgentVer(deviceId: string, ver?: string) {
+  if (ver === undefined) return;
+  if (!ver) {
+    store().agentVer.delete(deviceId);
+    return;
+  }
+  store().agentVer.set(deviceId, ver);
+}
+
+export function getAgentVer(deviceId: string): string | undefined {
+  return store().agentVer.get(deviceId);
+}
+
+function beatSlot(deviceId: string): BeatSlot {
+  const s = store();
+  let slot = s.beats.get(deviceId);
+  if (!slot) {
+    slot = { seq: 0, waiters: [] };
+    s.beats.set(deviceId, slot);
+  }
+  return slot;
+}
+
+export function noteHeartbeat(deviceId: string) {
+  const slot = beatSlot(deviceId);
+  slot.seq += 1;
+  const waiters = slot.waiters.splice(0);
+  for (const w of waiters) w.resolve(true);
+}
+
+export function waitNextHeartbeat(deviceId: string, waitMs: number): Promise<boolean> {
+  const slot = beatSlot(deviceId);
+  const start = slot.seq;
+  return new Promise((resolve) => {
+    const waiter: BeatWaiter = {
+      resolve: (ok) => {
+        clearTimeout(waiter.timer);
+        resolve(ok);
+      },
+      timer: setTimeout(() => {
+        slot.waiters = slot.waiters.filter((w) => w !== waiter);
+        resolve(slot.seq > start);
+      }, waitMs),
+    };
+    slot.waiters.push(waiter);
+  });
+}
+
+export function cancelHeartbeatWait(deviceId: string) {
+  const slot = store().beats.get(deviceId);
+  if (!slot || slot.waiters.length === 0) return;
+  const waiter = slot.waiters.pop();
+  waiter?.resolve(false);
+}
+
 function userSet(userId: string): Set<string> {
   const s = store();
   let set = s.byUser.get(userId);
@@ -138,4 +203,6 @@ export function resetLive() {
   s.byUser.clear();
   s.screens.clear();
   s.results.clear();
+  s.agentVer.clear();
+  s.beats.clear();
 }

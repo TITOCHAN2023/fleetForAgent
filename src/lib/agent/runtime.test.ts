@@ -134,6 +134,15 @@ test("destructive command is blocked even on allow", async () => {
   assert.equal(out.exitCode, 126);
 });
 
+test("rm -rf of a specific absolute path is not blanket-banned", async () => {
+  const r = runtime();
+  await r.connect("hub.fleet", { connect: async () => {} });
+  r.setPermit("allow");
+  const out = r.incomingRun("rm -rf /tmp/fleet-cleanup");
+  assert.notEqual(out.status, "refused");
+  assert.notEqual(out.exitCode, 126);
+});
+
 test("offline incoming run is refused", () => {
   const r = runtime();
   r.setPermit("allow");

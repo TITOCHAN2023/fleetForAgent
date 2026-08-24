@@ -428,8 +428,14 @@ func (ls *liveShell) feedScreen(p []byte) {
 func liveSetupCommand() string {
 	// No stty: tcsetattr from a non-foreground slave job gets SIGTTOU
 	// even when tostop is off, and the stopped stty blocks exit.
-	return "export TERM=xterm-256color; " +
+	// disable-completion: quoted JSON / glob chars must not open
+	// "Display all N possibilities?" on a leftover interactive PTY.
+	return "export TERM=xterm-256color PAGER=cat GIT_PAGER=cat LANG=C.UTF-8 LC_ALL=C.UTF-8; " +
 		"bind 'set enable-bracketed-paste off' 2>/dev/null || true; " +
+		"bind 'set disable-completion on' 2>/dev/null || true; " +
+		"bind 'set show-all-if-ambiguous off' 2>/dev/null || true; " +
+		"bind 'set page-completions off' 2>/dev/null || true; " +
+		"setopt NO_AUTO_MENU NO_AUTO_LIST NO_COMPLETE_ALIASES 2>/dev/null || true; " +
 		"shopt -s expand_aliases 2>/dev/null || true; " +
 		"setopt aliases 2>/dev/null || true; " +
 		"unset PROMPT_COMMAND; PROMPT_COMMAND=; " +
@@ -890,13 +896,13 @@ func (p *pane) stillRunning() bool {
 func (p *pane) finishCommand(stdout string, code int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	stdout = stripCompletionText(stdout)
+	stdout = stripRunOutput(stdout)
 	p.stdout = newStreamBuf()
 	if stdout != "" {
 		p.stdout.append(stdout)
 	}
 	if p.stderr != nil {
-		cleaned := stripCompletionText(p.stderr.render())
+		cleaned := stripRunOutput(p.stderr.render())
 		p.stderr = newStreamBuf()
 		if cleaned != "" {
 			p.stderr.append(cleaned)

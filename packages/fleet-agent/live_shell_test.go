@@ -177,18 +177,12 @@ func TestStripCompletionText(t *testing.T) {
 	}
 }
 
-func TestLiveShellPersistsEnvAndCwd(t *testing.T) {
+func TestRunIsolatesEnvAndCwd(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("live shell is POSIX-only")
+		t.Skip("POSIX oneshot")
 	}
 	s := newSupervisor()
-	t.Cleanup(func() {
-		s.mu.Lock()
-		if s.live != nil {
-			s.live.kill()
-		}
-		s.mu.Unlock()
-	})
+	t.Cleanup(s.killAllLive)
 
 	p1, err := s.spawn("c1", "export FOO=bar")
 	if err != nil {
@@ -196,14 +190,14 @@ func TestLiveShellPersistsEnvAndCwd(t *testing.T) {
 	}
 	waitPaneDone(t, p1)
 
-	p2, err := s.spawn("c2", `printf '%s' "$FOO"`)
+	p2, err := s.spawn("c2", `printf 'got=%s\n' "$FOO"`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitPaneDone(t, p2)
 	out, stderr := p2.resultText()
-	if strings.TrimSpace(out) != "bar" {
-		t.Fatalf("env persist: stdout=%q stderr=%q", out, stderr)
+	if strings.Contains(out, "bar") {
+		t.Fatalf("env leaked across runs (shared interactive shell?): stdout=%q stderr=%q", out, stderr)
 	}
 	assertNoCompletion(t, out, stderr)
 
@@ -218,11 +212,12 @@ func TestLiveShellPersistsEnvAndCwd(t *testing.T) {
 	}
 	waitPaneDone(t, p4)
 	pwd, _ := p4.resultText()
-	if !strings.Contains(strings.TrimSpace(pwd), "/tmp") {
-		t.Fatalf("cwd persist: pwd=%q", pwd)
+	home := userHome()
+	if home != "" && strings.TrimSpace(pwd) == "/tmp" {
+		t.Fatalf("cwd leaked across runs: pwd=%q", pwd)
 	}
-	if p4.exitCode != 0 && p4.stillRunning() {
-		t.Fatal("pwd still running")
+	if p4.exitCode != 0 {
+		t.Fatalf("pwd exit=%d", p4.exitCode)
 	}
 }
 
@@ -252,13 +247,7 @@ func TestLiveShellStartsInHomeAndExpandsAlias(t *testing.T) {
 		t.Skip("no home")
 	}
 	s := newSupervisor()
-	t.Cleanup(func() {
-		s.mu.Lock()
-		if s.live != nil {
-			s.live.kill()
-		}
-		s.mu.Unlock()
-	})
+	t.Cleanup(s.killAllLive)
 
 	p1, err := s.spawn("h1", "pwd")
 	if err != nil {
@@ -278,19 +267,14 @@ func TestLiveShellStartsInHomeAndExpandsAlias(t *testing.T) {
 		t.Fatalf("first pwd=%q want home %q (raw %q)", got, want, pwd)
 	}
 
-	p2, err := s.spawn("a1", "alias ll='ls -ld'")
+	p2, err := s.spawn("a1", "shopt -s expand_aliases 2>/dev/null || true; alias ll='ls -ld'; type ll")
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitPaneDone(t, p2)
-	p3, err := s.spawn("a2", "type ll")
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitPaneDone(t, p3)
-	typed, stderr := p3.resultText()
+	typed, stderr := p2.resultText()
 	if !strings.Contains(typed, "ll") || !(strings.Contains(typed, "alias") || strings.Contains(typed, "ls -ld")) {
-		t.Fatalf("type ll should find alias, stdout=%q stderr=%q", typed, stderr)
+		t.Fatalf("type ll should find alias in the same -c, stdout=%q stderr=%q", typed, stderr)
 	}
 	assertNoCompletion(t, typed, stderr)
 
@@ -327,13 +311,7 @@ func TestLiveShellEchoHiHasCleanStreams(t *testing.T) {
 		t.Skip("live shell is POSIX-only")
 	}
 	s := newSupervisor()
-	t.Cleanup(func() {
-		s.mu.Lock()
-		if s.live != nil {
-			s.live.kill()
-		}
-		s.mu.Unlock()
-	})
+	t.Cleanup(s.killAllLive)
 
 	p, err := s.spawn("hi1", "echo hi")
 	if err != nil {
@@ -372,13 +350,7 @@ func TestLiveShellReadThenType(t *testing.T) {
 		t.Skip("live shell is POSIX-only")
 	}
 	s := newSupervisor()
-	t.Cleanup(func() {
-		s.mu.Lock()
-		if s.live != nil {
-			s.live.kill()
-		}
-		s.mu.Unlock()
-	})
+	t.Cleanup(s.killAllLive)
 
 	p, err := s.spawn("rd1", `read -r x; printf 'got=%s\n' "$x"`)
 	if err != nil {
@@ -425,13 +397,7 @@ func TestLiveShellTTYAndTerm(t *testing.T) {
 	// 888-test daemons inherit TERM=dumb from the launcher.
 	t.Setenv("TERM", "dumb")
 	s := newSupervisor()
-	t.Cleanup(func() {
-		s.mu.Lock()
-		if s.live != nil {
-			s.live.kill()
-		}
-		s.mu.Unlock()
-	})
+	t.Cleanup(s.killAllLive)
 
 	t.Setenv("NO_COLOR", "1")
 	t.Setenv("FORCE_COLOR", "0")
@@ -491,13 +457,7 @@ func TestLiveShellReadScreenIsCurrentFrame(t *testing.T) {
 		t.Skip("live shell is POSIX-only")
 	}
 	s := newSupervisor()
-	t.Cleanup(func() {
-		s.mu.Lock()
-		if s.live != nil {
-			s.live.kill()
-		}
-		s.mu.Unlock()
-	})
+	t.Cleanup(s.killAllLive)
 
 	p, err := s.spawn("tui1", "printf '\\033[H\\033[2J\\033[1;1Hline-one\\033[2;1Hline-two'; sleep 4")
 	if err != nil {
@@ -531,13 +491,7 @@ func TestLiveShellReadScreenAfterColorPrintf(t *testing.T) {
 		t.Skip("live shell is POSIX-only")
 	}
 	s := newSupervisor()
-	t.Cleanup(func() {
-		s.mu.Lock()
-		if s.live != nil {
-			s.live.kill()
-		}
-		s.mu.Unlock()
-	})
+	t.Cleanup(s.killAllLive)
 	p, err := s.spawn("color1", "printf '\\033[31mred-line\\033[0m\\n'")
 	if err != nil {
 		t.Fatal(err)
@@ -619,13 +573,7 @@ func TestLiveShellAnswersDAQuery(t *testing.T) {
 		t.Skip("live shell is POSIX-only")
 	}
 	s := newSupervisor()
-	t.Cleanup(func() {
-		s.mu.Lock()
-		if s.live != nil {
-			s.live.kill()
-		}
-		s.mu.Unlock()
-	})
+	t.Cleanup(s.killAllLive)
 
 	p, err := s.spawn("da1", "printf '\\033[c\\033[c\\033[cDA_SENT\\n'; sleep 2")
 	if err != nil {
@@ -645,13 +593,7 @@ func TestLiveShellPythonReadsDA(t *testing.T) {
 		t.Skip("no python3")
 	}
 	s := newSupervisor()
-	t.Cleanup(func() {
-		s.mu.Lock()
-		if s.live != nil {
-			s.live.kill()
-		}
-		s.mu.Unlock()
-	})
+	t.Cleanup(s.killAllLive)
 	dir := t.TempDir()
 	script := filepath.Join(dir, "da.py")
 	body := `import os, select, sys, termios, tty
@@ -691,13 +633,7 @@ func TestLiveShellTypeCtrlCStopsSleep(t *testing.T) {
 		t.Skip("live shell is POSIX-only")
 	}
 	s := newSupervisor()
-	t.Cleanup(func() {
-		s.mu.Lock()
-		if s.live != nil {
-			s.live.kill()
-		}
-		s.mu.Unlock()
-	})
+	t.Cleanup(s.killAllLive)
 
 	p, err := s.spawn("int1", "sleep 30")
 	if err != nil {
@@ -718,13 +654,7 @@ func TestLiveShellFinishesWhenPromptMarkerGone(t *testing.T) {
 		t.Skip("live shell is POSIX-only")
 	}
 	s := newSupervisor()
-	t.Cleanup(func() {
-		s.mu.Lock()
-		if s.live != nil {
-			s.live.kill()
-		}
-		s.mu.Unlock()
-	})
+	t.Cleanup(s.killAllLive)
 	p, err := s.spawn("np1", "PS1='broken> '; sleep 0.3")
 	if err != nil {
 		t.Fatal(err)
@@ -740,13 +670,7 @@ func TestLiveShellReadScreenDropsAltAfterTUI(t *testing.T) {
 		t.Skip("live shell is POSIX-only")
 	}
 	s := newSupervisor()
-	t.Cleanup(func() {
-		s.mu.Lock()
-		if s.live != nil {
-			s.live.kill()
-		}
-		s.mu.Unlock()
-	})
+	t.Cleanup(s.killAllLive)
 	p, err := s.spawn("alt1", "printf '\\033[?1049h\\033[H\\033[2JTUI-BOX\\n'")
 	if err != nil {
 		t.Fatal(err)
@@ -769,13 +693,7 @@ func TestLiveShellReadScreenAfterPrimaryTUIThenPwd(t *testing.T) {
 		t.Skip("live shell is POSIX-only")
 	}
 	s := newSupervisor()
-	t.Cleanup(func() {
-		s.mu.Lock()
-		if s.live != nil {
-			s.live.kill()
-		}
-		s.mu.Unlock()
-	})
+	t.Cleanup(s.killAllLive)
 	p, err := s.spawn("box1", "printf '\\033[H\\033[2J====CODEX====\\n| box |\\n============\\n'")
 	if err != nil {
 		t.Fatal(err)
@@ -816,13 +734,7 @@ func TestLiveShellReadScreenEmptyAfterDAPrimaryBox(t *testing.T) {
 		t.Skip("live shell is POSIX-only")
 	}
 	s := newSupervisor()
-	t.Cleanup(func() {
-		s.mu.Lock()
-		if s.live != nil {
-			s.live.kill()
-		}
-		s.mu.Unlock()
-	})
+	t.Cleanup(s.killAllLive)
 	p, err := s.spawn("ida1", "printf '\\033[c\\033[H\\033[2J====BOX====\\n| tui |\\n'")
 	if err != nil {
 		t.Fatal(err)
@@ -845,13 +757,7 @@ func TestLiveShellResultStdoutEmptyAfterTypedDATUI(t *testing.T) {
 		t.Skip("live shell is POSIX-only")
 	}
 	s := newSupervisor()
-	t.Cleanup(func() {
-		s.mu.Lock()
-		if s.live != nil {
-			s.live.kill()
-		}
-		s.mu.Unlock()
-	})
+	t.Cleanup(s.killAllLive)
 	p, err := s.spawn("ida2", "printf '\\033[c\\033[H\\033[2J====BOX====\\n| tui |\\nMCP warning\\n'; sleep 30")
 	if err != nil {
 		t.Fatal(err)
@@ -886,13 +792,7 @@ func TestLiveShellReadScreenEmptyAfterTypedChild(t *testing.T) {
 		t.Skip("live shell is POSIX-only")
 	}
 	s := newSupervisor()
-	t.Cleanup(func() {
-		s.mu.Lock()
-		if s.live != nil {
-			s.live.kill()
-		}
-		s.mu.Unlock()
-	})
+	t.Cleanup(s.killAllLive)
 	p, err := s.spawn("itui1", "printf '\\033[H\\033[2J====BOX====\\n| tui |\\n'; sleep 30")
 	if err != nil {
 		t.Fatal(err)
@@ -952,14 +852,6 @@ func TestLiveShellKeyedByFingerprint(t *testing.T) {
 	waitPaneTypable(t, pA)
 	waitPaneTypable(t, pB)
 
-	liveA := s.liveFor("fp-a")
-	liveB := s.liveFor("fp-b")
-	if liveA == nil || liveB == nil {
-		t.Fatal("both fingerprints need a live PTY")
-	}
-	if liveA == liveB {
-		t.Fatal("two fingerprints must not share a PTY")
-	}
 	if s.getFor("fp-a", "") != pA || s.getFor("fp-b", "") != pB {
 		t.Fatal("empty ticket must stay on this fingerprint's pane")
 	}
@@ -968,5 +860,8 @@ func TestLiveShellKeyedByFingerprint(t *testing.T) {
 	}
 	if pA.stdin == nil || pB.stdin == nil || pA.stdin == pB.stdin {
 		t.Fatal("type must not share stdin across fingerprints")
+	}
+	if pA.cmd == nil || pB.cmd == nil || pA.cmd == pB.cmd {
+		t.Fatal("each fingerprint run must be its own process")
 	}
 }

@@ -1,4 +1,5 @@
 import { makeEnvelope, type Envelope } from "../fleet/protocol";
+import { devicePolicyBlocked } from "../fleet/policy";
 import { runSimulated, type ShellDevice, type ShellResult } from "../fleet/shell";
 
 export type Permit = "off" | "ask" | "allow";
@@ -30,8 +31,6 @@ export type RunOutcome = {
 export type NormalizedHub =
   | { ok: true; host: string; wss: string; http: string }
   | { ok: false; error: string };
-
-const DESTRUCTIVE = /rm\s+-rf|del\s+\/f|format\s+c:|shutdown|reboot|mkfs|diskpart/i;
 
 export function normalizeHub(raw: string): NormalizedHub {
   const input = raw.trim();
@@ -216,7 +215,7 @@ export class AgentRuntime {
       this.log("warn", `refused (off): ${command}`);
       return this.finish(corr, "refused", 126, "", "fleet: permit=off — 本机不允许执行", [runEnv]);
     }
-    if (DESTRUCTIVE.test(command)) {
+    if (devicePolicyBlocked(command)) {
       this.log("error", `blocked destructive: ${command}`);
       return this.finish(corr, "refused", 126, "", "fleet: refused by device policy", [runEnv]);
     }

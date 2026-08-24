@@ -6,7 +6,8 @@ import { useI18n } from "@/lib/i18n/use-i18n";
 import type { MessageKey } from "@/lib/i18n/messages";
 
 const HUB = "https://fleet.ginfo.cc";
-const TOOL_PATH = "/absolute/path/to/packages/fleet-tool/index.mjs";
+const TOOL_TGZ = `${HUB}/fleet-tool.tgz`;
+const NPX = `npx -y ${TOOL_TGZ}`;
 
 const MCP_TOOLS: { name: string; key: MessageKey }[] = [
   { name: "list_computers", key: "guide.tool.list_computers" },
@@ -23,17 +24,14 @@ const MCP_TOOLS: { name: string; key: MessageKey }[] = [
   { name: "desktop_action", key: "guide.tool.desktop_action" },
 ];
 
-const CLONE = `git clone https://github.com/TITOCHAN2023/fleetForAgent.git
-cd fleetForAgent`;
-
 const MCP_ENV = `FLEET_URL=${HUB}
 FLEET_TOKEN=flt_...`;
 
 const CURSOR_MCP = `{
   "mcpServers": {
     "fleet": {
-      "command": "node",
-      "args": ["${TOOL_PATH}"]
+      "command": "npx",
+      "args": ["-y", "${TOOL_TGZ}"]
     }
   }
 }`;
@@ -41,8 +39,8 @@ const CURSOR_MCP = `{
 const CURSOR_MCP_ENV = `{
   "mcpServers": {
     "fleet": {
-      "command": "node",
-      "args": ["${TOOL_PATH}"],
+      "command": "npx",
+      "args": ["-y", "${TOOL_TGZ}"],
       "env": {
         "FLEET_URL": "${HUB}",
         "FLEET_TOKEN": "flt_..."
@@ -73,7 +71,9 @@ const LINUX_CLI = `./fleet start --hub ${HUB} --token flt_...
 ./fleet status
 ./fleet permit ask`;
 
-const CLI_LIST = `node packages/fleet-tool/index.mjs list`;
+const CLI_SNIPPET = `FLEET_URL=${HUB}
+FLEET_TOKEN=flt_...
+${NPX}`;
 
 function copy(text: string) {
   return navigator.clipboard.writeText(text);
@@ -188,7 +188,7 @@ export function GuidePanel() {
         <h2 className="text-base font-medium">{t("guide.s3")}</h2>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">{t("guide.s3Body")}</p>
         <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted">{t("guide.s3Clone")}</p>
-        <CodeBlock label="git clone" text={CLONE} />
+        <CodeBlock label={NPX} text={CLI_SNIPPET} />
         <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted">{t("guide.s3Env")}</p>
         <CodeBlock label="~/.fleet/mcp.env" text={MCP_ENV} />
         <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted">{t("guide.s3Cursor")}</p>
@@ -197,7 +197,7 @@ export function GuidePanel() {
         <CodeBlock label="mcp.json env" text={CURSOR_MCP_ENV} />
         <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted">{t("guide.s3Claude")}</p>
         <CodeBlock label="claude_desktop_config.json" text={CURSOR_MCP} />
-        <CodeBlock label="node packages/fleet-tool/index.mjs list" text={CLI_LIST} />
+        <CodeBlock label={NPX} text={CLI_SNIPPET} />
         <h3 className="mt-6 text-sm font-medium">{t("guide.s3Tools")}</h3>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">{t("guide.s3ToolsBody")}</p>
         <ol className="mt-5 space-y-3">

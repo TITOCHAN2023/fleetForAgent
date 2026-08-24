@@ -34,6 +34,7 @@ import {
   fingerprintFromHeaders,
   resolveTicket,
 } from "./session.mjs";
+import { isFleetToolTgzPath, serveFleetToolTgz } from "./tarball.mjs";
 import {
   CHALLENGE_TTL_MS,
   HIGH_SEC_HANDSHAKE,
@@ -182,6 +183,11 @@ export default {
     if (path === "/ops") {
       const fleet = env.FLEET.get(env.FLEET.idFromName("fleet"));
       return dispatchOps(request, env, fleet, "/ops");
+    }
+
+    if (isFleetToolTgzPath(path)) {
+      if (!env.ASSETS) return new Response("site missing", { status: 500 });
+      return serveFleetToolTgz(await env.ASSETS.fetch(request));
     }
 
     if (!hub) {

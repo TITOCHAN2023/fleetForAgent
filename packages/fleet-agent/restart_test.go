@@ -112,6 +112,9 @@ func TestLoadKeepsDeviceIDAndPermit(t *testing.T) {
 	if a.permit != PermitAllow {
 		t.Fatalf("permit=%q", a.permit)
 	}
+	if !a.autoUpdate {
+		t.Fatal("missing autoUpdate key must default on")
+	}
 	if a.hubInput != "https://fleet.ginfo.cc" {
 		t.Fatalf("hub=%q", a.hubInput)
 	}
@@ -148,10 +151,7 @@ func TestHelpListsRestartUpdateRollback(t *testing.T) {
 	if !strings.Contains(text, "this process respawns on its own listen addr") {
 		t.Fatal("help should say restart targets this process")
 	}
-	if strings.Contains(text, "fleet autoupdate") {
-		t.Fatal("help must not list an auto-apply toggle")
-	}
-	if !strings.Contains(text, "settings/tray Update button") {
-		t.Fatal("help should say update is the armed button")
+	if !strings.Contains(text, "fleet autoupdate") {
+		t.Fatal("help missing autoupdate")
 	}
 }

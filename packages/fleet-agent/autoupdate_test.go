@@ -7,30 +7,32 @@ import (
 	"time"
 )
 
-func TestDecideUpdateArm(t *testing.T) {
+func TestDecideAutoUpdate(t *testing.T) {
 	now := time.Date(2026, 8, 24, 3, 0, 0, 0, time.UTC)
 	fresh := versionSignal{Version: "0.3.2", Seen: now.Add(-2 * time.Minute)}
 	stale := versionSignal{Version: "0.3.2", Seen: now.Add(-11 * time.Minute)}
 	same := versionSignal{Version: "0.3.1", Seen: now}
 
 	cases := []struct {
-		name  string
-		idle  bool
-		sig   versionSignal
-		want  string
-		armed bool
+		name   string
+		toggle bool
+		idle   bool
+		sig    versionSignal
+		want   string
+		apply  bool
 	}{
-		{"idle fresh", true, fresh, "armed", true},
-		{"busy", false, fresh, "busy", false},
-		{"stale 11m", true, stale, "stale", false},
-		{"not newer", true, same, "not_newer", false},
-		{"no signal", true, versionSignal{}, "no_signal", false},
+		{"on idle fresh", true, true, fresh, "apply", true},
+		{"toggle off", false, true, fresh, "toggle_off", false},
+		{"busy", true, false, fresh, "busy", false},
+		{"stale 11m", true, true, stale, "stale", false},
+		{"not newer", true, true, same, "not_newer", false},
+		{"no signal", true, true, versionSignal{}, "no_signal", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			d := decideUpdateArm(tc.idle, "0.3.1", tc.sig, now, 10*time.Minute)
-			if d.Armed != tc.armed || d.Reason != tc.want {
-				t.Fatalf("got armed=%v reason=%q want armed=%v reason=%q", d.Armed, d.Reason, tc.armed, tc.want)
+			d := decideAutoUpdate(tc.toggle, tc.idle, "0.3.1", tc.sig, now, 10*time.Minute)
+			if d.Apply != tc.apply || d.Reason != tc.want {
+				t.Fatalf("got apply=%v reason=%q want apply=%v reason=%q", d.Apply, d.Reason, tc.apply, tc.want)
 			}
 		})
 	}
@@ -51,27 +53,31 @@ func TestParseVersionSignal(t *testing.T) {
 	}
 }
 
-func TestAcceptUpdateClickRequiresArm(t *testing.T) {
-	a := &Agent{panes: newSupervisor(), enabled: true}
-	if err := acceptUpdateClick(a, updateRequest{}); err != errUpdateNotArmed {
-		t.Fatalf("got %v", err)
+func TestLoadMissingAutoUpdateDefaultsOn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("FLEET_HOME", home)
+	t.Setenv("FLEET_AUTO_UPDATE", "")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	a.updateSig = versionSignal{Version: "0.3.2", Seen: time.Now()}
-	if !a.updateArmedNow() {
-		t.Fatal("fresh newer signal + idle should arm")
+	writeJSONFile(t, configPath(), map[string]any{
+		"enabled": true, "permit": "ask", "hubInput": "", "hubToken": "", "deviceId": "abc",
+	})
+	a := &Agent{cfgPath: configPath(), panes: newSupervisor()}
+	a.load()
+	if !a.autoUpdate {
+		t.Fatal("missing autoUpdate key must default on")
 	}
-	a.pending = &Pending{Command: "sleep 1"}
-	if a.updateArmedNow() {
-		t.Fatal("busy must hide the button")
-	}
-	if err := acceptUpdateClick(a, updateRequest{}); err != errUpdateNotArmed {
-		t.Fatalf("busy click: %v", err)
+	s := a.snapshot()
+	if !s.AutoUpdate {
+		t.Fatal("state.autoUpdate must be on")
 	}
 }
 
-func TestSnapshotOmitsAutoUpdateToggle(t *testing.T) {
+func TestLoadAutoUpdateOffPersists(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("FLEET_HOME", home)
+	t.Setenv("FLEET_AUTO_UPDATE", "")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -81,23 +87,9 @@ func TestSnapshotOmitsAutoUpdateToggle(t *testing.T) {
 	})
 	a := &Agent{cfgPath: configPath(), panes: newSupervisor()}
 	a.load()
-	s := a.snapshot()
-	b, _ := json.Marshal(s)
-	if string(b) == "" || containsJSONKey(b, "autoUpdate") {
-		t.Fatalf("state must not advertise an auto-apply toggle: %s", b)
+	if a.autoUpdate {
+		t.Fatal("explicit autoUpdate=false must stay off")
 	}
-	if s.Update.Armed {
-		t.Fatal("no heartbeat signal: button must stay hidden")
-	}
-}
-
-func containsJSONKey(b []byte, key string) bool {
-	var m map[string]any
-	if json.Unmarshal(b, &m) != nil {
-		return false
-	}
-	_, ok := m[key]
-	return ok
 }
 
 func writeJSONFile(t *testing.T, path string, v any) {

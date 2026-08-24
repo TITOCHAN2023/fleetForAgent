@@ -25,24 +25,23 @@ import (
 )
 
 // TestIntranetAutoUpdateLab stands up a loopback hub + two real agent
-// binaries (0.3.0 and 0.3.2) and exercises the product Update button.
-// Heartbeat only arms the button; replace happens after POST /api/update.
-// The hub speaks the same hello_ok / pong / list_computers / run fields as
-// packages/fleet-hub (not a Cloudflare DO). Process replace is a real
-// spawn-then-exit of the staged 0.3.2 binary.
+// binaries (0.3.0 and 0.3.2) and exercises the product auto-update toggle.
+// When the toggle is ON, a fresh idle heartbeat replaces the process.
+// When OFF, busy, or stale, the running binary stays. The hub speaks the
+// same hello_ok / pong / list_computers / run fields as packages/fleet-hub
+// (not a Cloudflare DO). Process replace is a real spawn-then-exit of the
+// staged 0.3.2 binary.
 func TestIntranetAutoUpdateLab(t *testing.T) {
 	oldBin := buildAgentVersion(t, "0.3.0")
 	newBin := buildAgentVersion(t, "0.3.2")
 	assetName := releaseAssetNames(runtime.GOOS, runtime.GOARCH)[0]
 	archive, sum := packLinuxAgentAs(t, newBin, assetName)
 
-	t.Run("1_click_when_armed_updates_and_reconnects", func(t *testing.T) {
+	t.Run("1_on_idle_fresh_updates_and_reconnects", func(t *testing.T) {
 		lab := newAutoUpdateLab(t, oldBin, archive, assetName, sum)
 		lab.hub.setAdvert("0.3.2", lab.baseURL)
-		pid0 := lab.startAgent("allow")
+		pid0 := lab.startAgent(true, "allow")
 		lab.waitOnline("0.3.0")
-		lab.waitArmed(true)
-		lab.clickUpdate()
 		newPID := waitReplacedDaemon(t, lab.addr, pid0)
 		if newPID == pid0 {
 			t.Fatal("expected process replace")
@@ -61,67 +60,62 @@ func TestIntranetAutoUpdateLab(t *testing.T) {
 		if row["permit"] != "allow" {
 			t.Fatalf("hub permit=%v", row["permit"])
 		}
-		t.Logf("PASS scenario 1: click pid %d→%d ver 0.3.0→0.3.2 id=%s addr=%s online", pid0, newPID, lab.deviceID, lab.addr)
+		t.Logf("PASS scenario 1: pid %d→%d ver 0.3.0→0.3.2 id=%s addr=%s online", pid0, newPID, lab.deviceID, lab.addr)
 	})
 
-	t.Run("2_no_click_does_not_replace", func(t *testing.T) {
+	t.Run("2_toggle_off_does_not_replace", func(t *testing.T) {
 		lab := newAutoUpdateLab(t, oldBin, archive, assetName, sum)
 		lab.hub.setAdvert("0.3.2", lab.baseURL)
-		pid0 := lab.startAgent("allow")
+		pid0 := lab.startAgent(false, "allow")
 		lab.waitOnline("0.3.0")
-		lab.waitArmed(true)
 		time.Sleep(3 * time.Second)
 		if listenPIDOrZero(lab.addr) != pid0 {
-			t.Fatal("heartbeat replaced the process without a click")
+			t.Fatal("toggle off replaced the process")
 		}
 		st := getState(t, lab.addr)
 		if st.AgentVer != "0.3.0" {
 			t.Fatalf("ver=%q", st.AgentVer)
 		}
 		if st.DeviceID != lab.deviceID {
-			t.Fatal("device id changed with no click")
+			t.Fatal("device id changed while off")
 		}
-		if !st.Update.Armed {
-			t.Fatal("button should stay armed while the signal is fresh and idle")
+		if st.AutoUpdate {
+			t.Fatal("toggle should stay off")
 		}
-		t.Logf("PASS scenario 2: pid stayed %d ver 0.3.0 (armed, no click)", pid0)
+		t.Logf("PASS scenario 2: pid stayed %d ver 0.3.0 (toggle off)", pid0)
 	})
 
-	t.Run("3_busy_hides_button_until_idle_click", func(t *testing.T) {
+	t.Run("3_busy_waits_until_idle", func(t *testing.T) {
 		lab := newAutoUpdateLab(t, oldBin, archive, assetName, sum)
-		pid0 := lab.startAgent("allow")
+		pid0 := lab.startAgent(true, "allow")
 		lab.waitOnline("0.3.0")
 		if err := lab.hub.sendRun(lab.deviceID, "sleep 6"); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(400 * time.Millisecond)
 		lab.hub.setAdvert("0.3.2", lab.baseURL)
-		lab.waitArmed(false)
-		lab.clickUpdateRefused()
+		time.Sleep(2 * time.Second)
 		if listenPIDOrZero(lab.addr) != pid0 {
 			t.Fatal("updated while sleep was running")
 		}
-		lab.waitArmed(true)
-		lab.clickUpdate()
 		newPID := waitReplacedDaemon(t, lab.addr, pid0)
 		st := getState(t, lab.addr)
 		if st.AgentVer != "0.3.2" || st.DeviceID != lab.deviceID {
-			t.Fatalf("after idle click: ver=%q id=%q", st.AgentVer, st.DeviceID)
+			t.Fatalf("after idle: ver=%q id=%q", st.AgentVer, st.DeviceID)
 		}
-		t.Logf("PASS scenario 3: hidden while busy (pid %d), click after idle → %d", pid0, newPID)
+		t.Logf("PASS scenario 3: stayed %d while busy, then replaced → %d", pid0, newPID)
 	})
 
-	t.Run("4_stale_signal_hides_button_until_fresh_heartbeat", func(t *testing.T) {
+	t.Run("4_stale_signal_waits_for_fresh_heartbeat", func(t *testing.T) {
 		lab := newAutoUpdateLab(t, oldBin, archive, assetName, sum)
 		lab.freshS = 2
 		lab.hub.setAdvert("0.3.2", lab.baseURL)
-		pid0 := lab.startAgent("allow")
+		pid0 := lab.startAgent(false, "allow")
 		lab.waitOnline("0.3.0")
-		lab.waitArmed(true)
 		lab.hub.setAdvert("", "")
 		time.Sleep(3 * time.Second)
-		lab.waitArmed(false)
-		lab.clickUpdateRefused()
+		postOK(t, lab.addr, "/api/autoupdate", map[string]bool{"autoUpdate": true})
+		time.Sleep(2 * time.Second)
 		if listenPIDOrZero(lab.addr) != pid0 {
 			t.Fatal("updated from a stale signal")
 		}
@@ -129,22 +123,18 @@ func TestIntranetAutoUpdateLab(t *testing.T) {
 			t.Fatal("version changed on stale signal")
 		}
 		lab.hub.setAdvert("0.3.2", lab.baseURL)
-		lab.waitArmed(true)
-		lab.clickUpdate()
 		newPID := waitReplacedDaemon(t, lab.addr, pid0)
 		if getState(t, lab.addr).AgentVer != "0.3.2" {
-			t.Fatal("did not apply after a fresh heartbeat + click")
+			t.Fatal("did not apply after a fresh heartbeat advert")
 		}
-		t.Logf("PASS scenario 4: stale hid button (pid %d), fresh advert + click → %d", pid0, newPID)
+		t.Logf("PASS scenario 4: stale ignored (pid %d), fresh advert replaced → %d", pid0, newPID)
 	})
 
-	t.Run("5_click_reconnect_same_id_and_permit", func(t *testing.T) {
+	t.Run("5_reconnect_same_id_and_permit", func(t *testing.T) {
 		lab := newAutoUpdateLab(t, oldBin, archive, assetName, sum)
 		lab.hub.setAdvert("0.3.2", lab.baseURL)
-		pid0 := lab.startAgent("ask")
+		pid0 := lab.startAgent(true, "ask")
 		lab.waitOnline("0.3.0")
-		lab.waitArmed(true)
-		lab.clickUpdate()
 		waitReplacedDaemon(t, lab.addr, pid0)
 		st := getState(t, lab.addr)
 		if st.DeviceID != lab.deviceID {
@@ -157,7 +147,7 @@ func TestIntranetAutoUpdateLab(t *testing.T) {
 		if row["permit"] != "ask" {
 			t.Fatalf("hub permit=%v", row["permit"])
 		}
-		t.Logf("PASS scenario 5: same id=%s permit=ask online after click", lab.deviceID)
+		t.Logf("PASS scenario 5: same id=%s permit=ask online after restart", lab.deviceID)
 	})
 }
 
@@ -196,18 +186,19 @@ func newAutoUpdateLab(t *testing.T, oldBin, archive, asset, sum string) *autoUpd
 	return lab
 }
 
-func (lab *autoUpdateLab) startAgent(permit string) int {
+func (lab *autoUpdateLab) startAgent(auto bool, permit string) int {
 	t := lab.t
 	t.Helper()
 	if err := os.MkdirAll(lab.home, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	writeJSONFile(t, filepath.Join(lab.home, "config.json"), map[string]any{
-		"enabled":  true,
-		"permit":   permit,
-		"hubInput": "http://" + lab.hub.addr,
-		"hubToken": "",
-		"deviceId": lab.deviceID,
+		"enabled":    true,
+		"permit":     permit,
+		"hubInput":   "http://" + lab.hub.addr,
+		"hubToken":   "",
+		"deviceId":   lab.deviceID,
+		"autoUpdate": auto,
 	})
 	exeDir := filepath.Join(lab.home, "bin")
 	if err := os.MkdirAll(exeDir, 0o755); err != nil {
@@ -225,6 +216,7 @@ func (lab *autoUpdateLab) startAgent(permit string) int {
 		"FLEET_SETTINGS_ADDR":  lab.addr,
 		"FLEET_URL":            "http://" + lab.hub.addr,
 		"FLEET_ENABLED":        "1",
+		"FLEET_AUTO_UPDATE":    map[bool]string{true: "1", false: "0"}[auto],
 		"FLEET_UPDATE_FRESH_S": fmt.Sprintf("%d", lab.freshS),
 		"FLEET_UPDATE_POLL_S":  "1",
 		"FLEET_NAME":           "lab-" + lab.deviceID[:8],
@@ -246,51 +238,6 @@ func (lab *autoUpdateLab) startAgent(permit string) int {
 		}
 	})
 	return pid
-}
-
-func (lab *autoUpdateLab) waitArmed(want bool) {
-	t := lab.t
-	t.Helper()
-	deadline := time.Now().Add(8 * time.Second)
-	var last State
-	for time.Now().Before(deadline) {
-		st, err := getStateErr(lab.addr)
-		if err == nil {
-			last = st
-			if st.Update.Armed == want {
-				return
-			}
-		}
-		time.Sleep(80 * time.Millisecond)
-	}
-	t.Fatalf("update.armed=%v want %v ver=%s phase=%s", last.Update.Armed, want, last.AgentVer, last.Update.Phase)
-}
-
-func (lab *autoUpdateLab) clickUpdate() {
-	lab.t.Helper()
-	out := postOK(lab.t, lab.addr, "/api/update", map[string]any{})
-	if ok, _ := out["ok"].(bool); !ok {
-		lab.t.Fatalf("update click refused: %v", out)
-	}
-}
-
-func (lab *autoUpdateLab) clickUpdateRefused() {
-	t := lab.t
-	t.Helper()
-	b, err := json.Marshal(map[string]any{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := http.Post("http://"+lab.addr+"/api/update", "application/json", stringsReader(b))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer res.Body.Close()
-	var out map[string]any
-	_ = json.NewDecoder(res.Body).Decode(&out)
-	if res.StatusCode != http.StatusConflict {
-		t.Fatalf("want 409 when button is hidden, got %s %v", res.Status, out)
-	}
 }
 
 func (lab *autoUpdateLab) waitOnline(ver string) {

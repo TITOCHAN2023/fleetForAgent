@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/TITOCHAN2023/fleetForAgent/internal/pane"
 )
 
 func TestDecideAutoUpdate(t *testing.T) {
@@ -73,7 +75,7 @@ func TestLoadMissingAutoUpdateDefaultsOn(t *testing.T) {
 	writeJSONFile(t, configPath(), map[string]any{
 		"enabled": true, "permit": "ask", "hubInput": "", "hubToken": "", "deviceId": "abc",
 	})
-	a := &Agent{cfgPath: configPath(), panes: newSupervisor()}
+	a := &Agent{cfgPath: configPath(), panes: pane.NewSupervisor()}
 	a.load()
 	if !a.autoUpdate {
 		t.Fatal("missing autoUpdate key must default on")
@@ -95,7 +97,7 @@ func TestLoadAutoUpdateOffPersists(t *testing.T) {
 		"enabled": true, "permit": "ask", "hubInput": "", "hubToken": "", "deviceId": "abc",
 		"autoUpdate": false,
 	})
-	a := &Agent{cfgPath: configPath(), panes: newSupervisor()}
+	a := &Agent{cfgPath: configPath(), panes: pane.NewSupervisor()}
 	a.load()
 	if a.autoUpdate {
 		t.Fatal("explicit autoUpdate=false must stay off")

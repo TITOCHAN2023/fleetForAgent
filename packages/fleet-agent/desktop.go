@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"image"
 	"strings"
 	"time"
 
+	"github.com/TITOCHAN2023/fleetForAgent/internal/desktop"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 )
@@ -18,6 +18,16 @@ const (
 	desktopTypeMax          = 4 * 1024
 	desktopWaitMaxMs        = 5000
 )
+
+func clampWaitMsDesktop(ms int) int {
+	if ms < 0 {
+		return 0
+	}
+	if ms > desktopWaitMaxMs {
+		return desktopWaitMaxMs
+	}
+	return ms
+}
 
 func pruneTimes(ts []time.Time, now time.Time, window time.Duration) []time.Time {
 	cut := now.Add(-window)
@@ -47,107 +57,12 @@ const (
 	desktopKindInput
 )
 
-type DisplayInfo struct {
-	ID            string
-	Width, Height int
-	Scale         float64
-}
-
-type desktopBackend interface {
-	Capture() (*image.RGBA, DisplayInfo, error)
-	Click(button pointerButton, count, x, y int) error
-	Move(x, y int) error
-	Drag(x, y, x2, y2 int) error
-	Scroll(x, y, dx, dy int) error
-	TypeText(text string) error
-	Key(spec string) error
-}
-
-type desktopError struct {
-	code       string
-	msg        string
-	permission string
-}
-
-func (e desktopError) Error() string { return e.msg }
-
-func desktopFail(code, msg string) map[string]any {
-	return map[string]any{
-		"ok": false, "status": "error", "code": code, "error": msg,
-	}
-}
-
-func desktopConsent() map[string]any {
-	return map[string]any{
-		"ok":     false,
-		"status": "consent",
-		"code":   "consent",
-		"error":  "fleet: waiting for consent at the machine",
-	}
-}
-
-func asInt(v any) int {
-	n, ok := intFrom(v)
-	if !ok {
-		return 0
-	}
-	return n
-}
-
-func intFrom(v any) (int, bool) {
-	switch n := v.(type) {
-	case int:
-		return n, true
-	case int32:
-		return int(n), true
-	case int64:
-		return int(n), true
-	case float64:
-		return int(n), true
-	case float32:
-		return int(n), true
-	case string:
-		var x int
-		if _, err := fmt.Sscanf(strings.TrimSpace(n), "%d", &x); err != nil || strings.TrimSpace(n) == "" {
-			return 0, false
-		}
-		return x, true
-	default:
-		return 0, false
-	}
-}
-
-func requiredInt(body map[string]any, key string) (int, error) {
-	if body == nil {
-		return 0, desktopError{code: "bad_request", msg: "fleet: " + key + " required"}
-	}
-	v, ok := body[key]
-	if !ok || v == nil {
-		return 0, desktopError{code: "bad_request", msg: "fleet: " + key + " required"}
-	}
-	n, ok := intFrom(v)
-	if !ok {
-		return 0, desktopError{code: "bad_request", msg: "fleet: " + key + " required"}
-	}
-	return n, nil
-}
-
-func asString(v any) string {
-	if v == nil {
-		return ""
-	}
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return fmt.Sprint(v)
-}
-
-func (a *Agent) desktopIO() desktopBackend {
+func (a *Agent) desktopIO() desktop.Backend {
 	if a.backend != nil {
 		return a.backend
 	}
 	if a.osBackend == nil {
-		a.osBackend = newOSBackend()
+		a.osBackend = desktop.NewOSBackend()
 	}
 	return a.osBackend
 }
@@ -203,7 +118,7 @@ func (a *Agent) desktopScreenshotBody(corr string, body map[string]any) map[stri
 			code = "busy"
 		}
 		a.mu.Unlock()
-		return desktopFail(code, msg)
+		return desktop.Fail(code, msg)
 	case permitAsk:
 		a.desktopPending = &Pending{
 			Corr: corr, Kind: pendingKindDesktopShot, Command: "desktop screenshot (primary display)",
@@ -212,30 +127,30 @@ func (a *Agent) desktopScreenshotBody(corr string, body map[string]any) map[stri
 		a.mu.Unlock()
 		notifyConsent("desktop screenshot (primary display)")
 		a.pushUI()
-		return desktopConsent()
+		return desktop.Consent()
 	}
 	if rateLimited(&a.shotTimes, time.Now(), 2, time.Second) {
 		a.mu.Unlock()
-		return desktopFail("rate_limited", "fleet: screenshot rate limited")
+		return desktop.Fail("rate_limited", "fleet: screenshot rate limited")
 	}
 	be := a.desktopIO()
-	maxW := asInt(body["max_width"])
-	maxH := asInt(body["max_height"])
+	maxW := desktop.AsInt(body["max_width"])
+	maxH := desktop.AsInt(body["max_height"])
 	a.mu.Unlock()
 
 	img, info, err := be.Capture()
 	if err != nil {
-		return mapDesktopErr(err)
+		return desktop.MapErr(err)
 	}
 	if img == nil {
-		return desktopFail("capture_failed", "fleet: empty capture")
+		return desktop.Fail("capture_failed", "fleet: empty capture")
 	}
-	if blankFrame(img) {
-		return desktopFail("capture_failed", "fleet: blank capture (fullscreen or protected window)")
+	if desktop.BlankFrame(img) {
+		return desktop.Fail("capture_failed", "fleet: blank capture (fullscreen or protected window)")
 	}
-	_, fr, err := normalizeDesktop(img, info.ID, info.Scale, maxW, maxH)
+	_, fr, err := desktop.NormalizeDesktop(img, info.ID, info.Scale, maxW, maxH)
 	if err != nil {
-		return desktopFail("capture_failed", "fleet: "+err.Error())
+		return desktop.Fail("capture_failed", "fleet: "+err.Error())
 	}
 	fr.ID = corr
 
@@ -249,7 +164,7 @@ func (a *Agent) desktopScreenshotBody(corr string, body map[string]any) map[stri
 		a.lastDigest = fr.Digest
 	}
 	a.log("info", fmt.Sprintf("desktop screenshot %dx%d jpeg %dKB ok", fr.ViewportW, fr.ViewportH, fr.Bytes/1024))
-	out := desktopFrameBody(fr, unchanged)
+	out := desktop.FrameBody(fr, unchanged)
 	if !unchanged {
 		out["image_b64"] = base64.StdEncoding.EncodeToString(fr.JPEG)
 	}
@@ -258,21 +173,15 @@ func (a *Agent) desktopScreenshotBody(corr string, body map[string]any) map[stri
 }
 
 func (a *Agent) desktopActionBody(body map[string]any) map[string]any {
-	action := strings.ToLower(strings.TrimSpace(asString(body["action"])))
+	action := strings.ToLower(strings.TrimSpace(desktop.AsString(body["action"])))
 	if action == "" {
-		return desktopFail("bad_request", "fleet: action required")
+		return desktop.Fail("bad_request", "fleet: action required")
 	}
 	if action == "screenshot" {
-		return desktopFail("unsupported_action", "fleet: screenshot goes through desktop_screenshot")
+		return desktop.Fail("unsupported_action", "fleet: screenshot goes through desktop_screenshot")
 	}
 	if action == "wait" {
-		ms := asInt(body["duration_ms"])
-		if ms < 0 {
-			ms = 0
-		}
-		if ms > desktopWaitMaxMs {
-			ms = desktopWaitMaxMs
-		}
+		ms := clampWaitMsDesktop(desktop.AsInt(body["duration_ms"]))
 		if ms > 0 {
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 		}
@@ -283,7 +192,7 @@ func (a *Agent) desktopActionBody(body map[string]any) map[string]any {
 		action == "middle_click" || action == "mouse_move" || action == "left_click_drag" || action == "scroll"
 	needInput := needFrame || action == "type" || action == "key"
 	if !needInput {
-		return desktopFail("unsupported_action", "fleet: unsupported action "+action)
+		return desktop.Fail("unsupported_action", "fleet: unsupported action "+action)
 	}
 
 	a.mu.Lock()
@@ -297,7 +206,7 @@ func (a *Agent) desktopActionBody(body map[string]any) map[string]any {
 			code = "busy"
 		}
 		a.mu.Unlock()
-		return desktopFail(code, msg)
+		return desktop.Fail(code, msg)
 	case permitAsk:
 		a.desktopPending = &Pending{
 			Corr: "", Kind: pendingKindDesktopInput, Command: "desktop mouse/keyboard",
@@ -306,11 +215,11 @@ func (a *Agent) desktopActionBody(body map[string]any) map[string]any {
 		a.mu.Unlock()
 		notifyConsent("desktop mouse/keyboard")
 		a.pushUI()
-		return desktopConsent()
+		return desktop.Consent()
 	}
 	if rateLimited(&a.actTimes, time.Now(), 20, time.Second) {
 		a.mu.Unlock()
-		return desktopFail("rate_limited", "fleet: action rate limited")
+		return desktop.Fail("rate_limited", "fleet: action rate limited")
 	}
 	frame := a.lastFrame
 	be := a.desktopIO()
@@ -318,16 +227,16 @@ func (a *Agent) desktopActionBody(body map[string]any) map[string]any {
 
 	if needFrame {
 		if frame == nil {
-			return desktopFail("no_frame", "fleet: screenshot first")
+			return desktop.Fail("no_frame", "fleet: screenshot first")
 		}
-		if fid := asString(body["frame_id"]); fid != "" && fid != frame.ID {
-			return desktopFail("stale_frame", "fleet: stale frame_id")
+		if fid := desktop.AsString(body["frame_id"]); fid != "" && fid != frame.ID {
+			return desktop.Fail("stale_frame", "fleet: stale frame_id")
 		}
 	}
 
 	err := a.runDesktopAction(be, frame, action, body)
 	if err != nil {
-		return mapDesktopErr(err)
+		return desktop.MapErr(err)
 	}
 	a.mu.Lock()
 	a.log("info", "desktop action "+action)
@@ -335,17 +244,17 @@ func (a *Agent) desktopActionBody(body map[string]any) map[string]any {
 	return map[string]any{"ok": true, "status": "ok", "code": "", "error": ""}
 }
 
-func (a *Agent) runDesktopAction(be desktopBackend, frame *DesktopFrame, action string, body map[string]any) error {
+func (a *Agent) runDesktopAction(be desktop.Backend, frame *desktop.DesktopFrame, action string, body map[string]any) error {
 	mapXY := func(xKey, yKey string) (int, int, error) {
-		x, err := requiredInt(body, xKey)
+		x, err := desktop.RequiredInt(body, xKey)
 		if err != nil {
 			return 0, 0, err
 		}
-		y, err := requiredInt(body, yKey)
+		y, err := desktop.RequiredInt(body, yKey)
 		if err != nil {
 			return 0, 0, err
 		}
-		return mapViewportToNative(*frame, x, y)
+		return desktop.MapViewportToNative(*frame, x, y)
 	}
 	switch action {
 	case "left_click":
@@ -353,25 +262,25 @@ func (a *Agent) runDesktopAction(be desktopBackend, frame *DesktopFrame, action 
 		if err != nil {
 			return err
 		}
-		return be.Click(pointerLeft, 1, x, y)
+		return be.Click(desktop.ButtonLeft, 1, x, y)
 	case "right_click":
 		x, y, err := mapXY("x", "y")
 		if err != nil {
 			return err
 		}
-		return be.Click(pointerRight, 1, x, y)
+		return be.Click(desktop.ButtonRight, 1, x, y)
 	case "middle_click":
 		x, y, err := mapXY("x", "y")
 		if err != nil {
 			return err
 		}
-		return be.Click(pointerMiddle, 1, x, y)
+		return be.Click(desktop.ButtonMiddle, 1, x, y)
 	case "double_click":
 		x, y, err := mapXY("x", "y")
 		if err != nil {
 			return err
 		}
-		return be.Click(pointerLeft, 2, x, y)
+		return be.Click(desktop.ButtonLeft, 2, x, y)
 	case "mouse_move":
 		x, y, err := mapXY("x", "y")
 		if err != nil {
@@ -393,129 +302,34 @@ func (a *Agent) runDesktopAction(be desktopBackend, frame *DesktopFrame, action 
 		if err != nil {
 			return err
 		}
-		return be.Scroll(x, y, asInt(body["scroll_x"]), asInt(body["scroll_y"]))
+		return be.Scroll(x, y, desktop.AsInt(body["scroll_x"]), desktop.AsInt(body["scroll_y"]))
 	case "type":
-		text := asString(body["text"])
+		text := desktop.AsString(body["text"])
 		if text == "" {
-			return desktopError{code: "bad_request", msg: "fleet: text required"}
+			return desktop.Err("bad_request", "fleet: text required")
 		}
 		if len(text) > desktopTypeMax {
-			return desktopError{code: "bad_request", msg: "fleet: text longer than 4KiB"}
+			return desktop.Err("bad_request", "fleet: text longer than 4KiB")
 		}
 		return be.TypeText(text)
 	case "key":
-		spec := strings.TrimSpace(asString(body["key"]))
+		spec := strings.TrimSpace(desktop.AsString(body["key"]))
 		if spec == "" {
 			if keys, ok := body["keys"].([]any); ok {
 				parts := make([]string, 0, len(keys))
 				for _, k := range keys {
-					parts = append(parts, asString(k))
+					parts = append(parts, desktop.AsString(k))
 				}
 				spec = strings.Join(parts, "+")
 			} else {
-				spec = asString(body["keys"])
+				spec = desktop.AsString(body["keys"])
 			}
 		}
 		if spec == "" {
-			return desktopError{code: "bad_request", msg: "fleet: key required"}
+			return desktop.Err("bad_request", "fleet: key required")
 		}
 		return be.Key(spec)
 	default:
-		return desktopError{code: "unsupported_action", msg: "fleet: unsupported action " + action}
+		return desktop.Err("unsupported_action", "fleet: unsupported action "+action)
 	}
 }
-
-func mapDesktopErr(err error) map[string]any {
-	if err == nil {
-		return map[string]any{"ok": true, "status": "ok", "code": "", "error": ""}
-	}
-	code := "capture_failed"
-	msg := err.Error()
-	perm := ""
-	if de, ok := err.(desktopError); ok {
-		code = de.code
-		msg = de.msg
-		perm = de.permission
-	} else {
-		s := err.Error()
-		switch {
-		case s == "no_frame" || strings.Contains(s, "no_frame"):
-			code = "no_frame"
-		case s == "bad_coordinates" || strings.Contains(s, "bad_coordinates"):
-			code = "bad_coordinates"
-		case strings.Contains(s, "no_input_backend"):
-			code = "no_input_backend"
-		}
-	}
-	out := desktopFail(code, msg)
-	if perm != "" {
-		out["permission"] = perm
-	}
-	return out
-}
-
-func blankFrame(img *image.RGBA) bool {
-	w, h := img.Bounds().Dx(), img.Bounds().Dy()
-	if w < 1 || h < 1 {
-		return true
-	}
-	step := 8
-	if w < 32 || h < 32 {
-		step = 1
-	}
-	var n, sum, sumsq uint64
-	for y := 0; y < h; y += step {
-		for x := 0; x < w; x += step {
-			c := img.RGBAAt(x, y)
-			v := uint64(c.R) + uint64(c.G) + uint64(c.B)
-			sum += v
-			sumsq += v * v
-			n++
-		}
-	}
-	if n == 0 {
-		return true
-	}
-	mean := float64(sum) / float64(n)
-	varm := float64(sumsq)/float64(n) - mean*mean
-	return mean < 4 && varm < 2
-}
-
-// If the capture is denser than the HID coordinate space (HiDPI grim vs xdotool),
-// shrink the image so lastFrame native pixels match MoveAbs.
-func fitCaptureToHID(img *image.RGBA, hidW, hidH int) *image.RGBA {
-	if img == nil || hidW < 2 || hidH < 2 {
-		return img
-	}
-	w, h := img.Bounds().Dx(), img.Bounds().Dy()
-	if w <= hidW+2 && h <= hidH+2 {
-		return img
-	}
-	return scaleBilinear(img, hidW, hidH)
-}
-
-func clampWaitMsDesktop(ms int) int {
-	if ms < 0 {
-		return 0
-	}
-	if ms > desktopWaitMaxMs {
-		return desktopWaitMaxMs
-	}
-	return ms
-}
-
-type osBackend struct{}
-
-func (osBackend) Capture() (*image.RGBA, DisplayInfo, error) { return nativeCapture() }
-func (osBackend) Click(button pointerButton, count, x, y int) error {
-	return pointerClickAt(x, y, button, count)
-}
-func (osBackend) Move(x, y int) error { return pointerMoveAt(x, y) }
-func (osBackend) Drag(x, y, x2, y2 int) error {
-	return pointerDragAt(x, y, x2, y2)
-}
-func (osBackend) Scroll(x, y, dx, dy int) error { return nativeScroll(x, y, dx, dy) }
-func (osBackend) TypeText(text string) error    { return nativeTypeText(text) }
-func (osBackend) Key(spec string) error         { return nativeKey(spec) }
-
-func newOSBackend() desktopBackend { return osBackend{} }

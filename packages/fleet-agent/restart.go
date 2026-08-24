@@ -13,6 +13,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/TITOCHAN2023/fleetForAgent/internal/keepalive"
+	"github.com/TITOCHAN2023/fleetForAgent/internal/tray"
 )
 
 // restartModeSpawnThenExit is the only supported handoff.
@@ -278,7 +281,7 @@ func (a *Agent) handoffRestart(exe string, extraEnv map[string]string) error {
 	a.beginRestartLocked()
 	a.disconnectLocked("restart")
 	a.mu.Unlock()
-	setKeepAlive(false)
+	keepalive.Set(false)
 
 	settingsNet.close()
 	if err := waitPortFree(plan.Addr, 3*time.Second); err != nil {
@@ -297,7 +300,7 @@ func (a *Agent) handoffRestart(exe string, extraEnv map[string]string) error {
 	a.mu.Lock()
 	a.log("info", "successor listening on "+plan.Addr)
 	a.mu.Unlock()
-	requestQuit()
+	tray.RequestQuit()
 	return nil
 }
 
@@ -318,7 +321,7 @@ func (a *Agent) recoverAfterFailedHandoff(reason string) {
 	a.mu.Lock()
 	on := a.enabled
 	a.mu.Unlock()
-	setKeepAlive(on)
+	keepalive.Set(on)
 	a.pushUI()
 }
 

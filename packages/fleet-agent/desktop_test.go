@@ -8,11 +8,13 @@ import (
 	"image/jpeg"
 	"strings"
 	"testing"
+
+	"github.com/TITOCHAN2023/fleetForAgent/internal/desktop"
 )
 
 type fakeDesk struct {
 	img        *image.RGBA
-	info       DisplayInfo
+	info       desktop.DisplayInfo
 	captureErr error
 	shots      int
 	clicks     [][]int
@@ -23,18 +25,18 @@ type fakeDesk struct {
 	keys       []string
 }
 
-func (f *fakeDesk) Capture() (*image.RGBA, DisplayInfo, error) {
+func (f *fakeDesk) Capture() (*image.RGBA, desktop.DisplayInfo, error) {
 	f.shots++
 	if f.captureErr != nil {
-		return nil, DisplayInfo{}, f.captureErr
+		return nil, desktop.DisplayInfo{}, f.captureErr
 	}
 	if f.img == nil {
 		f.img = solid(640, 360, color.RGBA{R: 40, G: 80, B: 120, A: 255})
-		f.info = DisplayInfo{ID: "primary", Width: 640, Height: 360, Scale: 1}
+		f.info = desktop.DisplayInfo{ID: "primary", Width: 640, Height: 360, Scale: 1}
 	}
 	return f.img, f.info, nil
 }
-func (f *fakeDesk) Click(button pointerButton, count, x, y int) error {
+func (f *fakeDesk) Click(button desktop.PointerButton, count, x, y int) error {
 	f.clicks = append(f.clicks, []int{int(button), count, x, y})
 	return nil
 }
@@ -99,7 +101,7 @@ func TestDesktopAskConsentHasNoImage(t *testing.T) {
 
 func TestDesktopAllowScreenshotBudgetAndMapping(t *testing.T) {
 	src := solid(3840, 2160, color.RGBA{R: 30, G: 90, B: 150, A: 255})
-	f := &fakeDesk{img: src, info: DisplayInfo{ID: "primary", Width: 3840, Height: 2160, Scale: 1}}
+	f := &fakeDesk{img: src, info: desktop.DisplayInfo{ID: "primary", Width: 3840, Height: 2160, Scale: 1}}
 	a := &Agent{enabled: true, permit: PermitAllow, backend: f}
 	body := a.desktopScreenshotBody("shot-1", map[string]any{"max_width": 1280, "max_height": 1280})
 	if body["ok"] != true {
@@ -116,7 +118,7 @@ func TestDesktopAllowScreenshotBudgetAndMapping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(raw) > jpegBudgetBytes {
+	if len(raw) > 120*1024 {
 		t.Fatalf("jpeg %d", len(raw))
 	}
 	cfg, err := jpeg.DecodeConfig(bytes.NewReader(raw))
@@ -147,7 +149,7 @@ func TestDesktopPointerRequiresCoordinates(t *testing.T) {
 	f := &fakeDesk{}
 	a := &Agent{
 		enabled: true, permit: PermitAllow, backend: f,
-		lastFrame: &DesktopFrame{ID: "f", ViewportW: 100, ViewportH: 100, DisplayW: 100, DisplayH: 100, ScaleX: 1, ScaleY: 1},
+		lastFrame: &desktop.DesktopFrame{ID: "f", ViewportW: 100, ViewportH: 100, DisplayW: 100, DisplayH: 100, ScaleX: 1, ScaleY: 1},
 	}
 	if body := a.desktopActionBody(map[string]any{"action": "left_click"}); body["code"] != "bad_request" {
 		t.Fatalf("missing x/y %+v", body)
@@ -183,7 +185,7 @@ func TestDesktopWaitClampsWithoutFrame(t *testing.T) {
 
 func TestDesktopAskInputSeparateFromShot(t *testing.T) {
 	f := &fakeDesk{}
-	a := &Agent{enabled: true, permit: PermitAsk, backend: f, desktopShotGranted: true, lastFrame: &DesktopFrame{ID: "f", ViewportW: 10, ViewportH: 10, DisplayW: 10, DisplayH: 10}}
+	a := &Agent{enabled: true, permit: PermitAsk, backend: f, desktopShotGranted: true, lastFrame: &desktop.DesktopFrame{ID: "f", ViewportW: 10, ViewportH: 10, DisplayW: 10, DisplayH: 10}}
 	body := a.desktopActionBody(map[string]any{"action": "left_click", "x": 1, "y": 1})
 	if body["code"] != "consent" {
 		t.Fatalf("shot grant must not imply input %+v", body)
@@ -217,7 +219,7 @@ func TestDesktopBusy(t *testing.T) {
 }
 
 func TestDesktopLogsOmitImage(t *testing.T) {
-	f := &fakeDesk{img: solid(800, 600, color.RGBA{R: 10, G: 20, B: 30, A: 255}), info: DisplayInfo{ID: "primary", Width: 800, Height: 600, Scale: 1}}
+	f := &fakeDesk{img: solid(800, 600, color.RGBA{R: 10, G: 20, B: 30, A: 255}), info: desktop.DisplayInfo{ID: "primary", Width: 800, Height: 600, Scale: 1}}
 	a := &Agent{enabled: true, permit: PermitAllow, backend: f}
 	_ = a.desktopScreenshotBody("c", nil)
 	for _, l := range a.logs {
@@ -229,7 +231,7 @@ func TestDesktopLogsOmitImage(t *testing.T) {
 
 func TestDesktopDragAndTypeAndKey(t *testing.T) {
 	f := &fakeDesk{}
-	fr := &DesktopFrame{ID: "f", ViewportW: 100, ViewportH: 100, DisplayW: 200, DisplayH: 200}
+	fr := &desktop.DesktopFrame{ID: "f", ViewportW: 100, ViewportH: 100, DisplayW: 200, DisplayH: 200}
 	a := &Agent{enabled: true, permit: PermitAllow, backend: f, lastFrame: fr}
 	if body := a.desktopActionBody(map[string]any{"action": "left_click_drag", "x": 0, "y": 0, "x2": 99, "y2": 99}); body["ok"] != true {
 		t.Fatalf("drag %+v", body)
@@ -248,55 +250,9 @@ func TestDesktopDragAndTypeAndKey(t *testing.T) {
 	}
 }
 
-func TestFitCaptureToHID(t *testing.T) {
-	hi := solid(3840, 2160, color.RGBA{R: 9, G: 18, B: 27, A: 255})
-	got := fitCaptureToHID(hi, 1920, 1080)
-	if got.Bounds().Dx() != 1920 || got.Bounds().Dy() != 1080 {
-		t.Fatalf("hid fit %dx%d", got.Bounds().Dx(), got.Bounds().Dy())
-	}
-	same := fitCaptureToHID(solid(1920, 1080, color.RGBA{R: 1, A: 255}), 1920, 1080)
-	if same.Bounds().Dx() != 1920 {
-		t.Fatal("same-size should stay")
-	}
-}
-
-func TestSplitKeySpec(t *testing.T) {
-	got := splitKeySpec("Ctrl+Enter")
-	if len(got) != 2 || got[0] != "ctrl" || got[1] != "enter" {
-		t.Fatalf("%v", got)
-	}
-}
-
-func TestDarwinKeyCode(t *testing.T) {
-	if _, ok := darwinKeyCode("f1"); !ok {
-		t.Fatal("f1")
-	}
-	if _, ok := darwinKeyCode("1"); !ok {
-		t.Fatal("digit")
-	}
-	if _, ok := darwinKeyCode("home"); !ok {
-		t.Fatal("home")
-	}
-	if k, ok := darwinKeyCode("a"); !ok || k != 0 {
-		t.Fatalf("a %d %v", k, ok)
-	}
-	if _, ok := darwinKeyCode("fnord"); ok {
-		t.Fatal("unknown must miss")
-	}
-}
-
-func TestBlankFrameDetectsSolidBlack(t *testing.T) {
-	if !blankFrame(solid(64, 64, color.RGBA{A: 255})) {
-		t.Fatal("black should be blank")
-	}
-	if blankFrame(solid(64, 64, color.RGBA{R: 40, G: 80, B: 10, A: 255})) {
-		t.Fatal("textured should not be blank")
-	}
-}
-
 func TestAskGrantsDieWithSocketClose(t *testing.T) {
 	f := &fakeDesk{}
-	a := &Agent{enabled: true, permit: PermitAsk, backend: f, desktopShotGranted: true, desktopInputGranted: true, lastFrame: &DesktopFrame{ID: "f", ViewportW: 10, ViewportH: 10, DisplayW: 10, DisplayH: 10}}
+	a := &Agent{enabled: true, permit: PermitAsk, backend: f, desktopShotGranted: true, desktopInputGranted: true, lastFrame: &desktop.DesktopFrame{ID: "f", ViewportW: 10, ViewportH: 10, DisplayW: 10, DisplayH: 10}}
 	a.clearDesktopSessionLocked()
 	body := a.desktopScreenshotBody("n", nil)
 	if body["code"] != "consent" {
@@ -311,7 +267,7 @@ func TestAskGrantsDieWithSocketClose(t *testing.T) {
 
 func TestAgentCapsAdvertiseComputerUse(t *testing.T) {
 	caps := agentCaps()
-	if desktopSupported() && !containsStr(caps, "computer_use") {
+	if desktop.Supported() && !containsStr(caps, "computer_use") {
 		t.Fatalf("%v", caps)
 	}
 }
@@ -323,4 +279,14 @@ func containsStr(ss []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func solid(w, h int, c color.RGBA) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.SetRGBA(x, y, c)
+		}
+	}
+	return img
 }

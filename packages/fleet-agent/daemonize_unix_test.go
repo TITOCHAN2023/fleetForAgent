@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/TITOCHAN2023/fleetForAgent/internal/pane"
 )
 
 func TestWantsDaemonize(t *testing.T) {
@@ -47,20 +49,20 @@ func TestDaemonDetachesFromLiveShellPTY(t *testing.T) {
 	t.Setenv("FLEET_HUB", "")
 	t.Setenv("FLEET_HUB_TOKEN", "")
 
-	s := newSupervisor()
-	t.Cleanup(s.killAllLive)
+	s := pane.NewSupervisor()
+	t.Cleanup(s.KillAllLive)
 
-	p, err := s.spawn("dmn1", strconv.Quote(bin)+" --daemon")
+	p, err := s.SpawnFor("", "dmn1", strconv.Quote(bin)+" --daemon")
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitPaneTypable(t, p)
 	var parentPts []string
-	if p.cmd != nil && p.cmd.Process != nil {
-		parentPts = processPts(p.cmd.Process.Pid)
+	if pid := p.ProcessPID(); pid > 0 {
+		parentPts = processPts(pid)
 	}
 	waitPaneDone(t, p)
-	if p.stillRunning() {
+	if p.StillRunning() {
 		t.Fatal("--daemon parent must exit after detaching")
 	}
 	if len(parentPts) == 0 {
@@ -97,6 +99,31 @@ func TestDaemonDetachesFromLiveShellPTY(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("daemon http %s", resp.Status)
 	}
+}
+
+func waitPaneDone(t *testing.T, p *pane.Pane) {
+	t.Helper()
+	deadline := time.Now().Add(25 * time.Second)
+	for time.Now().Before(deadline) {
+		if !p.StillRunning() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pane still running")
+}
+
+func waitPaneTypable(t *testing.T, p *pane.Pane) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.Typable() {
+			time.Sleep(150 * time.Millisecond)
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pane never became typable")
 }
 
 func buildAgent(t *testing.T) string {

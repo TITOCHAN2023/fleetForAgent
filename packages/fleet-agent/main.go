@@ -18,11 +18,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TITOCHAN2023/fleetForAgent/internal/desktop"
+	"github.com/TITOCHAN2023/fleetForAgent/internal/keepalive"
+	"github.com/TITOCHAN2023/fleetForAgent/internal/pane"
+	"github.com/TITOCHAN2023/fleetForAgent/internal/policy"
+	"github.com/TITOCHAN2023/fleetForAgent/internal/tray"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 )
 
-var agentVersion = "0.3.1"
+var agentVersion = "0.3.2"
 
 //go:embed ui/index.html
 var uiHTML []byte
@@ -107,17 +112,17 @@ type Agent struct {
 	desktopShotGranted  bool
 	desktopInputGranted bool
 	desktopDeniedOnce   bool
-	lastFrame           *DesktopFrame
+	lastFrame           *desktop.DesktopFrame
 	lastDigest          string
 	shotTimes           []time.Time
 	actTimes            []time.Time
-	backend             desktopBackend
-	osBackend           desktopBackend
+	backend             desktop.Backend
+	osBackend           desktop.Backend
 	seq                 int
 	ws                  *websocket.Conn
 	cancel              context.CancelFunc
 	cfgPath             string
-	panes               *supervisor
+	panes               *pane.Supervisor
 	hb                  time.Duration
 	restarting          bool
 	autoUpdate          bool
@@ -289,7 +294,7 @@ func (a *Agent) setEnabled(on bool) {
 	a.log("info", map[bool]string{true: "agent enabled", false: "agent disabled"}[on])
 	a.save()
 	a.mu.Unlock()
-	setKeepAlive(on)
+	keepalive.Set(on)
 	if on && strings.TrimSpace(hub) != "" {
 		go func() { _ = a.connect(hub) }()
 	}
@@ -323,7 +328,7 @@ func (a *Agent) pushUI() {
 	a.mu.Lock()
 	s := a.publicSnapshot()
 	a.mu.Unlock()
-	updateTray(s)
+	tray.Update(traySnap(s))
 }
 
 func (a *Agent) disconnectLocked(reason string) {
@@ -505,7 +510,7 @@ func agentCaps() []string {
 	if runtime.GOOS != "windows" {
 		caps = append(caps, "live_shell")
 	}
-	if desktopSupported() {
+	if desktop.Supported() {
 		caps = append(caps, "computer_use")
 	}
 	return caps
@@ -560,7 +565,7 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 			a.handleScreen(ctx, c, env.Corr, id, envelopeFingerprint(env.Body))
 		case "list_panes":
 			a.mu.Lock()
-			list := a.panes.list()
+			list := a.panes.List()
 			a.mu.Unlock()
 			_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "panes", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: env.Corr, T: time.Now().UnixMilli(), Body: map[string]any{"panes": list}})
 		case "desktop_screenshot":
@@ -592,7 +597,7 @@ func (a *Agent) handleRun(ctx context.Context, c *websocket.Conn, corr, cmd, fin
 		_ = wsjson.Write(ctx, c, resultEnv(corr, false, code, "", msg))
 		return
 	}
-	if devicePolicyBlocked(cmd) {
+	if policy.Blocked(cmd) {
 		a.log("error", "blocked destructive: "+cmd)
 		a.mu.Unlock()
 		_ = wsjson.Write(ctx, c, resultEnv(corr, false, 126, "", "fleet: refused by device policy"))
@@ -613,27 +618,24 @@ func (a *Agent) handleRun(ctx context.Context, c *websocket.Conn, corr, cmd, fin
 func (a *Agent) spawnPane(ctx context.Context, c *websocket.Conn, corr, cmd, fingerprint string) {
 	a.mu.Lock()
 	if a.panes == nil {
-		a.panes = newSupervisor()
+		a.panes = pane.NewSupervisor()
 	}
 	sup := a.panes
 	a.mu.Unlock()
-	p, err := sup.spawnFor(fingerprint, corr, cmd)
+	p, err := sup.SpawnFor(fingerprint, corr, cmd)
 	if err != nil {
 		_ = wsjson.Write(ctx, c, resultEnv(corr, false, 1, "", err.Error()))
 		return
 	}
-	_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "accepted", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"pane_id": p.id, "status": "running"}})
+	_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "accepted", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"pane_id": p.ID(), "status": "running"}})
 	a.mu.Lock()
-	a.log("info", "pane accepted "+p.id)
+	a.log("info", "pane accepted "+p.ID())
 	a.mu.Unlock()
 	go func() {
 		for {
-			p.mu.Lock()
-			done := !p.running
-			code := p.exitCode
-			p.mu.Unlock()
+			done, code := p.Finished()
 			if done {
-				stdout, stderr := p.resultText()
+				stdout, stderr := p.ResultText()
 				_ = wsjson.Write(ctx, c, resultEnv(corr, code == 0, code, stdout, stderr))
 				a.mu.Lock()
 				a.log("info", fmt.Sprintf("result %d: %s", code, cmd))
@@ -648,6 +650,8 @@ func (a *Agent) spawnPane(ctx context.Context, c *websocket.Conn, corr, cmd, fin
 		}
 	}()
 }
+
+func clip(s string, n int) string { return tray.Clip(s, n) }
 
 func typeConsentText(keys, key string) string {
 	if s := strings.TrimSpace(key); s != "" {
@@ -693,12 +697,12 @@ func (a *Agent) deliverType(ctx context.Context, c *websocket.Conn, corr, id, ke
 		_ = wsjson.Write(ctx, c, typedEnv(corr, false, "no pane"))
 		return
 	}
-	p := sup.getFor(fingerprint, id)
+	p := sup.GetFor(fingerprint, id)
 	if p == nil {
 		_ = wsjson.Write(ctx, c, typedEnv(corr, false, "pane gone"))
 		return
 	}
-	err := p.typeInput(keys, key)
+	err := p.TypeInput(keys, key)
 	ok := err == nil
 	msg := ""
 	if err != nil {
@@ -715,20 +719,20 @@ func (a *Agent) handleScreen(ctx context.Context, c *websocket.Conn, corr, id st
 		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"text": "", "running": false}})
 		return
 	}
-	p := sup.getFor(fingerprint, id)
+	p := sup.GetFor(fingerprint, id)
 	if p == nil {
 		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"text": "", "running": false}})
 		return
 	}
-	text, running, code, seq, row, col := sup.paneSnapshot(p)
+	text, running, code, seq, row, col := sup.PaneSnapshot(p)
 	_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{
-		"pane_id": p.id, "text": text, "running": running, "exit_code": code, "seq": seq,
+		"pane_id": p.ID(), "text": text, "running": running, "exit_code": code, "seq": seq,
 		"cursor_row": row, "cursor_col": col,
 	}})
 }
 
 func (a *Agent) coalesceLoop(ctx context.Context, c *websocket.Conn) {
-	tick := time.NewTicker(screenInterval)
+	tick := time.NewTicker(pane.ScreenInterval)
 	defer tick.Stop()
 	for {
 		select {
@@ -741,13 +745,13 @@ func (a *Agent) coalesceLoop(ctx context.Context, c *websocket.Conn) {
 			if sup == nil {
 				continue
 			}
-			p := sup.takeDirty()
+			p := sup.TakeDirty()
 			if p == nil {
 				continue
 			}
-			text, running, code, seq, row, col := sup.paneSnapshot(p)
-			_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: p.corr, T: time.Now().UnixMilli(), Body: map[string]any{
-				"pane_id": p.id, "text": text, "running": running, "exit_code": code, "seq": seq,
+			text, running, code, seq, row, col := sup.PaneSnapshot(p)
+			_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: p.Corr(), T: time.Now().UnixMilli(), Body: map[string]any{
+				"pane_id": p.ID(), "text": text, "running": running, "exit_code": code, "seq": seq,
 				"cursor_row": row, "cursor_col": col,
 			}})
 		}
@@ -868,7 +872,7 @@ func main() {
 
 	dir := fleetHome()
 	_ = os.MkdirAll(dir, 0o700)
-	agent := &Agent{permit: PermitAsk, autoUpdate: true, conn: "offline", cfgPath: configPath(), panes: newSupervisor()}
+	agent := &Agent{permit: PermitAsk, autoUpdate: true, conn: "offline", cfgPath: configPath(), panes: pane.NewSupervisor()}
 	agent.load()
 
 	mux := http.NewServeMux()
@@ -948,8 +952,8 @@ func main() {
 			agent.mu.Lock()
 			agent.disconnectLocked("quit")
 			agent.mu.Unlock()
-			setKeepAlive(false)
-			requestQuit()
+			keepalive.Set(false)
+			tray.RequestQuit()
 		}()
 	})
 	mux.HandleFunc("/api/restart", func(w http.ResponseWriter, r *http.Request) {
@@ -1032,8 +1036,8 @@ func main() {
 		log.Println("settings", settingsURL())
 	}
 
-	startKeepAliveLoop()
-	setKeepAlive(agent.enabled)
+	keepalive.StartLoop()
+	keepalive.Set(agent.enabled)
 	if agent.enabled {
 		agent.mu.Lock()
 		agent.log("info", "holding idle-sleep while enabled (screen may lock)")
@@ -1048,13 +1052,13 @@ func main() {
 	if auto {
 		go func() { _ = agent.connect(hub) }()
 	}
-	if runtime.GOOS != "linux" && (first || !trayEnabled) {
+	if runtime.GOOS != "linux" && (first || !tray.Enabled) {
 		openBrowser(settingsURL())
 	}
 	if runtime.GOOS == "linux" && first {
 		log.Println("no hub set: export FLEET_URL and FLEET_TOKEN, then restart")
 	}
-	runTray(agent)
+	tray.Run(agent)
 }
 
 func notifyConsent(cmd string) {

@@ -183,39 +183,11 @@ func updateBusyPhase(phase string) bool {
 	}
 }
 
-func (s *supervisor) busy() bool {
-	if s == nil {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, p := range s.panes {
-		if p != nil && p.stillRunning() {
-			return true
-		}
-	}
-	if s.live != nil && s.live.alive() && !s.live.idleExpired() {
-		return true
-	}
-	for _, sl := range s.slots {
-		if sl == nil {
-			continue
-		}
-		if sl.pending != nil {
-			return true
-		}
-		if sl.live != nil && sl.live.alive() && !sl.live.idleExpired() {
-			return true
-		}
-	}
-	return false
-}
-
 func (a *Agent) isIdleLocked() bool {
 	if a.pending != nil || a.desktopPending != nil || a.restarting {
 		return false
 	}
-	return !a.panes.busy()
+	return !a.panes.Busy()
 }
 
 func (a *Agent) noteHubUpdate(body map[string]any) {

@@ -135,6 +135,24 @@ func buildRestartPlan(exe string, args, environ []string) (restartPlan, error) {
 	}, nil
 }
 
+func waitPortFree(addr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var last error
+	for time.Now().Before(deadline) {
+		ln, err := net.Listen("tcp", addr)
+		if err == nil {
+			_ = ln.Close()
+			return nil
+		}
+		last = err
+		time.Sleep(20 * time.Millisecond)
+	}
+	if last == nil {
+		last = fmt.Errorf("timeout")
+	}
+	return fmt.Errorf("settings port %s still busy: %w", addr, last)
+}
+
 func waitHTTP(addr string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	url := "http://" + addr + "/api/state"
@@ -263,6 +281,10 @@ func (a *Agent) handoffRestart(exe string, extraEnv map[string]string) error {
 	setKeepAlive(false)
 
 	settingsNet.close()
+	if err := waitPortFree(plan.Addr, 3*time.Second); err != nil {
+		a.recoverAfterFailedHandoff(err.Error())
+		return err
+	}
 
 	if err := spawnSuccessor(plan.Exe, plan.Args, plan.Env); err != nil {
 		a.recoverAfterFailedHandoff("spawn: " + err.Error())

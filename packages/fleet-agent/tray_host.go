@@ -15,19 +15,19 @@ import (
 const trayEnabled = true
 
 type trayMenu struct {
-	status    *systray.MenuItem
-	open      *systray.MenuItem
-	reconnect *systray.MenuItem
-	enabled   *systray.MenuItem
-	off       *systray.MenuItem
-	ask       *systray.MenuItem
-	allow     *systray.MenuItem
-	consent   *systray.MenuItem
-	deny      *systray.MenuItem
-	restart   *systray.MenuItem
-	update    *systray.MenuItem
-	quit      *systray.MenuItem
-	ready     bool
+	status     *systray.MenuItem
+	open       *systray.MenuItem
+	reconnect  *systray.MenuItem
+	enabled    *systray.MenuItem
+	off        *systray.MenuItem
+	ask        *systray.MenuItem
+	allow      *systray.MenuItem
+	consent    *systray.MenuItem
+	deny       *systray.MenuItem
+	restart    *systray.MenuItem
+	autoUpdate *systray.MenuItem
+	quit       *systray.MenuItem
+	ready      bool
 }
 
 var tray trayMenu
@@ -102,7 +102,7 @@ func onTrayReady(a *Agent) {
 	tray.deny.Hide()
 	systray.AddSeparator()
 	tray.restart = systray.AddMenuItem("Restart", "Respawn this agent on its listen address")
-	tray.update = systray.AddMenuItem("Update", "Fetch the latest GitHub release and restart")
+	tray.autoUpdate = systray.AddMenuItemCheckbox("Auto-update", "When idle, install a newer version advertised by the hub", true)
 	systray.AddSeparator()
 	tray.quit = systray.AddMenuItem("Quit Fleet Agent", "")
 
@@ -136,15 +136,11 @@ func onTrayReady(a *Agent) {
 			}
 		}()
 	})
-	tray.update.Click(func() {
-		go func() {
-			if err := startUpdate(a, updateRequest{}); err != nil {
-				a.mu.Lock()
-				a.log("error", "update: "+err.Error())
-				a.mu.Unlock()
-				a.pushUI()
-			}
-		}()
+	tray.autoUpdate.Click(func() {
+		a.mu.Lock()
+		on := !a.autoUpdate
+		a.mu.Unlock()
+		a.setAutoUpdate(on)
 	})
 	tray.quit.Click(func() { systray.Quit() })
 
@@ -174,6 +170,13 @@ func updateTray(s State) {
 	} else {
 		tray.enabled.Uncheck()
 		tray.enabled.SetTitle("Disabled")
+	}
+	if s.AutoUpdate {
+		tray.autoUpdate.Check()
+		tray.autoUpdate.SetTitle("Auto-update on")
+	} else {
+		tray.autoUpdate.Uncheck()
+		tray.autoUpdate.SetTitle("Auto-update off")
 	}
 	checkOnly(tray.off, s.Permit == PermitOff)
 	checkOnly(tray.ask, s.Permit == PermitAsk)

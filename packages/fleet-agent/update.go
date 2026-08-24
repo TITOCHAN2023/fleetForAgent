@@ -79,6 +79,9 @@ func updateBase() string {
 	if v := strings.TrimSpace(os.Getenv("FLEET_UPDATE_BASE")); v != "" {
 		return strings.TrimRight(v, "/")
 	}
+	if v := advertisedUpdateBase(); v != "" {
+		return v
+	}
 	return defaultUpdateBase
 }
 
@@ -86,7 +89,7 @@ func updateAPI() string {
 	if v, ok := os.LookupEnv("FLEET_UPDATE_API"); ok {
 		return strings.TrimSpace(v)
 	}
-	if strings.TrimSpace(os.Getenv("FLEET_UPDATE_BASE")) != "" {
+	if strings.TrimSpace(os.Getenv("FLEET_UPDATE_BASE")) != "" || advertisedUpdateBase() != "" {
 		return ""
 	}
 	return defaultUpdateAPI

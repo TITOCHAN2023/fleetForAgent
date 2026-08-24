@@ -1,5 +1,18 @@
 /** Catalog row fields and keep-stored `agent_ver` (missing/blank leaves the stored version). */
 
+const DEFAULT_UPDATE_BASE =
+  "https://github.com/TITOCHAN2023/fleetForAgent/releases/latest/download";
+
+/** Additive hello_ok / pong / ask_heartbeat fields. Empty version → {}. */
+export function advertisedUpdate({ latestAgentVer, updateBase } = {}) {
+  const ver = String(latestAgentVer ?? "").trim();
+  if (!ver) return {};
+  const base = String(updateBase ?? "").trim() || DEFAULT_UPDATE_BASE;
+  const out = { latest_agent_ver: ver, update_base: base };
+  return out;
+}
+
+
 export const HEARTBEAT_WAIT_DEFAULT_MS = 3_000;
 export const HEARTBEAT_WAIT_MAX_MS = 10_000;
 export const DESKTOP_WAIT_MS = 8_000;

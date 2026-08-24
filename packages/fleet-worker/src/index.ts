@@ -18,6 +18,7 @@ import { canClaimDevice, deviceOwnerConflict } from "./bind.mjs";
 import { handleOpsRoute, isOpsAdmin } from "./ops.mjs";
 import {
   DESKTOP_WAIT_MS,
+  advertisedUpdate,
   agentVerFromBody,
   archFromBody,
   clampHeartbeatWaitMs,
@@ -60,6 +61,8 @@ export interface Env {
   GOOGLE_CLIENT_SECRET?: string;
   X_CLIENT_ID?: string;
   X_CLIENT_SECRET?: string;
+  LATEST_AGENT_VER?: string;
+  AGENT_UPDATE_BASE?: string;
 }
 
 const HUB_WAIT_MAX_MS = 30_000;
@@ -755,7 +758,7 @@ export class DeviceDO implements DurableObject {
         os: request.headers.get("x-device-os") ?? "linux",
         userId,
       });
-      pair[1].send(JSON.stringify(envelope("hello_ok", { heartbeat_s: 3600 })));
+      pair[1].send(JSON.stringify(envelope("hello_ok", { heartbeat_s: 3600, ...advertisedUpdate({ latestAgentVer: this.env.LATEST_AGENT_VER, updateBase: this.env.AGENT_UPDATE_BASE }) })));
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
 
@@ -849,7 +852,7 @@ export class DeviceDO implements DurableObject {
       const id = body.device_id || att.deviceId || "unknown";
       const waitMs = clampHeartbeatWaitMs(body.wait_ms);
       const pending = this.waitNextBeat(waitMs);
-      sockets[0]!.send(JSON.stringify(envelope("ask_heartbeat", {})));
+      sockets[0]!.send(JSON.stringify(envelope("ask_heartbeat", advertisedUpdate({ latestAgentVer: this.env.LATEST_AGENT_VER, updateBase: this.env.AGENT_UPDATE_BASE }))));
       const got = await pending;
       if (!got) return json({ error: "no heartbeat" }, 409);
       const res = await this.fleet().fetch(new Request(`https://fleet/device?id=${encodeURIComponent(id)}`));
@@ -940,7 +943,7 @@ export class DeviceDO implements DurableObject {
         ...(arch !== undefined ? { arch } : {}),
       });
       this.noteBeat();
-      ws.send(JSON.stringify(envelope("pong", {}, parsed.id)));
+      ws.send(JSON.stringify(envelope("pong", advertisedUpdate({ latestAgentVer: this.env.LATEST_AGENT_VER, updateBase: this.env.AGENT_UPDATE_BASE }), parsed.id)));
       return;
     }
 

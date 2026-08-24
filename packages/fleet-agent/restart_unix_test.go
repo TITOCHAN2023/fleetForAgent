@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -41,8 +42,14 @@ func TestSelfRestartKeepsListenAddrAndDeviceID(t *testing.T) {
 		t.Fatalf("ids A=%q B=%q", stA.DeviceID, stB.DeviceID)
 	}
 
-	postOK(t, addrA, "/api/restart", map[string]string{})
-	newA := waitDaemonPID(t, addrA)
+	res := postOK(t, addrA, "/api/restart", map[string]string{})
+	if res["mode"] != restartModeSpawnThenExit {
+		t.Fatalf("restart mode=%v; must not be quit-and-hope", res["mode"])
+	}
+	if res["addr"] != addrA {
+		t.Fatalf("restart targeted %v want %s", res["addr"], addrA)
+	}
+	newA := waitReplacedDaemon(t, addrA, pidA)
 	if newA == pidA {
 		t.Fatalf("expected a new process on %s, still pid %d", addrA, pidA)
 	}
@@ -92,25 +99,20 @@ func TestSelfUpdateStagesAndRestarts(t *testing.T) {
 
 	// Point only the running daemon at the fake channel via its environment:
 	// the daemon already started, so POST an explicit url+sha instead.
+	oldPID := listenPIDOrZero(addr)
 	postOK(t, addr, "/api/update", updateRequest{
 		URL:    srv.URL + "/" + name,
 		SHA256: sum,
 		Force:  true,
 	})
-	deadline := time.Now().Add(25 * time.Second)
-	var last error
-	for time.Now().Before(deadline) {
-		st, err := getStateErr(addr)
-		if err == nil && st.DeviceID == id {
-			if st.AgentVer != "" {
-				return
-			}
-		} else {
-			last = err
-		}
-		time.Sleep(100 * time.Millisecond)
+	waitReplacedDaemon(t, addr, oldPID)
+	st := getState(t, addr)
+	if st.DeviceID != id {
+		t.Fatalf("device id changed after update: %q", st.DeviceID)
 	}
-	t.Fatalf("updated agent did not come back on %s: %v", addr, last)
+	if st.AgentVer == "" {
+		t.Fatal("missing agentVer after update")
+	}
 }
 
 func freeLoopback(t *testing.T) string {
@@ -192,7 +194,7 @@ func getStateErr(addr string) (State, error) {
 	return st, nil
 }
 
-func postOK(t *testing.T, addr, path string, body any) {
+func postOK(t *testing.T, addr, path string, body any) map[string]any {
 	t.Helper()
 	b, err := json.Marshal(body)
 	if err != nil {
@@ -206,6 +208,34 @@ func postOK(t *testing.T, addr, path string, body any) {
 	if res.StatusCode >= 300 {
 		t.Fatalf("%s: %s", path, res.Status)
 	}
+	var out map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	return out
+}
+
+func waitReplacedDaemon(t *testing.T, addr string, oldPID int) int {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	seenDown := false
+	var last error
+	for time.Now().Before(deadline) {
+		pid, err := listenPID(addr)
+		if err != nil {
+			seenDown = true
+			last = err
+		} else if pid > 1 && pid != oldPID {
+			if _, err := getStateErr(addr); err == nil {
+				return pid
+			} else {
+				last = err
+			}
+		} else if seenDown && pid == oldPID {
+			last = fmt.Errorf("old pid %d rebound %s", oldPID, addr)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("successor never replaced pid %d on %s: %v", oldPID, addr, last)
+	return 0
 }
 
 func listenPIDOrZero(addr string) int {

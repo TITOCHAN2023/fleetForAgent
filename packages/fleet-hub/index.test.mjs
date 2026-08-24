@@ -718,3 +718,22 @@ test("desktop_screenshot waits for a desktop reply and does not hang when mute",
   assert.equal(mute.status, 409);
   assert.equal(mute.json.code, "TIMEOUT");
 });
+
+test("hello_ok and pong advertise latest_agent_ver + update_base", async (t) => {
+  const hub = createHub({
+    latestAgentVer: "0.3.2",
+    updateBase: "http://127.0.0.1:9/dl",
+  });
+  t.after(() => hub.close());
+  const { ws: wsUrl } = await listen(hub);
+  const dev = connectDevice(wsUrl, { id: "upd-1" });
+  t.after(() => dev.ws.close());
+  await dev.opened;
+  const hello = await waitType(dev.inbox, "hello_ok");
+  assert.equal(hello.body.latest_agent_ver, "0.3.2");
+  assert.equal(hello.body.update_base, "http://127.0.0.1:9/dl");
+  dev.ws.send(JSON.stringify({ v: 1, type: "ping", id: "p-up", t: Date.now(), body: { agent_ver: "0.3.0" } }));
+  const pong = await waitType(dev.inbox, "pong");
+  assert.equal(pong.body.latest_agent_ver, "0.3.2");
+  assert.equal(pong.body.update_base, "http://127.0.0.1:9/dl");
+});

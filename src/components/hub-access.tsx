@@ -49,18 +49,24 @@ function CopyBlock({ label, text }: { label: string; text: string }) {
 function ReadySetup({ origin, token }: { origin: string; token: string }) {
   const { t } = useI18n();
   const base = origin.replace(/\/+$/, "");
-  const posixInstall = `curl -fsSL ${shellQuote(`${base}/install.sh`)} | sh -s -- --hub ${shellQuote(base)} --token ${shellQuote(token)} --permit ask`;
-  const windowsInstall = `& ([scriptblock]::Create((irm ${powershellQuote(`${base}/install.ps1`)}))) -Hub ${powershellQuote(base)} -Token ${powershellQuote(token)} -Permit ask`;
+  const posixToken = token ? ` --token ${shellQuote(token)}` : "";
+  const windowsToken = token ? ` -Token ${powershellQuote(token)}` : "";
+  const posixInstall = `curl -fsSL ${shellQuote(`${base}/install.sh`)} | sh -s -- --hub ${shellQuote(base)}${posixToken} --permit ask`;
+  const windowsInstall = `& ([scriptblock]::Create((irm ${powershellQuote(`${base}/install.ps1`)}))) -Hub ${powershellQuote(base)}${windowsToken} -Permit ask`;
+  const stdioEnv = { FLEET_URL: base } as Record<string, string>;
+  if (token) stdioEnv.FLEET_TOKEN = token;
+  const sseServer = {
+    type: "sse",
+    url: `${base}/mcp/sse`,
+  } as Record<string, unknown>;
+  if (token) sseServer.headers = { Authorization: `Bearer ${token}` };
   const mcpStdioConfig = JSON.stringify(
     {
       mcpServers: {
         fleet: {
           command: "npx",
           args: ["-y", FLEET_TOOL_TGZ],
-          env: {
-            FLEET_URL: base,
-            FLEET_TOKEN: token,
-          },
+          env: stdioEnv,
         },
       },
     },
@@ -70,11 +76,7 @@ function ReadySetup({ origin, token }: { origin: string; token: string }) {
   const mcpSseConfig = JSON.stringify(
     {
       mcpServers: {
-        fleet: {
-          type: "sse",
-          url: `${base}/mcp/sse`,
-          headers: { Authorization: `Bearer ${token}` },
-        },
+        fleet: sseServer,
       },
     },
     null,
@@ -83,6 +85,7 @@ function ReadySetup({ origin, token }: { origin: string; token: string }) {
 
   return (
     <div className="grid gap-6">
+      {!token && <p className="text-sm text-warn">{t("hub.setupNeedsToken")}</p>}
       <div className="grid gap-3">
         <div>
           <h3 className="text-sm font-medium">{t("hub.mcpTitle")}</h3>
@@ -103,7 +106,7 @@ function ReadySetup({ origin, token }: { origin: string; token: string }) {
           <CopyBlock label={t("hub.posixInstall")} text={posixInstall} />
           <CopyBlock label={t("hub.windowsInstall")} text={windowsInstall} />
         </div>
-        <p className="text-xs text-warn">{t("hub.shellHistory")}</p>
+        {token && <p className="text-xs text-warn">{t("hub.shellHistory")}</p>}
         <p className="text-sm text-muted">
           {t("hub.desktopHint")}{" "}
           <a href="/releases" className="underline underline-offset-4 hover:text-fg">
@@ -250,14 +253,7 @@ export function HubAccess() {
       <p className="mt-4 text-sm text-muted">{t("hub.toolHint")}</p>
 
       <div className="mt-6 border-t border-border pt-6">
-        {secret && origin ? (
-          <ReadySetup origin={origin} token={secret} />
-        ) : (
-          <div>
-            <h3 className="text-sm font-medium">{t("hub.mcpTitle")}</h3>
-            <p className="mt-1 text-sm text-muted">{t("hub.setupNeedsToken")}</p>
-          </div>
-        )}
+        {origin ? <ReadySetup origin={origin} token={secret} /> : null}
       </div>
 
       {prompt ? (

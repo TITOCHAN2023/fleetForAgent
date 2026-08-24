@@ -31,7 +31,6 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$hub" ] || { echo "fleet installer: --hub is required" >&2; exit 2; }
-[ -n "$token" ] || { echo "fleet installer: --token is required" >&2; exit 2; }
 case "$permit" in off|ask|allow) ;; *) echo "fleet installer: bad permit $permit" >&2; exit 2 ;; esac
 command -v curl >/dev/null 2>&1 || { echo "fleet installer: curl is required" >&2; exit 1; }
 
@@ -114,4 +113,8 @@ case ":${PATH:-}:" in
   *":$bin_dir:"*) ;;
   *) echo "Add $bin_dir to PATH to run 'fleet' directly." ;;
 esac
-exec "$target" start --hub "$hub" --token "$token" --permit "$permit"
+if [ -n "$token" ]; then
+  exec "$target" start --hub "$hub" --token "$token" --permit "$permit"
+fi
+echo "Hub token omitted; Fleet was installed but not started."
+echo "Run 'fleet start --hub $hub --token <Hub token> --permit $permit' after generating or resetting a token."

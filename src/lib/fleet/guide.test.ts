@@ -94,22 +94,25 @@ test("console honors /?tab=agent for Settings", () => {
   assert.match(src("src/components/fleet-console.tsx"), /initialTab/);
 });
 
-test("Settings reveals peer stdio and SSE MCP configs above device installers", () => {
+test("Settings always shows peer MCP configs and device installers, adding token only when known", () => {
   const settings = src("src/components/hub-access.tsx") + src("src/lib/i18n/messages.ts");
   const server = src("src/lib/fleet/mcp-sse.server.ts");
   assert.match(settings, /command: "npx"/);
   assert.match(settings, /https:\/\/fleet\.ginfo\.cc\/fleet-tool\.tgz/);
-  assert.match(settings, /FLEET_URL: base/);
-  assert.match(settings, /FLEET_TOKEN: token/);
+  assert.match(settings, /const stdioEnv = \{ FLEET_URL: base \}/);
+  assert.match(settings, /if \(token\) stdioEnv\.FLEET_TOKEN = token/);
   assert.match(settings, /type: "sse"/);
   assert.match(settings, /\/mcp\/sse/);
-  assert.match(settings, /Authorization: `Bearer \$\{token\}`/);
+  assert.match(settings, /if \(token\) sseServer\.headers = \{ Authorization: `Bearer \$\{token\}` \}/);
   assert.match(settings, /curl -fsSL/);
   assert.match(settings, /install\.sh/);
   assert.match(settings, /scriptblock.*irm/);
   assert.match(settings, /install\.ps1/);
-  assert.match(settings, /secret && origin/);
+  assert.match(settings, /origin \? <ReadySetup/);
   assert.match(settings, /ReadySetup origin=\{origin\} token=\{secret\}/);
+  assert.doesNotMatch(settings, /secret && origin/);
+  assert.match(settings, /token \? ` --token/);
+  assert.match(settings, /token \? ` -Token/);
   assert.match(settings, /href="\/releases"/);
   assert.ok(
     settings.indexOf('t("hub.mcpStdioConfig")') < settings.indexOf('t("hub.quickTitle")'),

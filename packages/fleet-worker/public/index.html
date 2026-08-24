@@ -239,9 +239,9 @@
           mcpBody: "可以选择现有 npx 工具提供的本地 stdio，或直接使用远程 SSE。两份配置同级，都会把 AI 端接入同一个 Fleet 中枢。",
           mcpStdioConfig: "本地 stdio · npx（Cursor / Claude Desktop）",
           mcpSseConfig: "远程 SSE MCP",
-          setupNeedsToken: "生成或重置 Token 后才会出现 AI 端 MCP 配置和设备安装命令。之后无法从服务端找回明文。",
+          setupNeedsToken: "当前页面拿不到 Token 明文，所以配置和安装命令仍会显示，但会省略 Token。生成或重置后会自动补全；无 Token 的安装命令只安装，不启动 Fleet。",
           quickTitle: "安装 Fleet 命令行 Agent",
-          quickBody: "一条命令会自动选择当前系统和 CPU 的正式 Release，校验 SHA-256，安装到用户目录，并以“需确认”权限立即连接。不需要管理员权限。",
+          quickBody: "一条命令会自动选择当前系统和 CPU 的正式 Release，校验 SHA-256，并安装到用户目录。有 Token 时会以“需确认”权限立即启动；没有 Token 时安装后停止。",
           posixInstall: "macOS / Linux / WSL",
           windowsInstall: "Windows PowerShell",
           desktopHint: "需要完整安装包、托盘和本机设置界面？",
@@ -306,9 +306,9 @@
           mcpBody: "Choose either local stdio through the existing npx tool or direct remote SSE. Both configurations connect the AI side to the same Fleet hub.",
           mcpStdioConfig: "Local stdio · npx (Cursor / Claude Desktop)",
           mcpSseConfig: "Remote SSE MCP",
-          setupNeedsToken: "Generate or reset the token to reveal AI-side MCP configurations and device install commands. The plaintext cannot be recovered later.",
+          setupNeedsToken: "The token plaintext is not available in this page load, so these configurations and commands stay visible but omit it. Generate or reset to fill it in automatically; a tokenless install command installs without starting Fleet.",
           quickTitle: "Install the Fleet CLI Agent",
-          quickBody: "One command downloads the published GitHub Release for this OS and CPU, verifies SHA-256, installs it in your user directory, and connects with Ask permission. No administrator access required.",
+          quickBody: "One command downloads the published GitHub Release for this OS and CPU, verifies SHA-256, and installs it in your user directory. With a token it starts immediately with Ask permission; without one it stops after installation.",
           posixInstall: "macOS / Linux / WSL",
           windowsInstall: "Windows PowerShell",
           desktopHint: "Need the packaged desktop app, tray, and local settings UI?",
@@ -640,27 +640,28 @@
       }
       function readySetup(origin, token) {
         const base = String(origin || "").replace(/\/+$/, "");
+        const stdioEnv = { FLEET_URL: base };
+        if (token) stdioEnv.FLEET_TOKEN = token;
+        const sseServer = { type: "sse", url: base + "/mcp/sse" };
+        if (token) sseServer.headers = { Authorization: "Bearer " + token };
         const mcpStdio = JSON.stringify({
           mcpServers: {
             fleet: {
               command: "npx",
               args: ["-y", base + "/fleet-tool.tgz"],
-              env: { FLEET_URL: base, FLEET_TOKEN: token },
+              env: stdioEnv,
             },
           },
         }, null, 2);
         const mcpSse = JSON.stringify({
-          mcpServers: {
-            fleet: {
-              type: "sse",
-              url: base + "/mcp/sse",
-              headers: { Authorization: "Bearer " + token },
-            },
-          },
+          mcpServers: { fleet: sseServer },
         }, null, 2);
-        const posix = `curl -fsSL '${base}/install.sh' | sh -s -- --hub '${base}' --token '${token}' --permit ask`;
-        const windows = `& ([scriptblock]::Create((irm '${base}/install.ps1'))) -Hub '${base}' -Token '${token}' -Permit ask`;
+        const posixToken = token ? ` --token '${token}'` : "";
+        const windowsToken = token ? ` -Token '${token}'` : "";
+        const posix = `curl -fsSL '${base}/install.sh' | sh -s -- --hub '${base}'${posixToken} --permit ask`;
+        const windows = `& ([scriptblock]::Create((irm '${base}/install.ps1'))) -Hub '${base}'${windowsToken} -Permit ask`;
         return `<div class="setup">
+          ${token ? "" : `<p class="warn" style="margin:0">${t("setupNeedsToken")}</p>`}
           <section class="setup-section">
             <div><h3>${t("mcpTitle")}</h3><p class="muted" style="margin:6px 0 0">${t("mcpBody")}</p></div>
             <div class="grid-2">${copyBlock(t("mcpStdioConfig"), mcpStdio)}${copyBlock(t("mcpSseConfig"), mcpSse)}</div>
@@ -668,7 +669,7 @@
           <section class="setup-section">
             <div><h3>${t("quickTitle")}</h3><p class="muted" style="margin:6px 0 0">${t("quickBody")}</p></div>
             <div class="grid-2">${copyBlock(t("posixInstall"), posix)}${copyBlock(t("windowsInstall"), windows)}</div>
-            <p class="warn" style="margin:0">${t("shellHistory")}</p>
+            ${token ? `<p class="warn" style="margin:0">${t("shellHistory")}</p>` : ""}
             <p class="muted" style="margin:0">${t("desktopHint")} <a class="nav-link" style="text-decoration:underline;text-underline-offset:4px" href="https://github.com/TITOCHAN2023/fleetForAgent/releases/latest" target="_blank" rel="noreferrer">${t("desktopLink")}</a></p>
           </section>
         </div>`;
@@ -832,7 +833,7 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
           </div>
           <p class="muted" style="margin-top:16px">${t("toolHint")}</p>
           <div style="margin-top:24px;border-top:1px solid var(--border);padding-top:24px">
-            ${state.secret ? readySetup(origin, state.secret) : `<div><h3>${t("mcpTitle")}</h3><p class="muted" style="margin:6px 0 0">${t("setupNeedsToken")}</p></div>`}
+            ${readySetup(origin, state.secret)}
           </div>
         </section>`;
       }

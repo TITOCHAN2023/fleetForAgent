@@ -52,11 +52,39 @@ test("hub site explains multi-os fleet and ships a Help page", () => {
   assert.match(html, /install\.sh/);
   assert.match(html, /install\.ps1/);
   assert.match(html, /data-copy=/);
-  assert.match(html, /state\.secret \? readySetup/);
+  assert.match(html, /if \(token\) stdioEnv\.FLEET_TOKEN = token/);
+  assert.match(html, /if \(token\) sseServer\.headers =/);
+  assert.match(html, /readySetup\(origin, state\.secret\)/);
+  assert.doesNotMatch(html, /state\.secret \? readySetup/);
   assert.ok(
     html.indexOf('t("mcpStdioConfig")') < html.indexOf('t("quickTitle")'),
     "AI-side MCP configs must render above device installers",
   );
+});
+
+test("tokenless Settings configs stay copyable and omit every token field", () => {
+  const start = html.indexOf("function copyBlock");
+  const end = html.indexOf("function promptView", start);
+  assert.ok(start > 0 && end > start);
+  const setup = new Function(`
+    function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\\"/g,"&quot;"); }
+    function t(k) { return k; }
+    ${html.slice(start, end)}
+    return readySetup;
+  `)();
+
+  const tokenless = setup("https://fleet.ginfo.cc", "");
+  assert.match(tokenless, /fleet-tool\.tgz/);
+  assert.match(tokenless, /\/mcp\/sse/);
+  assert.match(tokenless, /install\.sh/);
+  assert.match(tokenless, /install\.ps1/);
+  assert.doesNotMatch(tokenless, /FLEET_TOKEN|Authorization|--token|-Token/);
+
+  const complete = setup("https://fleet.ginfo.cc", "flt_1.demo");
+  assert.match(complete, /FLEET_TOKEN/);
+  assert.match(complete, /Authorization/);
+  assert.match(complete, /--token/);
+  assert.match(complete, /-Token/);
 });
 
 test("landing pairs Help with Google and Docs with X", () => {

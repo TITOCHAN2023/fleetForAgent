@@ -41,6 +41,8 @@ test("POSIX installer parses and covers macOS, Linux, amd64, and arm64", () => {
   assert.match(sh, /"\$target" quit/);
   assert.match(sh, /running: no/);
   assert.match(sh, /exec "\$target" start --hub "\$hub" --token "\$token" --permit "\$permit"/);
+  assert.match(sh, /Hub token omitted; Fleet was installed but not started/);
+  assert.doesNotMatch(sh, /--token is required/);
   assert.doesNotMatch(sh, /token=.*https?:\/\//i);
 });
 
@@ -104,6 +106,26 @@ test("POSIX installer downloads, verifies, replaces, and starts the CLI", () => 
       "quit\nstatus\nstart --hub https://hub.example --token flt_test --permit ask\n",
     );
     assert.equal(readFileSync(installed, "utf8"), fleet);
+
+    writeFileSync(record, "");
+    const tokenless = execFileSync(
+      "sh",
+      [join(root, "public/install.sh"), "--hub", "https://hub.example", "--permit", "ask"],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          FAKE_ARCHIVE: archive,
+          FAKE_SUM: sum,
+          HOME: home,
+          INSTALL_RECORD: record,
+          PATH: `${fakeBin}:/usr/bin:/bin`,
+          FLEET_TOKEN: "",
+        },
+      },
+    );
+    assert.match(tokenless, /installed but not started/);
+    assert.equal(readFileSync(record, "utf8"), "quit\nstatus\n");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -120,5 +142,7 @@ test("Windows installer verifies and starts the native amd64 or arm64 executable
   assert.match(ps, /& \$target quit/);
   assert.match(ps, /running:\\s\+no/);
   assert.match(ps, /& \$target start --hub \$Hub --token \$Token --permit \$Permit/);
+  assert.match(ps, /Hub token omitted; Fleet was installed but not started/);
+  assert.doesNotMatch(ps, /-Token is required/);
   assert.doesNotMatch(ps, /ExecutionPolicy|RunAs|Start-Process.*-Verb/i);
 });

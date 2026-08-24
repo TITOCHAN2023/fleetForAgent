@@ -6,7 +6,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 if ([string]::IsNullOrWhiteSpace($Hub)) { throw "fleet installer: -Hub is required" }
-if ([string]::IsNullOrWhiteSpace($Token)) { throw "fleet installer: -Token is required" }
 
 $baseUrl = "https://github.com/TITOCHAN2023/fleetForAgent/releases/latest/download"
 $nativeArch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
@@ -53,7 +52,12 @@ try {
   if (@($env:Path -split ";") -notcontains $binDir) { $env:Path = "$env:Path;$binDir" }
 
   Write-Host "Fleet installed at $target"
-  & $target start --hub $Hub --token $Token --permit $Permit
+  if ([string]::IsNullOrWhiteSpace($Token)) {
+    Write-Host "Hub token omitted; Fleet was installed but not started."
+    Write-Host "Run 'fleet start --hub $Hub --token <Hub token> --permit $Permit' after generating or resetting a token."
+  } else {
+    & $target start --hub $Hub --token $Token --permit $Permit
+  }
 } finally {
   if (Test-Path $tempFile) { Remove-Item -Force $tempFile }
 }

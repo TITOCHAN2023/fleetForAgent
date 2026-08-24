@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import {
   DESKTOP_WAIT_MS,
+  advertisedUpdate,
   agentVerFromBody,
   clampHeartbeatWaitMs,
   computerPublic,
@@ -51,6 +52,10 @@ export function createHub({
   now = () => Date.now(),
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   desktopWaitMs = DESKTOP_WAIT_MS,
+  latestAgentVer = process.env.FLEET_LATEST_AGENT_VER || "",
+  updateBase = process.env.FLEET_UPDATE_BASE || "",
+  checksumsUrl = process.env.FLEET_UPDATE_CHECKSUMS || "",
+  checksumsText = process.env.FLEET_UPDATE_SUMS || "",
 } = {}) {
   /** @type {Map<string, { id: string, name: string, os: string, online: boolean, lastSeen: number, agentVer?: string }>} */
   const fleet = new Map();
@@ -102,7 +107,7 @@ export function createHub({
     const os = header(req, "x-device-os") || "linux";
     ws.deviceId = id;
     mark(id, { name, os, online: true });
-    ws.send(JSON.stringify(envelope("hello_ok", { heartbeat_s: 25 })));
+    ws.send(JSON.stringify(envelope("hello_ok", { heartbeat_s: 25, ...advertisedUpdate({ latestAgentVer, updateBase, checksumsUrl, checksumsText }) })));
 
     ws.on("message", (data) => {
       if (typeof data !== "string" && !Buffer.isBuffer(data)) return;
@@ -157,7 +162,7 @@ export function createHub({
         ...(normalizePermit(parsed.body?.permit) ? { permit: normalizePermit(parsed.body.permit) } : {}),
       });
       noteBeat(id);
-      ws.send(JSON.stringify(envelope("pong", {}, parsed.id)));
+      ws.send(JSON.stringify(envelope("pong", advertisedUpdate({ latestAgentVer, updateBase, checksumsUrl, checksumsText }), parsed.id)));
       return;
     }
     if (parsed.type === "screen") {
@@ -330,7 +335,13 @@ export function createHub({
     const url = new URL(req.url ?? "/", "http://hub");
 
     if (url.pathname === "/" || url.pathname === "/v1/health") {
-      write(res, 200, { name: "fleet-hub", v: 1, ok: true, backend: "node" });
+      write(res, 200, {
+        name: "fleet-hub",
+        v: 1,
+        ok: true,
+        backend: "node",
+        ...advertisedUpdate({ latestAgentVer, updateBase, checksumsUrl, checksumsText }),
+      });
       return;
     }
 
@@ -384,7 +395,7 @@ export function createHub({
       }
       const waitMs = clampHeartbeatWaitMs(body.wait_ms);
       const pending = waitNextBeat(body.device_id, waitMs);
-      live.send(JSON.stringify(envelope("ask_heartbeat", {})));
+      live.send(JSON.stringify(envelope("ask_heartbeat", advertisedUpdate({ latestAgentVer, updateBase, checksumsUrl, checksumsText }))));
       const got = await pending;
       if (!got) {
         write(res, 409, { error: "no heartbeat" });

@@ -11,6 +11,14 @@ workers_dev = false
 #   npx wrangler secret put ADMIN_EMAILS
 # [vars] must not hold emails.
 #
+# When shipping an agent release (code-only; do not add a Durable Object
+# migration): set LATEST_AGENT_VER to the tag (e.g. 0.3.2). Clients learn
+# it from hello_ok / pong / /v1/health and pull OS/arch assets from
+# AGENT_UPDATE_BASE (default GitHub releases/latest/download) plus
+# checksums-{ver}.txt. Optional AGENT_UPDATE_CHECKSUMS / AGENT_UPDATE_SUMS
+# override the checksums URL or inline the checksums.txt body.
+#   npx wrangler secret put LATEST_AGENT_VER
+#
 # aud inside every flt_1 token. Never taken from the Host header.
 [vars]
 HUB_ORIGIN = "https://fleet.ginfo.cc"

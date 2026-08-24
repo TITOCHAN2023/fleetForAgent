@@ -1,5 +1,51 @@
 /** Catalog row fields and keep-stored `agent_ver` (missing/blank leaves the stored version). */
 
+export const DEFAULT_UPDATE_BASE =
+  "https://github.com/TITOCHAN2023/fleetForAgent/releases/latest/download";
+
+/** Same SHA-256 lines GitHub / the public download page ship as checksums*.txt. */
+export function parseChecksums(text) {
+  const out = {};
+  for (const line of String(text ?? "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const fields = trimmed.split(/\s+/);
+    if (fields.length < 2) continue;
+    const sum = String(fields[0]).toLowerCase();
+    if (sum.length !== 64 || /[^0-9a-f]/.test(sum)) continue;
+    let name = String(fields[1]).replace(/^\*/, "");
+    const slash = name.lastIndexOf("/");
+    if (slash >= 0) name = name.slice(slash + 1);
+    if (name) out[name] = sum;
+  }
+  return out;
+}
+
+export function checksumsURL(base, ver) {
+  const root = String(base ?? "").replace(/\/+$/, "");
+  const v = String(ver ?? "").trim().replace(/^[vV]/, "");
+  if (!root || !v) return "";
+  return `${root}/checksums-${v}.txt`;
+}
+
+/**
+ * Additive hello_ok / pong / ask_heartbeat / health fields. Empty version → {}.
+ * Enough for a client to fetch its OS/arch asset: version + channel URL +
+ * checksums URL (and optional inline sums). No Durable Object change.
+ */
+export function advertisedUpdate({ latestAgentVer, updateBase, checksumsUrl, checksumsText } = {}) {
+  const ver = String(latestAgentVer ?? "").trim();
+  if (!ver) return {};
+  const base = String(updateBase ?? "").trim() || DEFAULT_UPDATE_BASE;
+  const out = { latest_agent_ver: ver, update_base: base };
+  const sumsUrl = String(checksumsUrl ?? "").trim() || checksumsURL(base, ver);
+  if (sumsUrl) out.update_checksums = sumsUrl;
+  const sums = parseChecksums(checksumsText);
+  if (Object.keys(sums).length) out.update_sums = sums;
+  return out;
+}
+
+
 export const HEARTBEAT_WAIT_DEFAULT_MS = 3_000;
 export const HEARTBEAT_WAIT_MAX_MS = 10_000;
 export const DESKTOP_WAIT_MS = 8_000;

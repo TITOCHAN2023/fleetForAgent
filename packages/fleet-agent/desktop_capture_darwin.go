@@ -7,8 +7,23 @@ package main
 #include <ApplicationServices/ApplicationServices.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <dlfcn.h>
 #include <stdint.h>
 #include <stdlib.h>
+
+// macOS 15 SDK marks CGDisplayCreateImage unavailable. The symbol is still
+// exported; resolve it at runtime so we can compile against the current SDK.
+static CGImageRef fleetDisplayImage(void) {
+	typedef CGImageRef (*fn_t)(CGDirectDisplayID);
+	static fn_t fn;
+	static int once;
+	if (!once) {
+		once = 1;
+		fn = (fn_t)dlsym(RTLD_DEFAULT, "CGDisplayCreateImage");
+	}
+	if (!fn) return NULL;
+	return fn(kCGDirectMainDisplay);
+}
 
 static int fleetScreenTrusted(void) {
 	return CGPreflightScreenCaptureAccess() ? 1 : 0;
@@ -19,7 +34,7 @@ static int fleetAXTrusted(void) {
 }
 
 static int fleetCaptureBGRA(uint8_t **out, int *w, int *h) {
-	CGImageRef img = CGDisplayCreateImage(kCGDirectMainDisplay);
+	CGImageRef img = fleetDisplayImage();
 	if (!img) return -1;
 	*w = (int)CGImageGetWidth(img);
 	*h = (int)CGImageGetHeight(img);

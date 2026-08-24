@@ -11,14 +11,15 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AgentRouteImport } from './routes/agent'
+import { Route as DocsRouteImport } from './routes/docs'
 import { Route as GuideRouteImport } from './routes/guide'
 import { Route as HelpRouteImport } from './routes/help'
-import { Route as DocsRouteImport } from './routes/docs'
-import { Route as DocsIndexRouteImport } from './routes/docs/index'
-import { Route as DocsSlugRouteImport } from './routes/docs/$slug'
 import { Route as LabRouteImport } from './routes/lab'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ReleasesRouteImport } from './routes/releases'
+import { Route as DocsIndexRouteImport } from './routes/docs/index'
+import { Route as DocsSlugRouteImport } from './routes/docs/$slug'
+import { Route as McpSseRouteImport } from './routes/mcp/sse'
 import { Route as V1SplatRouteImport } from './routes/v1/$'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 
@@ -32,6 +33,11 @@ const AgentRoute = AgentRouteImport.update({
   path: '/agent',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DocsRoute = DocsRouteImport.update({
+  id: '/docs',
+  path: '/docs',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const GuideRoute = GuideRouteImport.update({
   id: '/guide',
   path: '/guide',
@@ -42,30 +48,6 @@ const HelpRoute = HelpRouteImport.update({
   path: '/help',
   getParentRoute: () => rootRouteImport,
 } as any)
-const DocsRoute = DocsRouteImport.update({
-  id: '/docs',
-  path: '/docs',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const DocsIndexRoute = DocsIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => DocsRoute,
-} as any)
-const DocsSlugRoute = DocsSlugRouteImport.update({
-  id: '/$slug',
-  path: '/$slug',
-  getParentRoute: () => DocsRoute,
-} as any)
-interface DocsRouteChildren {
-  DocsIndexRoute: typeof DocsIndexRoute
-  DocsSlugRoute: typeof DocsSlugRoute
-}
-const DocsRouteChildren: DocsRouteChildren = {
-  DocsIndexRoute: DocsIndexRoute,
-  DocsSlugRoute: DocsSlugRoute,
-}
-const DocsRouteWithChildren = DocsRoute._addFileChildren(DocsRouteChildren)
 const LabRoute = LabRouteImport.update({
   id: '/lab',
   path: '/lab',
@@ -79,6 +61,21 @@ const LoginRoute = LoginRouteImport.update({
 const ReleasesRoute = ReleasesRouteImport.update({
   id: '/releases',
   path: '/releases',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DocsIndexRoute = DocsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => DocsRoute,
+} as any)
+const DocsSlugRoute = DocsSlugRouteImport.update({
+  id: '/$slug',
+  path: '/$slug',
+  getParentRoute: () => DocsRoute,
+} as any)
+const McpSseRoute = McpSseRouteImport.update({
+  id: '/mcp/sse',
+  path: '/mcp/sse',
   getParentRoute: () => rootRouteImport,
 } as any)
 const V1SplatRoute = V1SplatRouteImport.update({
@@ -95,14 +92,16 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/agent': typeof AgentRoute
+  '/docs': typeof DocsRouteWithChildren
   '/guide': typeof GuideRoute
   '/help': typeof HelpRoute
-  '/docs': typeof DocsRouteWithChildren
-  '/docs/$slug': typeof DocsSlugRoute
   '/lab': typeof LabRoute
   '/login': typeof LoginRoute
   '/releases': typeof ReleasesRoute
+  '/docs/$slug': typeof DocsSlugRoute
+  '/mcp/sse': typeof McpSseRoute
   '/v1/$': typeof V1SplatRoute
+  '/docs/': typeof DocsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesByTo {
@@ -110,26 +109,29 @@ export interface FileRoutesByTo {
   '/agent': typeof AgentRoute
   '/guide': typeof GuideRoute
   '/help': typeof HelpRoute
-  '/docs': typeof DocsRouteWithChildren
-  '/docs/$slug': typeof DocsSlugRoute
   '/lab': typeof LabRoute
   '/login': typeof LoginRoute
   '/releases': typeof ReleasesRoute
+  '/docs/$slug': typeof DocsSlugRoute
+  '/mcp/sse': typeof McpSseRoute
   '/v1/$': typeof V1SplatRoute
+  '/docs': typeof DocsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/agent': typeof AgentRoute
+  '/docs': typeof DocsRouteWithChildren
   '/guide': typeof GuideRoute
   '/help': typeof HelpRoute
-  '/docs': typeof DocsRouteWithChildren
-  '/docs/$slug': typeof DocsSlugRoute
   '/lab': typeof LabRoute
   '/login': typeof LoginRoute
   '/releases': typeof ReleasesRoute
+  '/docs/$slug': typeof DocsSlugRoute
+  '/mcp/sse': typeof McpSseRoute
   '/v1/$': typeof V1SplatRoute
+  '/docs/': typeof DocsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRouteTypes {
@@ -137,14 +139,16 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/agent'
+    | '/docs'
     | '/guide'
     | '/help'
-    | '/docs'
-    | '/docs/$slug'
     | '/lab'
     | '/login'
     | '/releases'
+    | '/docs/$slug'
+    | '/mcp/sse'
     | '/v1/$'
+    | '/docs/'
     | '/api/auth/$'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -152,37 +156,41 @@ export interface FileRouteTypes {
     | '/agent'
     | '/guide'
     | '/help'
-    | '/docs'
-    | '/docs/$slug'
     | '/lab'
     | '/login'
     | '/releases'
+    | '/docs/$slug'
+    | '/mcp/sse'
     | '/v1/$'
+    | '/docs'
     | '/api/auth/$'
   id:
     | '__root__'
     | '/'
     | '/agent'
+    | '/docs'
     | '/guide'
     | '/help'
-    | '/docs'
-    | '/docs/$slug'
     | '/lab'
     | '/login'
     | '/releases'
+    | '/docs/$slug'
+    | '/mcp/sse'
     | '/v1/$'
+    | '/docs/'
     | '/api/auth/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AgentRoute: typeof AgentRoute
+  DocsRoute: typeof DocsRouteWithChildren
   GuideRoute: typeof GuideRoute
   HelpRoute: typeof HelpRoute
-  DocsRoute: typeof DocsRouteWithChildren
   LabRoute: typeof LabRoute
   LoginRoute: typeof LoginRoute
   ReleasesRoute: typeof ReleasesRoute
+  McpSseRoute: typeof McpSseRoute
   V1SplatRoute: typeof V1SplatRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
@@ -203,6 +211,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AgentRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/docs': {
+      id: '/docs'
+      path: '/docs'
+      fullPath: '/docs'
+      preLoaderRoute: typeof DocsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/guide': {
       id: '/guide'
       path: '/guide'
@@ -216,27 +231,6 @@ declare module '@tanstack/react-router' {
       fullPath: '/help'
       preLoaderRoute: typeof HelpRouteImport
       parentRoute: typeof rootRouteImport
-    }
-    '/docs': {
-      id: '/docs'
-      path: '/docs'
-      fullPath: '/docs'
-      preLoaderRoute: typeof DocsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/docs/': {
-      id: '/'
-      path: '/'
-      fullPath: '/docs/'
-      preLoaderRoute: typeof DocsIndexRouteImport
-      parentRoute: typeof DocsRoute
-    }
-    '/docs/$slug': {
-      id: '/$slug'
-      path: '/$slug'
-      fullPath: '/docs/$slug'
-      preLoaderRoute: typeof DocsSlugRouteImport
-      parentRoute: typeof DocsRoute
     }
     '/lab': {
       id: '/lab'
@@ -259,6 +253,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ReleasesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/docs/': {
+      id: '/docs/'
+      path: '/'
+      fullPath: '/docs/'
+      preLoaderRoute: typeof DocsIndexRouteImport
+      parentRoute: typeof DocsRoute
+    }
+    '/docs/$slug': {
+      id: '/docs/$slug'
+      path: '/$slug'
+      fullPath: '/docs/$slug'
+      preLoaderRoute: typeof DocsSlugRouteImport
+      parentRoute: typeof DocsRoute
+    }
+    '/mcp/sse': {
+      id: '/mcp/sse'
+      path: '/mcp/sse'
+      fullPath: '/mcp/sse'
+      preLoaderRoute: typeof McpSseRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/v1/$': {
       id: '/v1/$'
       path: '/v1/$'
@@ -276,15 +291,28 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface DocsRouteChildren {
+  DocsSlugRoute: typeof DocsSlugRoute
+  DocsIndexRoute: typeof DocsIndexRoute
+}
+
+const DocsRouteChildren: DocsRouteChildren = {
+  DocsSlugRoute: DocsSlugRoute,
+  DocsIndexRoute: DocsIndexRoute,
+}
+
+const DocsRouteWithChildren = DocsRoute._addFileChildren(DocsRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AgentRoute: AgentRoute,
+  DocsRoute: DocsRouteWithChildren,
   GuideRoute: GuideRoute,
   HelpRoute: HelpRoute,
-  DocsRoute: DocsRouteWithChildren,
   LabRoute: LabRoute,
   LoginRoute: LoginRoute,
   ReleasesRoute: ReleasesRoute,
+  McpSseRoute: McpSseRoute,
   V1SplatRoute: V1SplatRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
 }

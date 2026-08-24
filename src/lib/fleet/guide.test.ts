@@ -93,3 +93,23 @@ test("console honors /?tab=agent for Settings", () => {
   assert.match(src("src/routes/index.tsx"), /validateSearch/);
   assert.match(src("src/components/fleet-console.tsx"), /initialTab/);
 });
+
+test("Settings reveals MCP plus two ready-to-run CLI installers only with plaintext token", () => {
+  const settings = src("src/components/hub-access.tsx") + src("src/lib/i18n/messages.ts");
+  const server = src("src/lib/fleet/mcp-sse.server.ts");
+  assert.match(settings, /type: "sse"/);
+  assert.match(settings, /\/mcp\/sse/);
+  assert.match(settings, /Authorization: `Bearer \$\{token\}`/);
+  assert.match(settings, /curl -fsSL/);
+  assert.match(settings, /install\.sh/);
+  assert.match(settings, /scriptblock.*irm/);
+  assert.match(settings, /install\.ps1/);
+  assert.match(settings, /secret && origin/);
+  assert.match(settings, /ReadySetup origin=\{origin\} token=\{secret\}/);
+  assert.match(settings, /href="\/releases"/);
+  assert.match(server, /highSecAuthorization/);
+  assert.match(server, /handleHubHttp/);
+  assert.match(server, /createSessionCorrTracker/);
+  assert.match(server, /origin not allowed/);
+  assert.doesNotMatch(server, /searchParams\.get\(["']token["']\)/i);
+});

@@ -12,6 +12,89 @@ function copy(text: string) {
 
 type Prompt = "confirm" | "busy" | "shown" | null;
 
+function shellQuote(value: string) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function powershellQuote(value: string) {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function CopyBlock({ label, text }: { label: string; text: string }) {
+  const { t } = useI18n();
+  return (
+    <div>
+      <p className="mb-2 text-xs text-subtle">{label}</p>
+      <div className="relative">
+        <pre className="max-h-72 overflow-auto rounded-md border border-border bg-elevated p-4 pr-20 font-mono text-xs leading-relaxed text-muted">
+          {text}
+        </pre>
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          className="absolute top-2 right-2"
+          onClick={() => {
+            void copy(text).then(() => toast.message(t("hub.copied")));
+          }}
+        >
+          {t("hub.copy")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function ReadySetup({ origin, token }: { origin: string; token: string }) {
+  const { t } = useI18n();
+  const base = origin.replace(/\/+$/, "");
+  const posixInstall = `curl -fsSL ${shellQuote(`${base}/install.sh`)} | sh -s -- --hub ${shellQuote(base)} --token ${shellQuote(token)} --permit ask`;
+  const windowsInstall = `& ([scriptblock]::Create((irm ${powershellQuote(`${base}/install.ps1`)}))) -Hub ${powershellQuote(base)} -Token ${powershellQuote(token)} -Permit ask`;
+  const mcpSseConfig = JSON.stringify(
+    {
+      mcpServers: {
+        fleet: {
+          type: "sse",
+          url: `${base}/mcp/sse`,
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      },
+    },
+    null,
+    2,
+  );
+
+  return (
+    <div className="grid gap-6">
+      <div className="grid gap-3">
+        <div>
+          <h3 className="text-sm font-medium">{t("hub.quickTitle")}</h3>
+          <p className="mt-1 max-w-3xl text-sm text-muted">{t("hub.quickBody")}</p>
+        </div>
+        <div className="grid gap-3 lg:grid-cols-2">
+          <CopyBlock label={t("hub.posixInstall")} text={posixInstall} />
+          <CopyBlock label={t("hub.windowsInstall")} text={windowsInstall} />
+        </div>
+        <p className="text-xs text-warn">{t("hub.shellHistory")}</p>
+        <p className="text-sm text-muted">
+          {t("hub.desktopHint")}{" "}
+          <a href="/releases" className="underline underline-offset-4 hover:text-fg">
+            {t("hub.desktopLink")}
+          </a>
+        </p>
+      </div>
+
+      <div className="grid gap-3 border-t border-border pt-6">
+        <div>
+          <h3 className="text-sm font-medium">{t("hub.mcpSseTitle")}</h3>
+          <p className="mt-1 max-w-3xl text-sm text-muted">{t("hub.mcpSseBody")}</p>
+        </div>
+        <CopyBlock label={t("hub.mcpSseConfig")} text={mcpSseConfig} />
+      </div>
+    </div>
+  );
+}
+
 function Anatomy({ token }: { token: string }) {
   const { t } = useI18n();
   const view = inspectTokenV1(token);
@@ -134,7 +217,11 @@ export function HubAccess() {
       </div>
 
       <div className="mt-4 flex flex-wrap gap-2">
-        <Button type="button" disabled={issue.isPending || metaQ.isLoading} onClick={() => startMint()}>
+        <Button
+          type="button"
+          disabled={issue.isPending || metaQ.isLoading}
+          onClick={() => startMint()}
+        >
           {meta?.hasToken ? t("hub.reset") : t("hub.generate")}
         </Button>
         {meta?.hasToken && <p className="self-center text-xs text-subtle">{t("hub.resetHint")}</p>}
@@ -142,13 +229,26 @@ export function HubAccess() {
 
       <p className="mt-4 text-sm text-muted">{t("hub.toolHint")}</p>
 
+      <div className="mt-6 border-t border-border pt-6">
+        {secret && origin ? (
+          <ReadySetup origin={origin} token={secret} />
+        ) : (
+          <div>
+            <h3 className="text-sm font-medium">{t("hub.quickTitle")}</h3>
+            <p className="mt-1 text-sm text-muted">{t("hub.setupNeedsToken")}</p>
+          </div>
+        )}
+      </div>
+
       {prompt ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-5"
           role="dialog"
           aria-modal="true"
         >
-          <div className="max-h-[90vh] w-full max-w-lg overflow-auto rounded-2xl border border-border bg-surface p-6 shadow-lg">
+          <div
+            className={`max-h-[90vh] w-full overflow-auto rounded-2xl border border-border bg-surface p-6 shadow-lg ${prompt === "shown" ? "max-w-5xl" : "max-w-lg"}`}
+          >
             {prompt === "confirm" ? (
               <div className="grid gap-4">
                 <h3 className="text-base font-medium">{t("hub.resetConfirm")}</h3>
@@ -180,6 +280,7 @@ export function HubAccess() {
                   {t("hub.copy")}
                 </Button>
                 <Anatomy token={secret} />
+                {origin ? <ReadySetup origin={origin} token={secret} /> : null}
                 <div className="flex justify-end">
                   <Button type="button" onClick={() => setPrompt(null)}>
                     {t("hub.promptClose")}

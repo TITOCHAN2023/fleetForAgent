@@ -44,6 +44,7 @@
       .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
       input { flex: 1; min-width: 180px; height: 44px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); padding: 0 12px; font: inherit; }
       button { height: 44px; padding: 0 16px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); font: inherit; cursor: pointer; transition: transform 150ms ease, opacity 150ms ease, background-color 170ms ease; }
+      button:disabled { opacity: .45; cursor: default; transform: none; }
       button:active { transform: scale(.98); opacity: .92; }
       button.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
       button.danger { color: var(--bad); }
@@ -103,12 +104,9 @@
         <p id="t-body">Enter the hub address and dial out. No inbound port.</p>
         <p id="t-stay" class="muted">Close this page anytime. The agent stays in the menu bar (Mac, next to the clock) or the tray (Windows, by the clock). Right-click to switch on/off and run policy. CLI: fleet status</p>
         <p class="muted">Device <code id="deviceId">—</code> · Agent <code id="agentVer">—</code></p>
-        <div class="row" style="margin-top:12px">
-          <span id="t-autoupdate">Auto-update</span>
-          <button id="autoupdate">On</button>
-        </div>
         <p id="updateMsg" class="muted"></p>
         <div class="row" style="margin-top:8px">
+          <button id="update" class="primary" style="display:none">Update</button>
           <button id="restart">Restart</button>
         </div>
         <div class="row" style="margin-top:16px">
@@ -163,7 +161,6 @@
           allowSub: "Shell and desktop (screen + mouse/keyboard) run immediately",
           consent: "Needs approval here", approve: "Allow", deny: "Deny", logs: "Logs",
           restart: "Restart", update: "Update",
-          autoupdate: "Auto-update when idle",
         },
         zh: {
           body: "填中枢地址，Agent 会主动连出去。可以用 https://fleet.ginfo.cc，也可以是你自己的 Worker。不需要入站端口。",
@@ -183,7 +180,6 @@
           allowSub: "命令和桌面（看屏+键鼠）都立刻执行",
           consent: "需要当面同意", approve: "同意执行", deny: "拒绝", logs: "运行日志",
           restart: "重启", update: "更新",
-          autoupdate: "空闲时自动更新",
         }
       };
       let locale = localStorage.getItem("fleet-locale") === "zh" ? "zh" : "en";
@@ -232,7 +228,6 @@
         $("deny").textContent = t.deny;
         $("t-logs").textContent = t.logs;
         $("restart").textContent = t.restart;
-        $("t-autoupdate").textContent = t.autoupdate;
         $("en").classList.toggle("on", locale === "en");
         $("zh").classList.toggle("on", locale === "zh");
         requestAnimationFrame(syncSegments);
@@ -261,7 +256,6 @@
         $("conn").textContent = conn[0];
         $("conn").className = "badge " + conn[1];
         $("enabled").textContent = s.enabled ? t.on : t.offsw;
-        $("autoupdate").textContent = s.autoUpdate ? t.on : t.offsw;
         if (s.hubInput) $("hub").value = s.hubInput;
         if (s.hubToken) {
           $("token").placeholder = "saved · " + s.hubToken;
@@ -269,8 +263,14 @@
         $("err").textContent = s.error || "";
         $("deviceId").textContent = s.deviceId || "—";
         $("agentVer").textContent = s.agentVer || "—";
-        if (s.update && s.update.latest && s.update.available) {
-          $("updateMsg").textContent = (s.update.latest || "") + (s.update.phase ? " · " + s.update.phase : "");
+        const armed = !!(s.update && s.update.armed);
+        $("update").style.display = armed ? "" : "none";
+        $("update").disabled = !armed;
+        $("update").textContent = armed && s.update.latest ? t.update + " " + s.update.latest : t.update;
+        if (s.update && (s.update.phase === "error" || s.update.phase && s.update.phase !== "idle" && s.update.phase !== "available")) {
+          $("updateMsg").textContent = (s.update.latest || "") + (s.update.phase ? " · " + s.update.phase : "") + (s.update.error ? " · " + s.update.error : "");
+        } else if (!armed) {
+          $("updateMsg").textContent = "";
         }
         document.querySelectorAll(".level").forEach((b) => b.classList.toggle("on", b.dataset.permit === s.permit));
         if (s.pending) { $("pendingCard").style.display = "block"; $("pendingCmd").textContent = s.pending.command; }
@@ -291,9 +291,9 @@
         $("updateMsg").textContent = I18N[locale].restart + "…";
         await api("/api/restart", {});
       };
-      $("autoupdate").onclick = async () => {
-        const s = await api("/api/state");
-        render(await api("/api/autoupdate", { autoUpdate: !s.autoUpdate }));
+      $("update").onclick = async () => {
+        $("updateMsg").textContent = I18N[locale].update + "…";
+        await api("/api/update", {});
       };
       applyTheme(themePref);
       applyLang();

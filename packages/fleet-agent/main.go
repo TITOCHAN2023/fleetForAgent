@@ -76,19 +76,18 @@ type Envelope struct {
 }
 
 type State struct {
-	Enabled    bool       `json:"enabled"`
-	Permit     Permit     `json:"permit"`
-	HubInput   string     `json:"hubInput"`
-	HubToken   string     `json:"hubToken"`
-	DeviceID   string     `json:"deviceId"`
-	AgentVer   string     `json:"agentVer"`
-	WSS        string     `json:"wss"`
-	Conn       string     `json:"conn"`
-	Error      string     `json:"error"`
-	Logs       []LogLine  `json:"logs"`
-	Pending    *Pending   `json:"pending"`
-	AutoUpdate bool       `json:"autoUpdate"`
-	Update     updateInfo `json:"update"`
+	Enabled  bool       `json:"enabled"`
+	Permit   Permit     `json:"permit"`
+	HubInput string     `json:"hubInput"`
+	HubToken string     `json:"hubToken"`
+	DeviceID string     `json:"deviceId"`
+	AgentVer string     `json:"agentVer"`
+	WSS      string     `json:"wss"`
+	Conn     string     `json:"conn"`
+	Error    string     `json:"error"`
+	Logs     []LogLine  `json:"logs"`
+	Pending  *Pending   `json:"pending"`
+	Update   updateInfo `json:"update"`
 }
 
 type Agent struct {
@@ -120,7 +119,6 @@ type Agent struct {
 	panes               *supervisor
 	hb                  time.Duration
 	restarting          bool
-	autoUpdate          bool
 	updateSig           versionSignal
 }
 
@@ -142,20 +140,25 @@ func (a *Agent) snapshot() State {
 		pending = a.desktopPending
 	}
 	return State{
-		Enabled:    a.enabled,
-		Permit:     a.permit,
-		HubInput:   a.hubInput,
-		HubToken:   a.hubToken,
-		DeviceID:   a.deviceID,
-		AgentVer:   agentVersion,
-		WSS:        a.wss,
-		Conn:       a.conn,
-		Error:      a.err,
-		Logs:       logs,
-		Pending:    pending,
-		AutoUpdate: a.autoUpdate,
-		Update:     updateStatus(),
+		Enabled:  a.enabled,
+		Permit:   a.permit,
+		HubInput: a.hubInput,
+		HubToken: a.hubToken,
+		DeviceID: a.deviceID,
+		AgentVer: agentVersion,
+		WSS:      a.wss,
+		Conn:     a.conn,
+		Error:    a.err,
+		Logs:     logs,
+		Pending:  pending,
+		Update:   a.snapshotUpdateLocked(),
 	}
+}
+
+func (a *Agent) snapshotUpdateLocked() updateInfo {
+	upd := updateStatus()
+	upd.Armed = a.updateArmedLocked()
+	return upd
 }
 
 func (a *Agent) publicSnapshot() State {
@@ -180,12 +183,11 @@ func (a *Agent) inputVerdict() (permitVerdict, string) {
 
 func (a *Agent) save() {
 	b, _ := json.MarshalIndent(map[string]any{
-		"enabled":    a.enabled,
-		"permit":     a.permit,
-		"hubInput":   a.hubInput,
-		"hubToken":   a.hubToken,
-		"deviceId":   a.deviceID,
-		"autoUpdate": a.autoUpdate,
+		"enabled":  a.enabled,
+		"permit":   a.permit,
+		"hubInput": a.hubInput,
+		"hubToken": a.hubToken,
+		"deviceId": a.deviceID,
 	}, "", "  ")
 	_ = os.WriteFile(a.cfgPath, b, 0o600)
 }
@@ -195,29 +197,23 @@ func (a *Agent) load() {
 	if err != nil {
 		a.permit = PermitAsk
 		a.deviceID = newDeviceID()
-		a.autoUpdate = true
 		a.applyEnv(false)
 		a.save()
 		return
 	}
 	var cfg struct {
-		Enabled    bool   `json:"enabled"`
-		Permit     Permit `json:"permit"`
-		HubInput   string `json:"hubInput"`
-		HubToken   string `json:"hubToken"`
-		DeviceID   string `json:"deviceId"`
-		AutoUpdate *bool  `json:"autoUpdate"`
+		Enabled  bool   `json:"enabled"`
+		Permit   Permit `json:"permit"`
+		HubInput string `json:"hubInput"`
+		HubToken string `json:"hubToken"`
+		DeviceID string `json:"deviceId"`
 	}
-	a.autoUpdate = true
 	if json.Unmarshal(b, &cfg) == nil {
 		a.enabled = cfg.Enabled
 		a.permit = cfg.Permit
 		a.hubInput = cfg.HubInput
 		a.hubToken = cfg.HubToken
 		a.deviceID = cfg.DeviceID
-		if cfg.AutoUpdate != nil {
-			a.autoUpdate = *cfg.AutoUpdate
-		}
 	}
 	if a.permit == "" {
 		a.permit = PermitAsk
@@ -254,12 +250,6 @@ func (a *Agent) applyEnv(hadCfg bool) {
 		if runtime.GOOS == "linux" && !hadCfg && strings.TrimSpace(a.hubInput) != "" {
 			a.enabled = true
 		}
-	}
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("FLEET_AUTO_UPDATE"))) {
-	case "1", "true", "yes", "on":
-		a.autoUpdate = true
-	case "0", "false", "no", "off":
-		a.autoUpdate = false
 	}
 }
 
@@ -435,7 +425,7 @@ func (a *Agent) connect(hub string) error {
 	go a.readLoop(ctx, c)
 	go a.coalesceLoop(ctx, c)
 	go a.heartbeatLoop(ctx, c)
-	go a.autoUpdateLoop(ctx)
+	go a.updateArmLoop(ctx)
 	return nil
 }
 
@@ -531,20 +521,16 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 		switch env.Type {
 		case "hello_ok":
 			a.noteHubUpdate(env.Body)
-			go a.maybeAutoUpdate()
 		case "pong":
 			a.noteHubUpdate(env.Body)
-			go a.maybeAutoUpdate()
 		case "ask_heartbeat":
 			a.noteHubUpdate(env.Body)
 			if !a.sendPresence(ctx, c) {
 				return
 			}
-			go a.maybeAutoUpdate()
 		case "ping":
 			a.noteHubUpdate(env.Body)
 			_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "pong", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: env.ID, T: time.Now().UnixMilli(), Body: map[string]any{}})
-			go a.maybeAutoUpdate()
 		case "run":
 			cmd, _ := env.Body["command"].(string)
 			go a.handleRun(ctx, c, env.Corr, cmd, envelopeFingerprint(env.Body))
@@ -872,7 +858,7 @@ func main() {
 
 	dir := fleetHome()
 	_ = os.MkdirAll(dir, 0o700)
-	agent := &Agent{permit: PermitAsk, autoUpdate: true, conn: "offline", cfgPath: configPath(), panes: newSupervisor()}
+	agent := &Agent{permit: PermitAsk, conn: "offline", cfgPath: configPath(), panes: newSupervisor()}
 	agent.load()
 
 	mux := http.NewServeMux()
@@ -984,22 +970,14 @@ func main() {
 		}
 		var req updateRequest
 		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req)
-		if err := startUpdate(agent, req); err != nil {
+		if err := acceptUpdateClick(agent, req); err != nil {
+			if err == errUpdateNotArmed {
+				w.WriteHeader(http.StatusConflict)
+			}
 			writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true, "started": true})
-	})
-	mux.HandleFunc("/api/autoupdate", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			AutoUpdate bool `json:"autoUpdate"`
-		}
-		_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
-		agent.setAutoUpdate(body.AutoUpdate)
-		agent.mu.Lock()
-		s := agent.publicSnapshot()
-		agent.mu.Unlock()
-		writeJSON(w, s)
 	})
 	mux.HandleFunc("/api/rollback", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": true})

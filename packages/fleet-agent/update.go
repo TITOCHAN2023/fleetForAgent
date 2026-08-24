@@ -34,6 +34,7 @@ type updateInfo struct {
 	Current   string `json:"current"`
 	Latest    string `json:"latest,omitempty"`
 	Available bool   `json:"available"`
+	Armed     bool   `json:"armed"`
 	Asset     string `json:"asset,omitempty"`
 	AssetURL  string `json:"assetUrl,omitempty"`
 	SHA256    string `json:"sha256,omitempty"`

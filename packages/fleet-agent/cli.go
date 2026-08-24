@@ -24,7 +24,7 @@ func isCLICommand(name string) bool {
 	case "help", "-h", "--help", "version", "--version",
 		"status", "start", "stop", "quit", "restart",
 		"enable", "disable", "permit", "connect",
-		"approve", "deny", "install", "update", "rollback", "autoupdate":
+		"approve", "deny", "install", "update", "rollback":
 		return true
 	default:
 		return false
@@ -56,8 +56,6 @@ func runCLI(args []string) int {
 		err = cliUpdate(rest)
 	case "rollback":
 		err = cliRollback()
-	case "autoupdate":
-		err = cliAutoUpdate(rest)
 	case "enable":
 		err = cliEnabled(true)
 	case "disable":
@@ -96,7 +94,7 @@ CLI and UI share one state. Do not edit config.json while it runs.
   fleet quit                 exit the daemon
   fleet restart              this process respawns on its own listen addr
   fleet update [--check] [--force] [--url URL] [--sha256 HEX]
-  fleet autoupdate on|off    persist the idle auto-update toggle (default on)
+               same as the settings/tray Update button (armed by heartbeat)
   fleet rollback             swap in the previous binary and restart
   fleet status [--json]
   fleet enable | disable
@@ -280,19 +278,6 @@ func cliUpdate(args []string) error {
 	return cliStatus(nil)
 }
 
-func cliAutoUpdate(args []string) error {
-	if len(args) < 1 || (args[0] != "on" && args[0] != "off") {
-		return fmt.Errorf("usage: fleet autoupdate on|off")
-	}
-	if !agentRunning() {
-		return fmt.Errorf("agent not running; fleet start")
-	}
-	if err := postJSON("/api/autoupdate", map[string]bool{"autoUpdate": args[0] == "on"}); err != nil {
-		return err
-	}
-	return cliStatus(nil)
-}
-
 func cliRollback() error {
 	if !agentRunning() {
 		return fmt.Errorf("agent not running; fleet start")
@@ -316,6 +301,7 @@ func printUpdateInfo(info updateInfo) {
 		fmt.Println("asset:  ", info.Asset)
 	}
 	fmt.Println("available:", info.Available)
+	fmt.Println("armed:    ", info.Armed)
 	if info.Error != "" {
 		fmt.Println("error:  ", info.Error)
 	}

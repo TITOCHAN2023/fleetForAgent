@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -10,8 +11,8 @@ import (
 )
 
 const (
-	defaultUpdateFresh  = 10 * time.Minute
-	autoUpdatePollEvery = 15 * time.Second
+	defaultUpdateFresh = 10 * time.Minute
+	updateArmPollEvery = 15 * time.Second
 )
 
 type versionSignal struct {
@@ -22,12 +23,14 @@ type versionSignal struct {
 	Seen    time.Time
 }
 
-type autoUpdateDecision struct {
-	Apply  bool
+type updateArmDecision struct {
+	Armed  bool
 	Reason string
 }
 
 var (
+	errUpdateNotArmed = fmt.Errorf("update: button not armed")
+
 	channelMu   sync.Mutex
 	channelBase string
 )
@@ -76,26 +79,35 @@ func stringFromAny(v any) string {
 	return strings.TrimSpace(s)
 }
 
-func decideAutoUpdate(toggle, idle bool, current string, sig versionSignal, now time.Time, fresh time.Duration) autoUpdateDecision {
-	if !toggle {
-		return autoUpdateDecision{Reason: "toggle_off"}
-	}
+// decideUpdateArm is the product gate for the settings/tray Update button.
+// Heartbeat only detects; a click applies. Armed only when a newer version
+// was seen within fresh AND the agent is idle.
+func decideUpdateArm(idle bool, current string, sig versionSignal, now time.Time, fresh time.Duration) updateArmDecision {
 	if sig.Version == "" || sig.Seen.IsZero() {
-		return autoUpdateDecision{Reason: "no_signal"}
+		return updateArmDecision{Reason: "no_signal"}
 	}
 	if !versionGreater(sig.Version, current) {
-		return autoUpdateDecision{Reason: "not_newer"}
+		return updateArmDecision{Reason: "not_newer"}
 	}
 	if fresh <= 0 {
 		fresh = defaultUpdateFresh
 	}
 	if now.Sub(sig.Seen) > fresh {
-		return autoUpdateDecision{Reason: "stale"}
+		return updateArmDecision{Reason: "stale"}
 	}
 	if !idle {
-		return autoUpdateDecision{Reason: "busy"}
+		return updateArmDecision{Reason: "busy"}
 	}
-	return autoUpdateDecision{Apply: true, Reason: "apply"}
+	return updateArmDecision{Armed: true, Reason: "armed"}
+}
+
+func updateBusyPhase(phase string) bool {
+	switch phase {
+	case "checking", "downloading", "verifying", "staging", "restarting":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *supervisor) busy() bool {
@@ -133,6 +145,19 @@ func (a *Agent) isIdleLocked() bool {
 	return !a.panes.busy()
 }
 
+func (a *Agent) updateArmedLocked() bool {
+	if updateBusyPhase(updateStatus().Phase) {
+		return false
+	}
+	return decideUpdateArm(a.isIdleLocked(), agentVersion, a.updateSig, time.Now(), updateFreshWindow()).Armed
+}
+
+func (a *Agent) updateArmedNow() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.updateArmedLocked()
+}
+
 func (a *Agent) noteHubUpdate(body map[string]any) {
 	sig, ok := parseVersionSignal(body, time.Now())
 	if !ok {
@@ -162,44 +187,33 @@ func (a *Agent) noteHubUpdate(body map[string]any) {
 			}
 		}
 	})
+	a.refreshUpdateArm()
 }
 
-func (a *Agent) maybeAutoUpdate() {
+func (a *Agent) refreshUpdateArm() {
 	a.mu.Lock()
-	toggle := a.autoUpdate
-	idle := a.isIdleLocked()
-	sig := a.updateSig
-	enabled := a.enabled
+	armed := a.updateArmedLocked()
 	a.mu.Unlock()
-	if !enabled {
-		return
-	}
-	d := decideAutoUpdate(toggle, idle, agentVersion, sig, time.Now(), updateFreshWindow())
-	if !d.Apply {
-		return
-	}
-	req := updateRequest{Force: true, URL: sig.URL, SHA256: sig.SHA256}
-	if err := startUpdate(a, req); err != nil && !strings.Contains(err.Error(), "already running") {
-		a.mu.Lock()
-		a.log("warn", "auto-update: "+err.Error())
-		a.mu.Unlock()
-	}
+	setUpdateStatus(func(s *updateInfo) {
+		s.Armed = armed
+	})
+	a.pushUI()
 }
 
-func autoUpdatePoll() time.Duration {
+func updateArmPoll() time.Duration {
 	if v := strings.TrimSpace(os.Getenv("FLEET_UPDATE_POLL_S")); v != "" {
 		n, err := strconv.Atoi(v)
 		if err == nil && n > 0 {
 			return time.Duration(n) * time.Second
 		}
 	}
-	return autoUpdatePollEvery
+	return updateArmPollEvery
 }
 
-func (a *Agent) autoUpdateLoop(ctx context.Context) {
-	t := time.NewTicker(autoUpdatePoll())
+func (a *Agent) updateArmLoop(ctx context.Context) {
+	t := time.NewTicker(updateArmPoll())
 	defer t.Stop()
-	a.maybeAutoUpdate()
+	a.refreshUpdateArm()
 	for {
 		select {
 		case <-ctx.Done():
@@ -207,24 +221,33 @@ func (a *Agent) autoUpdateLoop(ctx context.Context) {
 		case <-t.C:
 			a.mu.Lock()
 			c := a.ws
-			on := a.autoUpdate
 			a.mu.Unlock()
-			if on && c != nil {
+			if c != nil {
 				_ = a.sendPresence(ctx, c)
 			}
-			a.maybeAutoUpdate()
+			a.refreshUpdateArm()
 		}
 	}
 }
 
-func (a *Agent) setAutoUpdate(on bool) {
-	a.mu.Lock()
-	a.autoUpdate = on
-	a.save()
-	a.log("info", map[bool]string{true: "auto-update on", false: "auto-update off"}[on])
-	a.mu.Unlock()
-	a.pushUI()
-	if on {
-		go a.maybeAutoUpdate()
+// acceptUpdateClick is the settings/tray/CLI Update action. Heartbeat never
+// calls this. --force or an explicit URL is an operator override.
+func acceptUpdateClick(a *Agent, req updateRequest) error {
+	if req.Check {
+		return startUpdate(a, req)
 	}
+	explicit := req.Force || strings.TrimSpace(req.URL) != ""
+	if !explicit && !a.updateArmedNow() {
+		return errUpdateNotArmed
+	}
+	a.mu.Lock()
+	sig := a.updateSig
+	a.mu.Unlock()
+	if strings.TrimSpace(req.URL) == "" {
+		req.URL = sig.URL
+		if strings.TrimSpace(req.SHA256) == "" {
+			req.SHA256 = sig.SHA256
+		}
+	}
+	return startUpdate(a, req)
 }

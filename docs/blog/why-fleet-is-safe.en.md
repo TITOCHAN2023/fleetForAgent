@@ -26,6 +26,17 @@ The computers do not join a shared virtual network. Each device maintains its ow
 
 Operating system maintenance remains necessary. Fleet simply avoids opening another path from the public internet just to gain remote control.
 
+```mermaid
+flowchart TD
+  accTitle: How a remote request reaches a computer without an inbound port
+  accDescr: The computer first establishes an outbound connection. The operator gives a request to Fleet, which sends it back along the connection the computer already opened. An internet scan does not gain a new inbound device port.
+  A["Computer connects outward"] --> B["Fleet keeps the established connection"]
+  B --> C["The operator later submits a request"]
+  C --> D["Fleet checks the request"]
+  D --> E["Request returns along that connection"]
+  E --> F["The device never needs an inbound port"]
+```
+
 ## The long-lived credential does not travel repeatedly
 
 After signing in, a user generates a Hub token and gives it to their own Agents and MCP tools. The plaintext is shown once. The server keeps a hash of the important secret inside it and uses that hash when checking later proofs.
@@ -36,6 +47,18 @@ A proof captured from the network or a log cannot simply be replayed on the next
 
 The user can reset the Hub token at any time. Resetting replaces the old authentication material and disconnects the account's live device connections. The old token stops working immediately, and every Agent and MCP client needs the new token before it can reconnect.
 
+```mermaid
+flowchart TD
+  accTitle: How a one-time proof prevents reuse
+  accDescr: The client obtains short-lived verification material and confirms the site's identity, then creates a proof for the current request only. A used, expired, or wrong-site proof is refused.
+  A["Obtain short-lived verification material"] --> B["Confirm the expected Fleet site"]
+  B --> C["Create a one-time proof for this request"]
+  C --> D{"Is the proof fresh and unused?"}
+  D -->|"Yes"| E["Continue with this request"]
+  E --> F["Proof becomes invalid immediately"]
+  D -->|"No"| G["Refuse the request"]
+```
+
 ## Each account reaches only its own devices
 
 When a device first connects, Fleet assigns it to the account that presented a valid token. Once that ownership is established, another account cannot take the device over by presenting the same device identifier.
@@ -43,6 +66,17 @@ When a device first connects, Fleet assigns it to the account that presented a v
 Fleet checks the account-to-device relationship again when listing devices or sending an operation. The stored device record is one check, and the current live connection is another. A missed check in one place does not give a message a path through the other.
 
 The device directory and control interface do not return device IPs. A user sees enough information to choose a computer, including its name, operating system, online status, and Agent version. Like any website, Fleet may still produce ordinary web access logs. That is separate from publishing controlled-computer IPs through the device interface.
+
+```mermaid
+flowchart TD
+  accTitle: How Fleet keeps a request inside the current account
+  accDescr: Fleet checks the account stored with the device and then checks the current live connection. The request reaches the device only when both belong to the current account; otherwise it is refused.
+  A["Current account sends a request"] --> B["Check the device's account ownership"]
+  B --> C["Check the current live connection"]
+  C --> D{"Do both belong to this account?"}
+  D -->|"Yes"| E["Send to the selected device"]
+  D -->|"No"| F["Refuse the request"]
+```
 
 ## Permission ends on the device
 
@@ -59,6 +93,20 @@ Desktop control is more sensitive than reading command output. In approval mode,
 Those desktop grants last only for the current connection. Disconnecting the device or changing its local permission clears them. A later desktop session must follow the permission currently set on the machine.
 
 Fleet also blocks some common destructive commands to catch mistakes such as shutting down or formatting a disk. Overly broad deletion attempts are rejected as well. This is a guard against slips, not a substitute for local permission, and it does not make automatic execution low risk.
+
+```mermaid
+flowchart TD
+  accTitle: Why seeing the screen does not allow control
+  accDescr: Screen viewing and mouse or keyboard control receive separate permission at the computer. Approval to view still does not allow clicks or typing. Temporary grants are cleared when the connection ends or local permission changes.
+  A["Desktop request reaches the computer"] --> B{"View or control?"}
+  B -->|"View only"| C["Approve screen viewing at the computer"]
+  C --> D["Remote side can only see the display"]
+  B -->|"Mouse or keyboard"| E["Approve control separately"]
+  E --> F["Remote side can now click or type"]
+  D --> G["Connection ends or local permission changes"]
+  F --> G
+  G --> H["Temporary grants are cleared"]
+```
 
 ## The limits users should know
 

@@ -18,6 +18,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const BLOG_SRC = join(ROOT, "docs/blog");
 const OUTS = [join(ROOT, "public/blog"), join(ROOT, "packages/fleet-worker/public/blog")];
+const MERMAID_SRC = join(ROOT, "node_modules/mermaid/dist/mermaid.min.js");
+const WORKER_MERMAID = join(ROOT, "packages/fleet-worker/public/mermaid.min.js");
 
 const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"]);
 
@@ -221,7 +223,14 @@ export function packBlog({ srcDir = BLOG_SRC, outs = OUTS } = {}) {
   return { posts: posts.length, outs };
 }
 
+export function packWorkerMermaid() {
+  if (!existsSync(MERMAID_SRC)) throw new Error("mermaid runtime is missing; run npm install");
+  copyFileSync(MERMAID_SRC, WORKER_MERMAID);
+  return WORKER_MERMAID;
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const r = packBlog();
+  packWorkerMermaid();
   console.log(`packed ${r.posts} posts`);
 }

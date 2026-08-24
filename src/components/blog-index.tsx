@@ -11,7 +11,12 @@ export function BlogIndex() {
     <div className="mx-auto max-w-[42rem]">
       <p className="text-sm font-medium tracking-[0.18em] text-muted uppercase">{t("docs.kicker")}</p>
       <h1 className="mt-4 text-4xl font-semibold tracking-tight md:text-5xl">{t("docs.title")}</h1>
-      <p className="mt-4 text-base leading-relaxed text-muted">{t("docs.lead")}</p>
+      <p
+        lang={locale === "zh" ? "zh-CN" : "en"}
+        className="mt-4 font-hand text-lg leading-relaxed text-muted"
+      >
+        {t("docs.lead")}
+      </p>
       {q.isPending ? (
         <p className="mt-16 text-sm text-subtle">{t("docs.loading")}</p>
       ) : posts.length === 0 ? (
@@ -28,12 +33,24 @@ export function BlogIndex() {
                 params={{ slug: p.slug }}
                 className="group flex flex-col gap-2 py-7 sm:flex-row sm:items-baseline sm:gap-10"
               >
-                <time className="w-28 shrink-0 font-mono text-xs tracking-wide text-subtle">{p.date || "—"}</time>
+                <time
+                  lang={locale === "zh" ? "zh-CN" : "en"}
+                  className="w-28 shrink-0 font-hand text-sm text-subtle"
+                >
+                  {p.date || "—"}
+                </time>
                 <span className="min-w-0">
                   <span className="text-lg font-medium tracking-tight text-fg group-hover:underline group-hover:underline-offset-4">
                     {title}
                   </span>
-                  {summary ? <span className="mt-1 block text-sm leading-relaxed text-muted">{summary}</span> : null}
+                  {summary ? (
+                    <span
+                      lang={locale === "zh" ? "zh-CN" : "en"}
+                      className="mt-1 block font-hand text-base leading-relaxed text-muted"
+                    >
+                      {summary}
+                    </span>
+                  ) : null}
                 </span>
               </Link>
             </li>

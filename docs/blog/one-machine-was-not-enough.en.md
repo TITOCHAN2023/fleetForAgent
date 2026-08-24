@@ -33,6 +33,18 @@ That extra step matters because the list changes. An account with one computer t
 
 The selected device belongs to the current AI tool session. A web console and another AI client can each keep their own target without silently changing the other. Once the AI has selected a computer, later actions can continue there until the user chooses a different one.
 
+```mermaid
+flowchart TD
+  accTitle: How Fleet avoids sending an operation to the wrong computer
+  accDescr: If the current session has no selected computer, Fleet first requires the device directory to be viewed and one computer to be chosen explicitly. Later operations go only to that computer until the user chooses again.
+  A["Prepare an operation"] --> B{"Has this session selected a computer?"}
+  B -->|"No"| C["View the account's device directory"]
+  C --> D["Choose one computer explicitly"]
+  D --> E["Send the operation to that computer"]
+  B -->|"Yes"| E
+  E --> F["Choose again when the target should change"]
+```
+
 ## Deliver a command once
 
 AI clients usually limit how long a tool call may wait. A build or dependency installation can run beyond that limit, and a batch job may take much longer. When the result does not arrive in time, a model can easily send the same command again.
@@ -40,6 +52,18 @@ AI clients usually limit how long a tool call may wait. A build or dependency in
 Fleet separates starting a job from waiting for its result. Once the device accepts the command, Fleet remembers that job. If the wait ends, the job is simply still running. The AI follows the original job instead of starting an identical process.
 
 Cancelling a wait does not kill the remote job either. A brief network interruption or the end of one tool call leaves the target computer to finish its work. After reconnecting, the operator can continue reading the same job and collect its result.
+
+```mermaid
+flowchart TD
+  accTitle: How a long job avoids running twice
+  accDescr: The command is delivered once. After the device accepts it, the job keeps running there. A finished wait or network interruption leads back to the same job, and its single final result is collected when ready.
+  A["Deliver the command once"] --> B["Device accepts the job"]
+  B --> C["Job keeps running on the device"]
+  C --> D{"Is the result ready?"}
+  D -->|"Not yet"| E["Keep following the same job"]
+  E --> D
+  D -->|"Finished"| F["Collect the final result"]
+```
 
 ## The job stays on the target device
 
@@ -54,3 +78,14 @@ The hub only forwards messages. It does not keep a local process open for every 
 Delivering a job to a device does not force that device to run it. Every computer keeps its own permission setting. A user can turn remote execution off or require approval at the machine. Commands run immediately only after the user has deliberately enabled automatic execution.
 
 Desktop control follows the same local decision. Viewing the display and controlling the mouse or keyboard receive separate permission, so approval to look does not quietly grant input. The hub can report the setting chosen on the device, but it cannot remotely loosen it.
+
+```mermaid
+flowchart TD
+  accTitle: Who decides after a request reaches the computer
+  accDescr: Local permission still applies after a request reaches the selected computer. Off refuses it, approval mode waits for consent at the machine, and only automatic execution runs it immediately.
+  A["Request reaches the selected computer"] --> B{"Local execution permission"}
+  B -->|"Off"| C["Refuse the request"]
+  B -->|"Approval"| D["Wait for consent at the computer"]
+  D --> E["Run this request"]
+  B -->|"Automatic"| E
+```

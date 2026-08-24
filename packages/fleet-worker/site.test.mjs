@@ -47,10 +47,48 @@ test("hub site explains multi-os fleet and ships a Help page", () => {
   assert.match(html, /user\.ops/);
 });
 
-test("landing keeps sign-in focused and navigation in the header", () => {
-  assert.match(html, /class="login-panel"/);
-  assert.match(html, /class="btn primary provider" href="\/v1\/auth\/google"/);
-  assert.match(html, /class="btn provider" href="\/v1\/auth\/x"/);
-  assert.doesNotMatch(html, /data-go="\/help" style="text-align:center"/);
-  assert.doesNotMatch(html, /data-go="\/docs" style="text-align:center"/);
+test("landing pairs Help with Google and Docs with X", () => {
+  const homeView = html.slice(html.indexOf("function homeView()"), html.indexOf("function pickBlog"));
+  assert.match(html, /class="login-actions"/);
+  assert.match(html, /class="btn primary" href="\/v1\/auth\/google"/);
+  assert.match(html, /class="btn" href="\/v1\/auth\/x"/);
+  assert.match(html, /href="\/help" data-go="\/help">\$\{t\("help"\)\} <span aria-hidden="true">→<\/span>/);
+  assert.match(html, /href="\/docs" data-go="\/docs">\$\{t\("docs"\)\} <span aria-hidden="true">→<\/span>/);
+  assert.match(html, /hero: "One tool for every computer anywhere\."/);
+  assert.match(html, /class="lead hand-copy">\$\{t\("body"\)\}/);
+  assert.match(html, /Excalifont-Latin\.woff2/);
+  assert.match(html, /@chinese-fonts\/xiaolai@3\.0\.0/);
+  assert.match(html, /font-family: "Xiaolai SC"/);
+  assert.doesNotMatch(homeView, /class="kicker"/);
+  assert.doesNotMatch(html, /class="login-panel"/);
+  assert.doesNotMatch(html, /provider-mark/);
+});
+
+test("blog Mermaid diagrams load lazily and fail closed", () => {
+  assert.match(html, /\.blog-prose \.blog-mermaid/);
+  assert.match(html, /querySelectorAll\("\.blog-mermaid"\)/);
+  assert.match(html, /script\.src = "\/mermaid\.min\.js"/);
+  assert.match(html, /securityLevel: "strict"/);
+  assert.match(html, /suppressErrorRendering: true/);
+  assert.match(html, /theme: "base"/);
+  assert.match(html, /htmlLabels: true/);
+  assert.match(html, /themeVariables:/);
+  assert.match(html, /foreignObject > div/);
+  assert.match(html, /class="blog-cta"/);
+  assert.match(html, /class="subtle hand-copy"/);
+  assert.match(html, /class="lead hand-copy"/);
+  assert.match(html, /class="btn primary" href="\/" data-go="\/"/);
+  assert.match(html, /docsTryAction: "Try Fleet"/);
+  assert.match(html, /void renderBlogMermaid\(\)/);
+  assert.match(html, /block\.innerHTML = fallback/);
+  const runtime = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "public/mermaid.min.js"),
+  );
+  assert.ok(runtime.byteLength > 1_000_000);
+  const handFont = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "public/fonts/Excalifont-Latin.woff2"),
+  );
+  assert.ok(handFont.byteLength > 20_000);
+  const inlineScripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+  assert.doesNotThrow(() => new Function(inlineScripts.at(-1)?.[1] || ""));
 });

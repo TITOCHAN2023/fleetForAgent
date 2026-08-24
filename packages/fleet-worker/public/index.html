@@ -11,7 +11,9 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link href="https://cdn.jsdelivr.net/npm/@chinese-fonts/xiaolai@3.0.0/dist/Xiaolai/result.css" rel="stylesheet" />
     <script>
       (function () {
         try {
@@ -25,7 +27,8 @@
       })();
     </script>
     <style>
-      :root { --sans: Inter, ui-sans-serif, system-ui, sans-serif; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      @font-face { font-family: "Excalifont"; src: url("/fonts/Excalifont-Latin.woff2") format("woff2"); font-style: normal; font-weight: 400; font-display: swap; unicode-range: U+20-7e,U+a0-a3,U+a5-a6,U+a8-ab,U+ad-b1,U+b4,U+b6-b8,U+ba-ff,U+131,U+152-153,U+2bc,U+2c6,U+2da,U+2dc,U+304,U+308,U+2013-2014,U+2018-201a,U+201c-201e,U+2020,U+2022,U+2024-2026,U+2030,U+2039-203a,U+20ac,U+2122,U+2212; }
+      :root { --sans: Inter, ui-sans-serif, system-ui, sans-serif; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; --hand: Excalifont, "Bradley Hand", "Segoe Print", cursive; }
       html[data-theme="light"] {
         color-scheme: light;
         --bg:#f7f7f8; --surface:#fff; --elevated:#ececec; --fg:#0d0d0d; --muted:#6e6e80; --subtle:#8e8ea0;
@@ -67,10 +70,14 @@
       h2 { font-size: 22px; font-weight: 600; letter-spacing: -0.03em; margin: 0; }
       h3 { font-size: 16px; font-weight: 600; margin: 0; }
       .lead { margin-top: 20px; max-width: 40em; color: var(--muted); font-size: 16px; }
-      .hero { display: grid; align-items: center; gap: 40px; }
-      .login-panel { border: 1px solid var(--border); border-radius: 24px; background: var(--surface); padding: 20px; box-shadow: var(--shadow); }
-      .login-title { margin: 0 0 12px; color: var(--muted); font-size: 12px; font-weight: 500; letter-spacing: .12em; text-transform: uppercase; }
-      .login-stack { display: grid; gap: 10px; }
+      .hand-copy { font-family: var(--hand); font-weight: 400; letter-spacing: normal; }
+      .hand-copy:lang(zh) { font-family: "Xiaolai SC", "Kaiti SC", STKaiti, KaiTi, cursive; }
+      .hero { text-align: center; padding: 32px 0 16px; }
+      .hero h1, .hero .lead { margin-left: auto; margin-right: auto; }
+      .hero h1 { margin-top: 0; }
+      .login-actions { max-width: 36rem; margin: 32px auto 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+      .login-choice { display: grid; gap: 12px; }
+      .login-actions .btn { width: 100%; min-width: 0; }
       .btn { height: 44px; padding: 0 18px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface);
         color: var(--fg); display: inline-flex; align-items: center; justify-content: center; gap: 8px; transition: transform 150ms ease, opacity 150ms ease, background-color 170ms ease; }
       .btn:hover { background: var(--elevated); }
@@ -80,8 +87,6 @@
       .btn.ghost { background: transparent; border: 0; color: var(--muted); height: auto; padding: 8px; }
       .btn.ghost:hover { color: var(--fg); }
       .btn.danger { color: var(--bad); }
-      .btn.provider { height: 48px; display: grid; grid-template-columns: 24px 1fr 24px; border-radius: 12px; padding: 0 12px; }
-      .provider-mark { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 999px; background: color-mix(in srgb, currentColor 10%, transparent); font-size: 12px; font-weight: 600; }
       .muted { color: var(--muted); font-size: 14px; }
       .subtle { color: var(--subtle); font-size: 12px; }
       .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px; box-shadow: var(--shadow); }
@@ -89,8 +94,9 @@
       .grid-4 { display: grid; gap: 12px; }
       @media (min-width: 700px) { .grid-2 { grid-template-columns: 1fr 1fr; } .grid-4 { grid-template-columns: repeat(4, 1fr); } }
       .fan { display: grid; gap: 12px; }
-      @media (min-width: 800px) {
-        .hero { grid-template-columns: minmax(0, 1fr) 22rem; gap: 56px; }
+      @media (max-width: 639px) {
+        .hero { padding-top: 8px; }
+        .login-actions { max-width: 22rem; grid-template-columns: 1fr; }
       }
       @media (min-width: 860px) {
         .fan { grid-template-columns: 1fr 16px 1.15fr 16px 1fr; align-items: start; }
@@ -132,7 +138,8 @@
       .blog-list li { border-top: 1px solid var(--border); }
       .blog-list a { display: flex; flex-direction: column; gap: 8px; padding: 28px 0; color: inherit; }
       @media (min-width: 640px) { .blog-list a { flex-direction: row; gap: 40px; align-items: baseline; } }
-      .blog-list a .when { width: 7rem; flex-shrink: 0; font-family: var(--mono); font-size: 12px; letter-spacing: 0.04em; color: var(--subtle); }
+      .blog-list a .when { width: 7rem; flex-shrink: 0; font-family: var(--hand); font-size: 14px; color: var(--subtle); }
+      .blog-list a .when:lang(zh) { font-family: "Xiaolai SC", "Kaiti SC", STKaiti, KaiTi, cursive; }
       .blog-list a strong { font-size: 18px; font-weight: 500; letter-spacing: -0.03em; }
       .blog-list a:hover strong { text-decoration: underline; text-underline-offset: 4px; }
       .blog-prose { margin-top: 40px; font-size: 16px; line-height: 1.7; color: var(--muted); max-width: 42rem; }
@@ -144,6 +151,23 @@
       .blog-prose code { font-family: var(--mono); font-size: 0.84em; background: var(--elevated); padding: 0.1em 0.35em; border-radius: 6px; }
       .blog-prose pre { overflow: auto; background: var(--elevated); border: 1px solid var(--border); border-radius: 16px; padding: 16px 18px; }
       .blog-prose pre code { background: none; padding: 0; font-size: 12px; }
+      .blog-prose .blog-mermaid { overflow-x: auto; margin: 1.4em 0 0; border: 1px solid var(--border); border-radius: 16px; background: color-mix(in srgb, var(--surface) 82%, var(--bg)); padding: 18px; }
+      .blog-prose .blog-mermaid-source { margin: 0; border: 0; border-radius: 0; background: transparent; padding: 0; white-space: pre-wrap; }
+      .blog-prose .blog-mermaid[data-mermaid-state="rendered"] { display: flex; justify-content: center; }
+      .blog-prose .blog-mermaid svg { display: block; width: auto; min-width: min(32rem, 100%); max-width: 100%; height: auto; margin: 0 auto; }
+      .blog-prose .blog-mermaid .node rect, .blog-prose .blog-mermaid .cluster rect { rx: 12px !important; ry: 12px !important; }
+      .blog-prose .blog-mermaid .cluster rect { rx: 16px !important; ry: 16px !important; }
+      .blog-prose .blog-mermaid .node rect, .blog-prose .blog-mermaid .node circle, .blog-prose .blog-mermaid .node ellipse, .blog-prose .blog-mermaid .node polygon, .blog-prose .blog-mermaid .node path, .blog-prose .blog-mermaid .cluster rect { filter: none !important; stroke-width: 1px !important; }
+      .blog-prose .blog-mermaid .flowchart-link { stroke-width: 1.25px !important; }
+      .blog-prose .blog-mermaid foreignObject > div { color: var(--fg); font-family: var(--sans); line-height: 1.4; }
+      .blog-prose .blog-mermaid .nodeLabel p, .blog-prose .blog-mermaid .cluster-label p, .blog-prose .blog-mermaid .edgeLabel p { margin: 0; }
+      .blog-prose .blog-mermaid .nodeLabel p { color: var(--fg); font-size: 14px; font-weight: 500; letter-spacing: -.01em; }
+      .blog-prose .blog-mermaid .cluster-label p { color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .02em; }
+      .blog-prose .blog-mermaid .edgeLabel p { border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--muted); padding: 2px 7px; font-size: 11px; font-weight: 500; line-height: 1.35; }
+      .blog-cta { margin-top: 64px; border-top: 1px solid var(--border); padding-top: 32px; display: flex; flex-direction: column; align-items: flex-start; gap: 20px; }
+      .blog-cta p { margin: 0; color: var(--fg); font-size: 16px; font-weight: 500; }
+      .blog-cta .btn { flex-shrink: 0; }
+      @media (min-width: 640px) { .blog-cta { flex-direction: row; align-items: center; justify-content: space-between; } }
       .dl { display: grid; gap: 12px; }
       @media (min-width: 800px) { .dl { grid-template-columns: 1fr 1fr; } }
       @media (prefers-reduced-motion: reduce) {
@@ -159,7 +183,7 @@
         zh: {
           help: "帮助", docs: "文档", downloads: "下载", signOut: "退出", settings: "设置", fleet: "机器", ops: "管理",
           kicker: "fleet.ginfo.cc",
-          hero: "一个工具，连上你所有电脑。随时随地。",
+          hero: "一个工具连接所有电脑随时随地。",
           body: "用本站地址和 token 导入工具。Windows、Linux、macOS 上的 Agent 会通过 WebSocket 主动连出来。",
           cta: "登录后生成 Hub token",
           continueG: "使用 Google 继续", continueX: "使用 X 继续",
@@ -182,6 +206,7 @@
           docsLead: "做 Fleet 时记下的东西。docs/blog/ 里的 markdown 会变成一篇。Help 是怎么用，这里是怎么做成的。",
           docsEmpty: "还没有文章。",
           docsBack: "全部手记",
+          docsTryLead: "准备把 Fleet 用起来？", docsTryAction: "立即体验",
           s1: "1. 登录并生成 Hub token",
           s1b: "设置页生成 token，明文只显示一次。中枢地址就是本站 origin：https://fleet.ginfo.cc。",
           s2: "2. 每台电脑装 Agent",
@@ -213,7 +238,7 @@
         en: {
           help: "Help", docs: "Docs", downloads: "Downloads", signOut: "Sign out", settings: "Settings", fleet: "Machines", ops: "Ops",
           kicker: "fleet.ginfo.cc",
-          hero: "One tool. Every computer. Anywhere.",
+          hero: "One tool for every computer anywhere.",
           body: "Import the MCP tool with this URL and a token. Agents on Windows, Linux, and macOS dial out over WebSocket.",
           cta: "Sign in to mint a Hub token",
           continueG: "Continue with Google", continueX: "Continue with X",
@@ -236,6 +261,7 @@
           docsLead: "Notes from building Fleet. Markdown in docs/blog/ becomes a post. Help is how to use it; this is how it is built.",
           docsEmpty: "Nothing here yet.",
           docsBack: "All notes",
+          docsTryLead: "Ready to put Fleet to work?", docsTryAction: "Try Fleet",
           s1: "1. Sign in and mint a Hub token",
           s1b: "Generate a token under Settings. Plaintext is shown once. Hub address is this origin: https://fleet.ginfo.cc.",
           s2: "2. Install Agent on each computer",
@@ -280,6 +306,113 @@
       };
       const t = (k) => T[state.locale][k];
       const $ = (s) => document.querySelector(s);
+      let mermaidLoader = null;
+      let mermaidRenderEpoch = 0;
+      let mermaidDiagramId = 0;
+
+      function loadMermaid() {
+        if (window.mermaid) return Promise.resolve(window.mermaid);
+        if (!mermaidLoader) {
+          mermaidLoader = new Promise((resolve, reject) => {
+            const script = document.createElement("script");
+            script.src = "/mermaid.min.js";
+            script.defer = true;
+            script.onload = () => window.mermaid ? resolve(window.mermaid) : reject(new Error("Mermaid did not load"));
+            script.onerror = () => reject(new Error("Mermaid failed to load"));
+            document.head.appendChild(script);
+          });
+        }
+        return mermaidLoader;
+      }
+
+      async function renderBlogMermaid() {
+        const epoch = ++mermaidRenderEpoch;
+        const blocks = Array.from(document.querySelectorAll(".blog-mermaid"));
+        if (!blocks.length) return;
+
+        let api;
+        try {
+          api = await loadMermaid();
+        } catch {
+          if (epoch === mermaidRenderEpoch) blocks.forEach((block) => block.dataset.mermaidState = "error");
+          return;
+        }
+        if (epoch !== mermaidRenderEpoch) return;
+
+        const dark = document.documentElement.getAttribute("data-theme") === "dark";
+        const palette = dark ? {
+          background: "#2d2d2d", primary: "#2f2f2f", primaryText: "#ececec", primaryBorder: "#454545",
+          secondary: "#3a3a3a", secondaryBorder: "#505050", tertiary: "#292929", muted: "#b4b4b4", line: "#8f8f8f",
+        } : {
+          background: "#fbfbfc", primary: "#ffffff", primaryText: "#0d0d0d", primaryBorder: "#e5e5e5",
+          secondary: "#ececec", secondaryBorder: "#dedede", tertiary: "#f7f7f8", muted: "#6e6e80", line: "#8e8ea0",
+        };
+        api.initialize({
+          startOnLoad: false,
+          securityLevel: "strict",
+          suppressErrorRendering: true,
+          theme: "base",
+          darkMode: dark,
+          fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
+          themeVariables: {
+            darkMode: dark,
+            background: palette.background,
+            primaryColor: palette.primary,
+            primaryTextColor: palette.primaryText,
+            primaryBorderColor: palette.primaryBorder,
+            secondaryColor: palette.secondary,
+            secondaryTextColor: palette.primaryText,
+            secondaryBorderColor: palette.secondaryBorder,
+            tertiaryColor: palette.tertiary,
+            tertiaryTextColor: palette.muted,
+            tertiaryBorderColor: palette.primaryBorder,
+            lineColor: palette.line,
+            arrowheadColor: palette.muted,
+            textColor: palette.primaryText,
+            nodeBkg: palette.primary,
+            mainBkg: palette.primary,
+            nodeBorder: palette.primaryBorder,
+            nodeTextColor: palette.primaryText,
+            clusterBkg: palette.tertiary,
+            clusterBorder: palette.primaryBorder,
+            defaultLinkColor: palette.line,
+            edgeLabelBackground: palette.background,
+            titleColor: palette.primaryText,
+            fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
+            fontSize: "14px",
+            radius: 12,
+          },
+          htmlLabels: true,
+          maxTextSize: 20000,
+          maxEdges: 200,
+          flowchart: { curve: "linear", nodeSpacing: 36, rankSpacing: 42, useMaxWidth: true },
+        });
+
+        for (const block of blocks) {
+          if (epoch !== mermaidRenderEpoch || !block.isConnected) return;
+          const source = block.dataset.mermaidSource || (block.querySelector(".blog-mermaid-source code") || {}).textContent?.trim() || "";
+          if (!source) {
+            block.dataset.mermaidState = "error";
+            continue;
+          }
+          const fallback = block.innerHTML;
+          block.dataset.mermaidSource = source;
+          block.dataset.mermaidState = "rendering";
+          try {
+            const id = `fleet-worker-mermaid-${Date.now()}-${++mermaidDiagramId}`;
+            const out = await api.render(id, source, block);
+            if (epoch !== mermaidRenderEpoch || !block.isConnected) return;
+            block.innerHTML = out.svg;
+            block.dataset.mermaidState = "rendered";
+            if (out.bindFunctions) out.bindFunctions(block);
+          } catch {
+            if (epoch !== mermaidRenderEpoch || !block.isConnected) return;
+            block.innerHTML = fallback;
+            block.dataset.mermaidState = "error";
+          }
+        }
+      }
+
       function googleMark() {
         return `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1Z"/><path fill="currentColor" opacity=".7" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23Z"/></svg>`;
       }
@@ -487,22 +620,22 @@
         return `${chrome()}
           <div class="wrap">
             <div class="hero">
-              <div>
-                <p class="kicker">${t("kicker")}</p>
-                <h1>${t("hero")}</h1>
-                <p class="lead">${t("body")}</p>
-              </div>
-              <section class="login-panel" aria-label="${t("cta")}">
-                <p class="login-title">${t("cta")}</p>
-                <div class="login-stack">
-                  ${state.err ? `<p class="err">${esc(state.err)}</p>` : ""}
-                  <a class="btn primary provider" href="/v1/auth/google"><span class="provider-mark" aria-hidden="true">G</span><span>${t("continueG")}</span><span aria-hidden="true"></span></a>
-                  <a class="btn provider" href="/v1/auth/x"><span class="provider-mark" aria-hidden="true">X</span><span>${t("continueX")}</span><span aria-hidden="true"></span></a>
+              <h1>${t("hero")}</h1>
+              <p class="lead hand-copy">${t("body")}</p>
+              ${state.err ? `<p class="err" style="margin:20px 0 -20px">${esc(state.err)}</p>` : ""}
+              <div class="login-actions" aria-label="${t("cta")}">
+                <div class="login-choice">
+                  <a class="btn primary" href="/v1/auth/google">${t("continueG")}</a>
+                  <a class="nav-link" href="/help" data-go="/help">${t("help")} <span aria-hidden="true">→</span></a>
                 </div>
-              </section>
+                <div class="login-choice">
+                  <a class="btn" href="/v1/auth/x">${t("continueX")}</a>
+                  <a class="nav-link" href="/docs" data-go="/docs">${t("docs")} <span aria-hidden="true">→</span></a>
+                </div>
+              </div>
             </div>
             <h2 style="margin-top:72px">${t("archTitle")}</h2>
-            <p class="muted" style="margin:8px 0 20px;max-width:40em">${t("archHint")}</p>
+            <p class="muted hand-copy" style="margin:8px 0 20px;max-width:40em;font-size:16px">${t("archHint")}</p>
             ${fan()}
             <h2 style="margin-top:64px">${t("keysTitle")}</h2>
             <div style="margin-top:20px">${keys()}</div>
@@ -523,10 +656,14 @@
           return `${chrome()}
             <div class="wrap blog">
               <a class="nav-link" href="/docs" data-go="/docs">${t("docsBack")}</a>
-              <p class="subtle" style="margin-top:40px;letter-spacing:.16em;text-transform:uppercase;font-family:var(--mono);font-size:11px">${esc(state.blogPost.date || "")}</p>
+              <p class="subtle hand-copy" style="margin-top:40px;font-size:14px">${esc(state.blogPost.date || "")}</p>
               <h1>${esc(copy.title)}</h1>
-              ${copy.summary ? `<p class="lead">${esc(copy.summary)}</p>` : ""}
+              ${copy.summary ? `<p class="lead hand-copy" style="font-size:20px">${esc(copy.summary)}</p>` : ""}
               <div class="blog-prose">${copy.html}</div>
+              <section class="blog-cta" aria-label="${t("docsTryAction")}">
+                <p>${t("docsTryLead")}</p>
+                <a class="btn primary" href="/" data-go="/">${t("docsTryAction")} <span aria-hidden="true">→</span></a>
+              </section>
             </div>`;
         }
         const posts = (state.blogIndex && state.blogIndex.posts) || [];
@@ -534,14 +671,14 @@
           ? `<ul class="blog-list">${posts.map((item) => {
               const title = pickBlog(item.title) || item.slug;
               const summary = pickBlog(item.summary) || "";
-              return `<li><a href="/docs/${encodeURIComponent(item.slug)}" data-go="/docs/${item.slug}"><span class="when">${esc(item.date || "—")}</span><span><strong>${esc(title)}</strong>${summary ? `<span class="muted" style="display:block;margin-top:4px">${esc(summary)}</span>` : ""}</span></a></li>`;
+                  return `<li><a href="/docs/${encodeURIComponent(item.slug)}" data-go="/docs/${item.slug}"><span class="when">${esc(item.date || "—")}</span><span><strong>${esc(title)}</strong>${summary ? `<span class="muted hand-copy" style="display:block;margin-top:4px;font-size:16px">${esc(summary)}</span>` : ""}</span></a></li>`;
             }).join("")}</ul>`
           : `<p class="muted" style="margin-top:48px">${t("docsEmpty")}</p>`;
         return `${chrome()}
           <div class="wrap blog">
             <p class="kicker">${t("kicker")}</p>
             <h1>${t("docsTitle")}</h1>
-            <p class="lead">${t("docsLead")}</p>
+              <p class="lead hand-copy" style="font-size:18px">${t("docsLead")}</p>
             ${list}
           </div>`;
       }
@@ -663,6 +800,7 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
         else root.innerHTML = homeView();
         root.insertAdjacentHTML("beforeend", promptView());
         bind();
+        void renderBlogMermaid();
       }
       function bind() {
         document.querySelectorAll("[data-loc]").forEach((b) => b.onclick = () => {
@@ -672,6 +810,7 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
           applyTheme(b.dataset.themeSet);
           document.querySelectorAll("[data-theme-set]").forEach((x) => x.classList.toggle("on", x.dataset.themeSet === state.themePref));
           syncSegments();
+          void renderBlogMermaid();
         });
         document.querySelectorAll("[data-go]").forEach((b) => b.onclick = (e) => {
           e.preventDefault();
@@ -704,7 +843,7 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
       window.addEventListener("popstate", () => { void loadBlog().then(render); });
       window.addEventListener("resize", syncSegments);
       window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-        if (state.themePref === "system") { applyTheme("system"); syncSegments(); }
+        if (state.themePref === "system") { applyTheme("system"); syncSegments(); void renderBlogMermaid(); }
       });
       boot();
     </script>

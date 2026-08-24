@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { GROK_PROVIDERS, authEnabled, signIn } from "@/lib/auth/client";
 import { Button } from "@/components/ui/button";
 import { ArchFan } from "@/components/arch-fan";
@@ -5,7 +6,7 @@ import { SiteHeader } from "@/components/site-header";
 import { useI18n } from "@/lib/i18n/use-i18n";
 
 export function LoginLanding() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const keys = [
     { t: t("home.k1t"), s: t("home.k1s") },
     { t: t("home.k2t"), s: t("home.k2s") },
@@ -15,56 +16,52 @@ export function LoginLanding() {
   return (
     <main className="min-h-svh bg-bg text-fg">
       <SiteHeader />
-      <div className="mx-auto max-w-5xl px-5 py-16 md:py-24">
-        <div className="grid items-center gap-10 md:grid-cols-[minmax(0,1fr)_22rem] md:gap-14">
-          <div>
-            <p className="text-sm font-medium tracking-[0.18em] text-muted uppercase">
-              {t("home.kicker")}
-            </p>
-            <h1 className="mt-4 max-w-3xl text-4xl font-semibold tracking-tight md:text-6xl">
-              {t("home.hero")}
-            </h1>
-            <p className="mt-5 max-w-2xl text-base leading-relaxed text-muted">{t("home.sub")}</p>
-          </div>
+      <div className="mx-auto max-w-5xl px-5 py-20 text-center md:py-28">
+        <h1 className="mx-auto max-w-4xl text-4xl font-semibold tracking-tight md:text-6xl">
+          {t("home.hero")}
+        </h1>
+        <p
+          lang={locale === "zh" ? "zh-CN" : "en"}
+          className="mx-auto mt-5 max-w-2xl font-hand text-lg leading-relaxed text-muted"
+        >
+          {t("home.sub")}
+        </p>
 
-          <section
-            aria-label={t("home.cta")}
-            className="rounded-3xl border border-border bg-surface p-4 shadow-[var(--shadow)] sm:p-5"
-          >
-            <p className="mb-3 text-xs font-medium tracking-[0.12em] text-muted uppercase">
-              {t("home.cta")}
-            </p>
-            <div className="grid gap-2.5">
-              {authEnabled ? (
-                GROK_PROVIDERS.map((p, index) => (
-                  <Button
-                    key={p.providerId}
-                    type="button"
-                    variant={index === 0 ? "default" : "secondary"}
-                    className="grid h-12 w-full grid-cols-[1.5rem_1fr_1.5rem] rounded-xl px-3"
-                    onClick={() => signIn(p.providerId, { callbackURL: "/" })}
-                  >
-                    <span
-                      aria-hidden="true"
-                      className="grid size-6 place-items-center rounded-full bg-current/10 text-xs font-semibold"
-                    >
-                      {p.label.slice(0, 1).toUpperCase()}
-                    </span>
-                    <span>{t("login.continue", { label: p.label })}</span>
-                    <span aria-hidden="true" />
-                  </Button>
-                ))
-              ) : (
-                <p className="py-3 text-sm text-muted">{t("login.authOff")}</p>
-              )}
-            </div>
-          </section>
+        <div className="mx-auto mt-8 grid max-w-xl gap-3 sm:grid-cols-2">
+          {authEnabled ? (
+            GROK_PROVIDERS.map((p, index) => (
+              <div key={p.providerId} className="grid gap-3">
+                <Button
+                  type="button"
+                  variant={index === 0 ? "default" : "secondary"}
+                  className="h-11 w-full"
+                  onClick={() => signIn(p.providerId, { callbackURL: "/" })}
+                >
+                  {t("login.continue", { label: p.label })}
+                </Button>
+                <Link
+                  to={index === 0 ? "/help" : "/docs"}
+                  className="inline-flex items-center justify-center gap-1 text-sm text-muted transition-colors hover:text-fg"
+                >
+                  {t(index === 0 ? "nav.help" : "nav.docs")}
+                  <span aria-hidden="true">→</span>
+                </Link>
+              </div>
+            ))
+          ) : (
+            <p className="text-sm text-muted sm:col-span-2">{t("login.authOff")}</p>
+          )}
         </div>
       </div>
 
       <section className="mx-auto max-w-5xl px-5 pb-16">
         <h2 className="text-xl font-semibold tracking-tight">{t("home.archTitle")}</h2>
-        <p className="mt-2 mb-6 max-w-2xl text-sm text-muted">{t("home.archHint")}</p>
+        <p
+          lang={locale === "zh" ? "zh-CN" : "en"}
+          className="mt-2 mb-6 max-w-2xl font-hand text-base text-muted"
+        >
+          {t("home.archHint")}
+        </p>
         <ArchFan />
       </section>
 

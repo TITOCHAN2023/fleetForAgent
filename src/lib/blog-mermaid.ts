@@ -5,6 +5,38 @@ type MermaidApi = (typeof import("mermaid"))["default"];
 let mermaidPromise: Promise<MermaidApi> | null = null;
 let diagramId = 0;
 
+function getThemeVariables(theme: ThemeResolved) {
+  const dark = theme === "dark";
+  return {
+    darkMode: dark,
+    background: dark ? "#2d2d2d" : "#fbfbfc",
+    primaryColor: dark ? "#2f2f2f" : "#ffffff",
+    primaryTextColor: dark ? "#ececec" : "#0d0d0d",
+    primaryBorderColor: dark ? "#454545" : "#e5e5e5",
+    secondaryColor: dark ? "#3a3a3a" : "#ececec",
+    secondaryTextColor: dark ? "#ececec" : "#0d0d0d",
+    secondaryBorderColor: dark ? "#505050" : "#dedede",
+    tertiaryColor: dark ? "#292929" : "#f7f7f8",
+    tertiaryTextColor: dark ? "#b4b4b4" : "#6e6e80",
+    tertiaryBorderColor: dark ? "#454545" : "#e5e5e5",
+    lineColor: dark ? "#8f8f8f" : "#8e8ea0",
+    arrowheadColor: dark ? "#b4b4b4" : "#6e6e80",
+    textColor: dark ? "#ececec" : "#0d0d0d",
+    nodeBkg: dark ? "#2f2f2f" : "#ffffff",
+    mainBkg: dark ? "#2f2f2f" : "#ffffff",
+    nodeBorder: dark ? "#454545" : "#e5e5e5",
+    nodeTextColor: dark ? "#ececec" : "#0d0d0d",
+    clusterBkg: dark ? "#292929" : "#f7f7f8",
+    clusterBorder: dark ? "#454545" : "#e5e5e5",
+    defaultLinkColor: dark ? "#8f8f8f" : "#8e8ea0",
+    edgeLabelBackground: dark ? "#2d2d2d" : "#fbfbfc",
+    titleColor: dark ? "#ececec" : "#0d0d0d",
+    fontFamily: '"Inter", ui-sans-serif, system-ui, sans-serif',
+    fontSize: "14px",
+    radius: 12,
+  };
+}
+
 function loadMermaid() {
   mermaidPromise ??= import("mermaid").then((mod) => mod.default);
   return mermaidPromise;
@@ -25,10 +57,11 @@ export async function renderMermaidBlocks(
     startOnLoad: false,
     securityLevel: "strict",
     suppressErrorRendering: true,
-    theme: theme === "dark" ? "dark" : "neutral",
+    theme: "base",
     darkMode: theme === "dark",
     fontFamily: '"Inter", ui-sans-serif, system-ui, sans-serif',
-    htmlLabels: false,
+    themeVariables: getThemeVariables(theme),
+    htmlLabels: true,
     maxTextSize: 20_000,
     maxEdges: 200,
     flowchart: {

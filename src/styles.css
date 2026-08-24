@@ -1,6 +1,17 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+@font-face {
+  font-family: "Excalifont";
+  src: url("/fonts/Excalifont-Latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  unicode-range: U+20-7e, U+a0-a3, U+a5-a6, U+a8-ab, U+ad-b1, U+b4, U+b6-b8, U+ba-ff,
+    U+131, U+152-153, U+2bc, U+2c6, U+2da, U+2dc, U+304, U+308, U+2013-2014, U+2018-201a,
+    U+201c-201e, U+2020, U+2022, U+2024-2026, U+2030, U+2039-203a, U+20ac, U+2122, U+2212;
+}
+
 :root {
   --bg: #f7f7f8;
   --surface: #ffffff;
@@ -36,6 +47,7 @@ html[data-theme="dark"] {
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-hand: "Excalifont", "Bradley Hand", "Segoe Print", cursive;
 
   --color-bg: var(--bg);
   --color-surface: var(--surface);
@@ -88,6 +100,10 @@ html[data-theme="dark"] {
 
   p {
     text-wrap: pretty;
+  }
+
+  .font-hand:lang(zh) {
+    font-family: "Xiaolai SC", "Kaiti SC", STKaiti, KaiTi, cursive;
   }
 
   button:not(:disabled),
@@ -212,6 +228,7 @@ html[data-theme="dark"] {
   }
   .blog-prose .blog-mermaid {
     overflow-x: auto;
+    margin: 1.4em 0 0;
     border: 1px solid var(--border);
     border-radius: 16px;
     background: color-mix(in srgb, var(--surface) 82%, var(--bg));
@@ -236,6 +253,59 @@ html[data-theme="dark"] {
     max-width: 100%;
     height: auto;
     margin: 0 auto;
+  }
+  .blog-prose .blog-mermaid .node rect,
+  .blog-prose .blog-mermaid .cluster rect {
+    rx: 12px !important;
+    ry: 12px !important;
+  }
+  .blog-prose .blog-mermaid .cluster rect {
+    rx: 16px !important;
+    ry: 16px !important;
+  }
+  .blog-prose .blog-mermaid .node rect,
+  .blog-prose .blog-mermaid .node circle,
+  .blog-prose .blog-mermaid .node ellipse,
+  .blog-prose .blog-mermaid .node polygon,
+  .blog-prose .blog-mermaid .node path,
+  .blog-prose .blog-mermaid .cluster rect {
+    filter: none !important;
+    stroke-width: 1px !important;
+  }
+  .blog-prose .blog-mermaid .flowchart-link {
+    stroke-width: 1.25px !important;
+  }
+  .blog-prose .blog-mermaid foreignObject > div {
+    color: var(--fg);
+    font-family: var(--font-sans);
+    line-height: 1.4;
+  }
+  .blog-prose .blog-mermaid .nodeLabel p,
+  .blog-prose .blog-mermaid .cluster-label p,
+  .blog-prose .blog-mermaid .edgeLabel p {
+    margin: 0;
+  }
+  .blog-prose .blog-mermaid .nodeLabel p {
+    color: var(--fg);
+    font-size: 14px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+  }
+  .blog-prose .blog-mermaid .cluster-label p {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  .blog-prose .blog-mermaid .edgeLabel p {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--muted);
+    padding: 2px 7px;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.35;
   }
 }
 

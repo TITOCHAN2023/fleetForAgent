@@ -35,13 +35,15 @@ test("guide architecture sentence is explicit", () => {
   assert.match(tr("guide.arch"), /Windows/);
   assert.match(tr("login.try"), /fleet\.ginfo\.cc/);
   assert.match(tr("login.body"), /CLI/);
-  assert.match(tr("home.hero"), /Every computer/);
+  assert.equal(tr("home.hero"), "One tool for every computer anywhere.");
   assert.equal(tr("nav.help"), "Help");
   assert.equal(tr("nav.docs"), "Docs");
+  assert.equal(tr("docs.tryAction"), "Try Fleet");
   setLocale("zh");
   assert.match(tr("guide.arch"), /连出去/);
   assert.match(tr("login.try"), /fleet\.ginfo\.cc/);
   assert.match(tr("login.body"), /命令行/);
   assert.match(tr("home.hero"), /电脑/);
+  assert.equal(tr("docs.tryAction"), "立即体验");
   setLocale("en");
 });

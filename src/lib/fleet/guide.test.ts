@@ -63,8 +63,9 @@ test("guide documents real env, flags, and placeholder tokens", () => {
   assert.doesNotMatch(guide, /flt_[0-9a-f]{16,}/i);
 });
 
-test("landing and console link to /help", () => {
-  assert.match(src("src/components/login-landing.tsx"), /to="\/help"/);
+test("landing header and console link to /help", () => {
+  assert.match(src("src/components/login-landing.tsx"), /<SiteHeader \/>/);
+  assert.match(src("src/components/site-header.tsx"), /to="\/help"/);
   assert.match(src("src/components/fleet-console.tsx"), /to="\/help"/);
   assert.match(src("src/routes/help.tsx"), /createFileRoute\("\/help"\)/);
   assert.match(src("src/routes/guide.tsx"), /createFileRoute\("\/guide"\)/);
@@ -76,7 +77,7 @@ test("docs is a public blog that compiles docs/blog markdown", () => {
   assert.match(src("src/routes/docs/index.tsx"), /createFileRoute\("\/docs\/"\)/);
   assert.match(src("src/routes/docs/$slug.tsx"), /createFileRoute\("\/docs\/\$slug"\)/);
   assert.match(src("src/components/site-header.tsx"), /to="\/docs"/);
-  assert.match(src("src/components/login-landing.tsx"), /to="\/docs"/);
+  assert.match(src("src/components/login-landing.tsx"), /<SiteHeader \/>/);
   assert.match(src("scripts/pack-blog.mjs"), /docs\/blog/);
   assert.match(src("docs/blog/why-fleet-is-safe.zh.md"), /^---/m);
   assert.match(src("docs/blog/why-fleet-is-safe.en.md"), /^---/m);

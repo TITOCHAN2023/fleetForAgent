@@ -210,6 +210,33 @@ html[data-theme="dark"] {
     font-size: 12px;
     line-height: 1.55;
   }
+  .blog-prose .blog-mermaid {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: color-mix(in srgb, var(--surface) 82%, var(--bg));
+    padding: 18px;
+  }
+  .blog-prose .blog-mermaid-source {
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    padding: 0;
+    white-space: pre-wrap;
+  }
+  .blog-prose .blog-mermaid[data-mermaid-state="rendered"] {
+    display: flex;
+    justify-content: center;
+  }
+  .blog-prose .blog-mermaid svg {
+    display: block;
+    width: auto;
+    min-width: min(32rem, 100%);
+    max-width: 100%;
+    height: auto;
+    margin: 0 auto;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

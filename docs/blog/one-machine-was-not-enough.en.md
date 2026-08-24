@@ -1,99 +1,56 @@
 ---
-title: One machine was not enough
+title: Bringing your own computers into an AI workflow
 date: 2026-08-24
-summary: The grok bot could only touch one machine at a time, and that machine was not mine. I wanted any agent that loads an MCP server to reach all of my own computers, which meant solving dial-out first and then solving models that re-send commands.
+summary: Fleet connects computers you already own to AI and keeps each remote job on the device you chose.
 ---
 
-Fleet started from that bot on grok. It could run commands, one machine at a time, and the machine was its own sandbox.
+AI can already write code and run tests. The machine it can actually use, however, is often a temporary sandbox or the computer running the AI client. If the project and its development environment live somewhere else, the AI cannot reach them.
 
-What I lacked was not a machine. The machines were already here, Windows, Linux, macOS, any arch. What was missing was the layer that lets an agent reach them.
+Fleet began with that mismatch. I already had Windows, Linux, and macOS computers. What I needed was a simple way for the AI client I was using to see which ones were online, select one, and send work to it.
 
-## Why MCP
+## One place for many computers
 
-I did not write a new client. Nobody would have used it, because the good agents already live somewhere else.
+After Fleet Agent is installed, each computer connects outward to the Fleet website. There is no inbound port to open on a home router and no public address required on the device. The operator connects to the same website and sees the computers that belong to the account.
 
-The nice thing about this layer is that it does not care about the host. Any agent that can load an MCP server gets a whole list of machines to work with. Configuration is two values, `FLEET_URL` and `FLEET_TOKEN`, the same pair the Go agent takes. `~/.fleet/mcp.env` gets read too, and it leaves already-set environment variables alone.
+Fleet exposes this through MCP, so people can keep using an AI client they already know. The AI gets a device directory with familiar names, operating systems, and online status. It neither receives nor needs the device IP.
 
-One file is the entry point. With arguments it is a CLI, without them it goes to MCP stdio.
+A Windows PC at the office and a Mac at home can stay on their existing networks. A Linux server joins in the same way. If they can reach the internet, they can appear in one directory without joining a new private network or becoming visible to one another.
 
-```js
-// packages/fleet-tool/index.mjs
-const argv = applyCliDevFlag(process.argv.slice(2), process.env);
-if (argv.length) {
-  // ... node index.mjs list / run <device_id> '...'
-} else {
-  mcp();
-}
+```mermaid
+flowchart TD
+  accTitle: How an AI task reaches the computer chosen by the user
+  accDescr: The AI client gives a task to the Fleet website, which forwards it within the account to the computer explicitly chosen by the user. The task stays on that computer while it runs.
+  A["AI client"] -->|"Deliver once"| B["Fleet website"]
+  B -->|"Forward within the account"| C["Computer chosen by the user"]
+  C --> D["Job runs on that computer"]
 ```
 
-That saves maintaining one more binary, and it saves the chance for two codebases to contradict each other.
+## Choose first, then act
 
-## What the tool surface looks like
+The worst simple mistake in remote operation is picking the wrong computer. Fleet requires an explicit target before it will run anything. It does this even when only one device happens to be online.
 
-Twelve tools. `list_computers` returns the machines under the account, `set_computer` remembers one, and later calls can leave `device_id` out.
+That extra step matters because the list changes. An account with one computer today may have three tomorrow, and a convenient automatic choice can send the right command into the wrong environment.
 
-`set_computer` lives only in the current stdio process. It touches no disk, writes nothing back to the account, and stays invisible to other clients. That part is deliberate. One account may have the web console and two agents open under it, and none of them should move the machine somebody else is working on.
+The selected device belongs to the current AI tool session. A web console and another AI client can each keep their own target without silently changing the other. Once the AI has selected a computer, later actions can continue there until the user chooses a different one.
 
-It also will not pick the only online machine for you. Models are happy to guess, and a wrong guess lands the command on a different computer. With no remembered device it errors out and asks you to say which one.
+## Deliver a command once
 
-## A model is not a person
+AI clients usually limit how long a tool call may wait. A build or dependency installation can run beyond that limit, and a batch job may take much longer. When the result does not arrive in time, a model can easily send the same command again.
 
-This is the part I changed the most.
+Fleet separates starting a job from waiting for its result. Once the device accepts the command, Fleet remembers that job. If the wait ends, the job is simply still running. The AI follows the original job instead of starting an identical process.
 
-A person waits in a terminal for the command to finish. A model does not wait. It decides it failed and sends the same command again. The traces of taking that seriously sit in the tool descriptions, where the same warning appears four times, once each in `run`, `get_result` and `wait`, plus once in the instructions handed to the model at initialize.
+Cancelling a wait does not kill the remote job either. A brief network interruption or the end of one tool call leaves the target computer to finish its work. After reconnecting, the operator can continue reading the same job and collect its result.
 
-`run` returns right away, and `wait_ms` is only how long this MCP call is willing to wait, with nothing to do with killing a process on timeout.
+## The job stays on the target device
 
-```js
-// packages/fleet-tool/operator.mjs
-/** MCP-call wait budget only. Not a kill timeout. Hosts cancel tools at ~60s. */
-export const WAIT_MAX_MS = 30_000;
-```
+Each job owns its process on the target computer. A stuck command does not block the next one from starting.
 
-The ceiling sits at 30 seconds. Hosts cancel a tool call at around 60, which leaves headroom. Running out returns one line of `still running`, which does not count as an error, and cancelling the wait does not kill the remote command.
+Output stays in a bounded buffer on the device. Fleet preserves useful early output and the most recent part, then makes the final result available when the job ends. The AI can inspect the current screen without pushing every byte that scrolled past into its conversation.
 
-The note handed to the model says exactly that.
+The hub only forwards messages. It does not keep a local process open for every connected computer, and the connection does not have to carry repeated versions of the same screen.
 
-```
-run waits up to 30s; if the text is still running, call wait — do not run again.
-```
+## The final decision stays beside the machine
 
-## What that changed on the device
+Delivering a job to a device does not force that device to run it. Every computer keeps its own permission setting. A user can turn remote execution off or require approval at the machine. Commands run immediately only after the user has deliberately enabled automatic execution.
 
-Hang the command on a hub request and the hub has to hold a process up the whole time, and the output has nobody to receive it the moment the model disconnects. So the job lives on the device.
-
-Every `run` starts its own process there, `shell -c` on a PTY under POSIX, `cmd /C` on Windows. Finishing is the child exit code rather than a prompt. A stuck job therefore cannot eat the next command.
-
-Output stays in a local ring with a fixed length.
-
-```go
-// packages/fleet-agent/internal/pane/pane.go
-const (
-	ScreenInterval = 250 * time.Millisecond
-	ringLines      = 200
-	headLines      = 200
-	screenLines    = 80
-)
-```
-
-The wire carries snapshots, one frame per 250 milliseconds, latest frame wins, intermediate ones dropped. A model reading a screen wants to know what it looks like now, not every byte that scrolled past in the last two seconds.
-
-## Dial-out is the precondition
-
-Machines behind home broadband usually have no public IP, and the router should not open a port over this. The agent dials `WSS /v1/device` outward on its own, no inbound port on the device, and the operator side only talks HTTPS to the website.
-
-That decides whether ordinary people can use any of this. Teaching someone to set up port forwarding first would waste however smooth the tools above are.
-
-## The token is held by a model
-
-That is also why the switch stays on the machine. The three permit states live in the agent, off, ask and allow, and the hub cannot change them, since the protocol has no message for it. At ask, the command waits there until you tap on the machine.
-
-Models take liberties. People slip. A switch on the machine being operated covers both.
-
-There is no ceiling on the number of machines.
-
-```ts
-// src/lib/fleet/cap.ts
-/** Fleet size is unbounded. Three seed boxes are a demo, not a ceiling. */
-export const FLEET_CAP: number | null = null;
-```
+Desktop control follows the same local decision. Viewing the display and controlling the mouse or keyboard receive separate permission, so approval to look does not quietly grant input. The hub can report the setting chosen on the device, but it cannot remotely loosen it.

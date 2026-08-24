@@ -8,12 +8,12 @@
         "zh"
       ],
       "title": {
-        "en": "One machine was not enough",
-        "zh": "一台不够"
+        "en": "Bringing your own computers into an AI workflow",
+        "zh": "把自己的电脑接进 AI 工作流"
       },
       "summary": {
-        "en": "The grok bot could only touch one machine at a time, and that machine was not mine. I wanted any agent that loads an MCP server to reach all of my own computers, which meant solving dial-out first and then solving models that re-send commands.",
-        "zh": "Grok 那个 bot 一次只能碰一台机器，那台机器还不是我的。我想要的是让任何能加载 MCP 的 agent 够到我自己所有的电脑，于是先解决出站，再解决模型会重发命令这件事。"
+        "en": "Fleet connects computers you already own to AI and keeps each remote job on the device you chose.",
+        "zh": "Fleet 把你已有的电脑接进 AI，并让每个远程任务留在选定的设备上。"
       }
     },
     {
@@ -24,12 +24,12 @@
         "zh"
       ],
       "title": {
-        "en": "Who can touch your machines",
-        "zh": "谁能动你的电脑"
+        "en": "Where the safety boundary belongs in remote computer control",
+        "zh": "远程操作电脑时，安全边界放在哪里"
       },
       "summary": {
-        "en": "Devices only dial out, the token rides a one-shot asymmetric handshake, every query is cut by account, and the last switch stays on your own machine. Including the layers I can bypass myself.",
-        "zh": "设备只往外拨，token 走一次性的非对称握手，每条查询按账号切，最后一道开关留在你自己的机器上。也写清楚哪几层我自己就能绕过去。"
+        "en": "Fleet reduces device exposure, protects long-lived credentials, and leaves the final execution decision on the device.",
+        "zh": "Fleet 减少设备暴露并保护长期凭据，最终由本机决定是否执行。"
       }
     }
   ]

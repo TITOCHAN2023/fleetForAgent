@@ -1,6 +1,5 @@
 import { GROK_PROVIDERS, authEnabled, signIn } from "@/lib/auth/client";
 import { Button } from "@/components/ui/button";
-import { Link } from "@tanstack/react-router";
 import { ArchFan } from "@/components/arch-fan";
 import { SiteHeader } from "@/components/site-header";
 import { useI18n } from "@/lib/i18n/use-i18n";
@@ -17,30 +16,49 @@ export function LoginLanding() {
     <main className="min-h-svh bg-bg text-fg">
       <SiteHeader />
       <div className="mx-auto max-w-5xl px-5 py-16 md:py-24">
-        <p className="text-sm font-medium tracking-[0.18em] text-muted uppercase">{t("home.kicker")}</p>
-        <h1 className="mt-4 max-w-3xl text-4xl font-semibold tracking-tight md:text-6xl">{t("home.hero")}</h1>
-        <p className="mt-5 max-w-2xl text-base leading-relaxed text-muted">{t("home.sub")}</p>
-        <div className="mt-8 flex max-w-md flex-col gap-3">
-          {authEnabled ? (
-            GROK_PROVIDERS.map((p) => (
-              <Button
-                key={p.providerId}
-                type="button"
-                variant="default"
-                onClick={() => signIn(p.providerId, { callbackURL: "/" })}
-              >
-                {t("login.continue", { label: p.label })}
-              </Button>
-            ))
-          ) : (
-            <p className="text-sm text-muted">{t("login.authOff")}</p>
-          )}
-          <Link to="/help" className="text-center text-sm text-muted underline underline-offset-4 hover:text-fg">
-            {t("nav.help")}
-          </Link>
-          <Link to="/docs" className="text-center text-sm text-muted underline underline-offset-4 hover:text-fg">
-            {t("nav.docs")}
-          </Link>
+        <div className="grid items-center gap-10 md:grid-cols-[minmax(0,1fr)_22rem] md:gap-14">
+          <div>
+            <p className="text-sm font-medium tracking-[0.18em] text-muted uppercase">
+              {t("home.kicker")}
+            </p>
+            <h1 className="mt-4 max-w-3xl text-4xl font-semibold tracking-tight md:text-6xl">
+              {t("home.hero")}
+            </h1>
+            <p className="mt-5 max-w-2xl text-base leading-relaxed text-muted">{t("home.sub")}</p>
+          </div>
+
+          <section
+            aria-label={t("home.cta")}
+            className="rounded-3xl border border-border bg-surface p-4 shadow-[var(--shadow)] sm:p-5"
+          >
+            <p className="mb-3 text-xs font-medium tracking-[0.12em] text-muted uppercase">
+              {t("home.cta")}
+            </p>
+            <div className="grid gap-2.5">
+              {authEnabled ? (
+                GROK_PROVIDERS.map((p, index) => (
+                  <Button
+                    key={p.providerId}
+                    type="button"
+                    variant={index === 0 ? "default" : "secondary"}
+                    className="grid h-12 w-full grid-cols-[1.5rem_1fr_1.5rem] rounded-xl px-3"
+                    onClick={() => signIn(p.providerId, { callbackURL: "/" })}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="grid size-6 place-items-center rounded-full bg-current/10 text-xs font-semibold"
+                    >
+                      {p.label.slice(0, 1).toUpperCase()}
+                    </span>
+                    <span>{t("login.continue", { label: p.label })}</span>
+                    <span aria-hidden="true" />
+                  </Button>
+                ))
+              ) : (
+                <p className="py-3 text-sm text-muted">{t("login.authOff")}</p>
+              )}
+            </div>
+          </section>
         </div>
       </div>
 

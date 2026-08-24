@@ -25,6 +25,17 @@ test("mdToHtml headings, images, code", () => {
   assert.doesNotMatch(html, /<script/);
 });
 
+test("mdToHtml emits an escaped lazy Mermaid block", () => {
+  const html = mdToHtml(
+    ['```mermaid', "flowchart TD", '  A["<script>alert(1)</script>"] --> B', "```", ""].join("\n"),
+  );
+  assert.match(html, /<figure class="blog-mermaid" data-mermaid-state="pending">/);
+  assert.match(html, /<pre class="blog-mermaid-source"><code>flowchart TD/);
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /<script>/);
+  assert.doesNotMatch(html, /language-mermaid/);
+});
+
 test("compileBlog skips README and copies relative images", () => {
   const dir = mkdtempSync(join(tmpdir(), "fleet-blog-"));
   try {

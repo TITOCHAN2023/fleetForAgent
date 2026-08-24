@@ -67,7 +67,10 @@
       h2 { font-size: 22px; font-weight: 600; letter-spacing: -0.03em; margin: 0; }
       h3 { font-size: 16px; font-weight: 600; margin: 0; }
       .lead { margin-top: 20px; max-width: 40em; color: var(--muted); font-size: 16px; }
-      .stack { margin-top: 32px; display: flex; flex-direction: column; gap: 10px; max-width: 22rem; }
+      .hero { display: grid; align-items: center; gap: 40px; }
+      .login-panel { border: 1px solid var(--border); border-radius: 24px; background: var(--surface); padding: 20px; box-shadow: var(--shadow); }
+      .login-title { margin: 0 0 12px; color: var(--muted); font-size: 12px; font-weight: 500; letter-spacing: .12em; text-transform: uppercase; }
+      .login-stack { display: grid; gap: 10px; }
       .btn { height: 44px; padding: 0 18px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface);
         color: var(--fg); display: inline-flex; align-items: center; justify-content: center; gap: 8px; transition: transform 150ms ease, opacity 150ms ease, background-color 170ms ease; }
       .btn:hover { background: var(--elevated); }
@@ -77,6 +80,8 @@
       .btn.ghost { background: transparent; border: 0; color: var(--muted); height: auto; padding: 8px; }
       .btn.ghost:hover { color: var(--fg); }
       .btn.danger { color: var(--bad); }
+      .btn.provider { height: 48px; display: grid; grid-template-columns: 24px 1fr 24px; border-radius: 12px; padding: 0 12px; }
+      .provider-mark { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 999px; background: color-mix(in srgb, currentColor 10%, transparent); font-size: 12px; font-weight: 600; }
       .muted { color: var(--muted); font-size: 14px; }
       .subtle { color: var(--subtle); font-size: 12px; }
       .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px; box-shadow: var(--shadow); }
@@ -84,6 +89,9 @@
       .grid-4 { display: grid; gap: 12px; }
       @media (min-width: 700px) { .grid-2 { grid-template-columns: 1fr 1fr; } .grid-4 { grid-template-columns: repeat(4, 1fr); } }
       .fan { display: grid; gap: 12px; }
+      @media (min-width: 800px) {
+        .hero { grid-template-columns: minmax(0, 1fr) 22rem; gap: 56px; }
+      }
       @media (min-width: 860px) {
         .fan { grid-template-columns: 1fr 16px 1.15fr 16px 1fr; align-items: start; }
         .arrow { text-align: center; color: var(--subtle); padding-top: 36px; }
@@ -153,6 +161,7 @@
           kicker: "fleet.ginfo.cc",
           hero: "一个工具，连上你所有电脑。随时随地。",
           body: "用本站地址和 token 导入工具。Windows、Linux、macOS 上的 Agent 会通过 WebSocket 主动连出来。",
+          cta: "登录后生成 Hub token",
           continueG: "使用 Google 继续", continueX: "使用 X 继续",
           archTitle: "命令怎么走",
           archHint: "设备只往外连，不用开端口。能跑 Agent 的架构，就能加入同一支舰队。",
@@ -206,6 +215,7 @@
           kicker: "fleet.ginfo.cc",
           hero: "One tool. Every computer. Anywhere.",
           body: "Import the MCP tool with this URL and a token. Agents on Windows, Linux, and macOS dial out over WebSocket.",
+          cta: "Sign in to mint a Hub token",
           continueG: "Continue with Google", continueX: "Continue with X",
           archTitle: "How a command travels",
           archHint: "Devices only dial out. No inbound ports. Any arch that can run the Agent joins the same fleet.",
@@ -476,15 +486,20 @@
       function homeView() {
         return `${chrome()}
           <div class="wrap">
-            <p class="kicker">${t("kicker")}</p>
-            <h1>${t("hero")}</h1>
-            <p class="lead">${t("body")}</p>
-            <div class="stack">
-              <p class="err">${state.err}</p>
-              <a class="btn primary" href="/v1/auth/google">${t("continueG")}</a>
-              <a class="btn" href="/v1/auth/x">${t("continueX")}</a>
-              <a class="nav-link" href="/help" data-go="/help" style="text-align:center">${t("help")} →</a>
-              <a class="nav-link" href="/docs" data-go="/docs" style="text-align:center">${t("docs")} →</a>
+            <div class="hero">
+              <div>
+                <p class="kicker">${t("kicker")}</p>
+                <h1>${t("hero")}</h1>
+                <p class="lead">${t("body")}</p>
+              </div>
+              <section class="login-panel" aria-label="${t("cta")}">
+                <p class="login-title">${t("cta")}</p>
+                <div class="login-stack">
+                  ${state.err ? `<p class="err">${esc(state.err)}</p>` : ""}
+                  <a class="btn primary provider" href="/v1/auth/google"><span class="provider-mark" aria-hidden="true">G</span><span>${t("continueG")}</span><span aria-hidden="true"></span></a>
+                  <a class="btn provider" href="/v1/auth/x"><span class="provider-mark" aria-hidden="true">X</span><span>${t("continueX")}</span><span aria-hidden="true"></span></a>
+                </div>
+              </section>
             </div>
             <h2 style="margin-top:72px">${t("archTitle")}</h2>
             <p class="muted" style="margin:8px 0 20px;max-width:40em">${t("archHint")}</p>

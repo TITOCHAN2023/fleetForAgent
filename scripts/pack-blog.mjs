@@ -62,9 +62,16 @@ export function mdToHtml(src) {
   const fences = [];
   let text = String(src).replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
     const i = fences.length;
-    fences.push(
-      `<pre><code${lang ? ` class="language-${escapeHtml(lang)}"` : ""}>${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`,
-    );
+    const source = escapeHtml(code.replace(/\n$/, ""));
+    if (lang.toLowerCase() === "mermaid") {
+      fences.push(
+        `<figure class="blog-mermaid" data-mermaid-state="pending"><pre class="blog-mermaid-source"><code>${source}</code></pre></figure>`,
+      );
+    } else {
+      fences.push(
+        `<pre><code${lang ? ` class="language-${escapeHtml(lang)}"` : ""}>${source}</code></pre>`,
+      );
+    }
     return `\n\n%%FENCE${i}%%\n\n`;
   });
   text = escapeHtml(text);

@@ -21,6 +21,8 @@ npx wrangler secret put ADMIN_EMAILS
 
 `workers_dev` is off. Bind a custom domain (this repo uses `fleet.ginfo.cc`) or set `workers_dev = true` for a `*.workers.dev` preview. Paste that origin into the agent.
 
+`public/fleet-tool.tgz` is an npm-installable pack of `packages/fleet-tool` (so `npx -y https://fleet.ginfo.cc/fleet-tool.tgz` works). Rebuild it from the repo root with `npm run pack:fleet-tool` after tool changes. Do not rely on SPA fallback for that path — a missing file becomes `index.html`.
+
 ## Ops (`/ops`)
 
 Same Worker (`fleet-hub` on `fleet.ginfo.cc`). Not a new Worker or repo.

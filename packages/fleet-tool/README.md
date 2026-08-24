@@ -3,12 +3,20 @@
 Operator client. Config is the website origin plus the hub token from Settings.
 
 ```bash
+FLEET_URL=https://fleet.ginfo.cc
+FLEET_TOKEN=flt_...
+npx -y https://fleet.ginfo.cc/fleet-tool.tgz
+```
+
+Local checkout (same env names):
+
+```bash
 FLEET_URL=http://127.0.0.1:8080 FLEET_TOKEN=flt_... node index.mjs list
 FLEET_URL=http://127.0.0.1:8080 FLEET_TOKEN=flt_... node index.mjs run <device_id> 'uname -a'
 node index.mjs --dev list
 ```
 
-Cursor / MCP: run `node index.mjs` with those two env vars, no extra args. `--dev` sets `FLEET_DEV=1` (same as the env) and still starts MCP if there are no other args.
+Cursor / MCP: run `npx -y https://fleet.ginfo.cc/fleet-tool.tgz` with those two env vars, no extra args. `--dev` sets `FLEET_DEV=1` (same as the env) and still starts MCP if there are no other args.
 
 `~/.fleet/mcp.env` is already loaded (does not override env vars that are already set):
 
@@ -24,8 +32,8 @@ FLEET_DEV=1
 {
   "mcpServers": {
     "fleet": {
-      "command": "node",
-      "args": ["/path/to/packages/fleet-tool/index.mjs"],
+      "command": "npx",
+      "args": ["-y", "https://fleet.ginfo.cc/fleet-tool.tgz"],
       "env": {
         "FLEET_URL": "https://your.app",
         "FLEET_TOKEN": "flt_...",
@@ -42,8 +50,8 @@ FLEET_DEV=1
 {
   "mcpServers": {
     "fleet": {
-      "command": "node",
-      "args": ["/path/to/packages/fleet-tool/index.mjs"],
+      "command": "npx",
+      "args": ["-y", "https://fleet.ginfo.cc/fleet-tool.tgz"],
       "env": {
         "FLEET_URL": "https://your.app",
         "FLEET_TOKEN": "flt_...",

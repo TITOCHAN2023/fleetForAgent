@@ -40,11 +40,23 @@ test("hub site explains multi-os fleet and ships a Help page", () => {
   assert.match(html, /resetConfirm/);
   assert.match(html, /anatomyRsa/);
   assert.match(html, /Fleet-OAEP/);
-  assert.match(html, /class="prompt"/);
+  assert.match(html, /class="prompt/);
   assert.match(html, /\/logo\.png/);
   assert.match(html, /ops-switch/);
   assert.match(html, /href="\/ops"/);
   assert.match(html, /user\.ops/);
+  assert.match(html, /command: "npx"/);
+  assert.match(html, /type: "sse"/);
+  assert.match(html, /base \+ "\/mcp\/sse"/);
+  assert.match(html, /Authorization: "Bearer " \+ token/);
+  assert.match(html, /install\.sh/);
+  assert.match(html, /install\.ps1/);
+  assert.match(html, /data-copy=/);
+  assert.match(html, /state\.secret \? readySetup/);
+  assert.ok(
+    html.indexOf('t("mcpStdioConfig")') < html.indexOf('t("quickTitle")'),
+    "AI-side MCP configs must render above device installers",
+  );
 });
 
 test("landing pairs Help with Google and Docs with X", () => {

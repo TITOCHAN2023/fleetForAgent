@@ -42,6 +42,14 @@ class_name = "DeviceDO"
 name = "FLEET"
 class_name = "FleetDO"
 
+[[durable_objects.bindings]]
+name = "MCP"
+class_name = "McpDO"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["DeviceDO", "FleetDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["McpDO"]

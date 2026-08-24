@@ -29,7 +29,7 @@ export function shQuote(value) {
 }
 
 export const MCP_INSTRUCTIONS =
-  "Fleet: remote Windows/Linux/macOS machines via a cloud hub. list_computers, then set_computer (or pass device_id). run waits up to 30s; if the text is still running, call wait — do not run again. Hub tokens are minted in website Settings (cookie session), shape flt_1.<payload>.<sig> — not Bearer.";
+  "Fleet: remote Windows/Linux/macOS machines via a cloud hub. list_computers, then set_computer (or pass device_id). run waits up to 30s; if the text is still running, call wait — do not run again. Hub tokens are flt_1 values minted in website Settings. Stdio uses Fleet-OAEP; direct /mcp/sse uses Bearer only to open a server-side session.";
 
 export function buildPrompts() {
   return [
@@ -80,8 +80,8 @@ export function getPrompt(name) {
               "",
               "- payload JSON, signed RSA-PSS-SHA256: v, aud, kid, pub, iat, sec",
               "- aud is HUB_ORIGIN (https://fleet.ginfo.cc), never the HTTP Host header",
-              "- Agents and MCP do not send Authorization: Bearer <token>",
-              "- They GET /v1/challenge?kid=… then Authorization: Fleet-OAEP <kid>.<oaep({sec,nonce})>",
+              "- Agents and stdio MCP GET /v1/challenge?kid=… then send Authorization: Fleet-OAEP <kid>.<oaep({sec,nonce})>",
+              "- Direct remote /mcp/sse sends Authorization: Bearer <token> once to open a server-side session; its random message URL contains no token",
               "- Reset mints a new keypair; the old kid will not complete the handshake",
             ].join("\n"),
           },

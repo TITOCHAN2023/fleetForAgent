@@ -5,8 +5,9 @@
  * Operators call HTTPS: list_computers / get_computer / heartbeat / select_computer / run / get_result.
  * No inbound ports on the machines. No intranet overlay.
  *
- * Auth: per-account flt_1 tokens (RSA-2048, aud = HUB_ORIGIN). Operators and
- * agents present Fleet-OAEP wraps, not plaintext Bearer. Optional secret
+ * Auth: per-account flt_1 tokens (RSA-2048, aud = HUB_ORIGIN). /v1 operators
+ * and agents present Fleet-OAEP wraps. Direct MCP SSE presents Bearer once to
+ * open a server-side session; its message endpoint never carries the token. Optional secret
  * HUB_TOKEN is a super operator for HTTP list/run only — it cannot steal a
  * device WebSocket. Empty HUB_TOKEN = no super user. Optional ADMIN_EMAILS
  * is a cookie-session list for /ops on this same Worker. Empty = no admins.
@@ -35,7 +36,10 @@ import {
   resolveTicket,
 } from "./session.mjs";
 import { isFleetToolTgzPath, serveFleetToolTgz } from "./tarball.mjs";
+import { isJsonRpcMessage, McpSseSession, type JsonRpcMessage } from "./mcp-sse.mjs";
 import {
+  audMismatch,
+  bearerToken,
   CHALLENGE_TTL_MS,
   HIGH_SEC_HANDSHAKE,
   HIGH_SEC_KEY_MISMATCH,
@@ -49,11 +53,13 @@ import {
   parseAuthorization,
   signChallenge,
   unwrapAuth,
+  verifyTokenV1,
 } from "./tokenv1.mjs";
 
 export interface Env {
   DEVICE: DurableObjectNamespace;
   FLEET: DurableObjectNamespace;
+  MCP: DurableObjectNamespace;
   HUB_TOKEN?: string;
   ADMIN_EMAILS?: string;
   HUB_ORIGIN?: string;
@@ -164,8 +170,8 @@ type UserRow = {
 };
 
 type Resolved =
-  | { actor: Actor }
-  | { error: string; status: number; code?: string };
+  | { actor: Actor; error?: never; status?: never; code?: never }
+  | { actor?: undefined; error: string; status: number; code?: string };
 
 const CORS: Record<string, string> = {
   "access-control-allow-origin": "*",
@@ -188,6 +194,10 @@ export default {
     if (isFleetToolTgzPath(path)) {
       if (!env.ASSETS) return new Response("site missing", { status: 500 });
       return serveFleetToolTgz(await env.ASSETS.fetch(request));
+    }
+
+    if (path === "/mcp/sse") {
+      return dispatchMcpSse(request, env);
     }
 
     if (!hub) {
@@ -274,135 +284,140 @@ export default {
 
     const resolved = await resolveActor(request, env, fleet);
     if (!resolved.actor) return deny(resolved);
-    const actor = resolved.actor;
-
-    if (url.pathname === "/v1/list_computers" && request.method === "POST") {
-      const q = actor.super ? "" : `?user=${encodeURIComponent(actor.id)}`;
-      return fleet.fetch(new Request(`https://fleet/list${q}`));
-    }
-
-    if (url.pathname === "/v1/get_computer" && request.method === "POST") {
-      const body = (await request.json()) as { device_id?: string };
-      if (!body.device_id) return json({ error: "device_id required" }, 400);
-      if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-      const res = await fleet.fetch(new Request(`https://fleet/device?id=${encodeURIComponent(body.device_id)}`));
-      const row = computerPublic(await res.json());
-      if (!row) return json({ error: "not found" }, 404);
-      return json(row);
-    }
-
-    if (url.pathname === "/v1/heartbeat" && request.method === "POST") {
-      const body = (await request.json()) as { device_id?: string; wait_ms?: number };
-      if (!body.device_id) return json({ error: "device_id required" }, 400);
-      if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-      const catalog = await fleet.fetch(
-        new Request(`https://fleet/device?id=${encodeURIComponent(body.device_id)}`),
-      );
-      if (!computerPublic(await catalog.json())) return json({ error: "not found" }, 404);
-      const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
-      return stub.fetch(
-        new Request("https://device/heartbeat", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ device_id: body.device_id, wait_ms: body.wait_ms }),
-        }),
-      );
-    }
-
-    if (
-      (url.pathname === "/v1/desktop_screenshot" || url.pathname === "/v1/desktop_action") &&
-      request.method === "POST"
-    ) {
-      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-      const deviceId = String(body.device_id ?? "");
-      if (!deviceId) return json({ error: "device_id required" }, 400);
-      if (!(await owns(fleet, actor, deviceId))) return json({ error: "not found" }, 404);
-      const catalog = await fleet.fetch(new Request(`https://fleet/device?id=${encodeURIComponent(deviceId)}`));
-      const row = (await catalog.json()) as DeviceRow;
-      if (!computerPublic(row)) return json({ error: "not found" }, 404);
-      if (!hasComputerUse(row)) return json(unsupportedCapBody(row), 409);
-      const plan = desktopPlan(url.pathname, body);
-      const stub = env.DEVICE.get(env.DEVICE.idFromName(deviceId));
-      return stub.fetch(
-        new Request("https://device/desktop", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(plan),
-        }),
-      );
-    }
-
-    if (url.pathname === "/v1/select_computer" && request.method === "POST") {
-      const body = (await request.json()) as { id?: string };
-      if (!body.id) return json({ error: "id required" }, 400);
-      return json({ selected: body.id });
-    }
-
-    if (url.pathname === "/v1/run" && request.method === "POST") {
-      const body = (await request.json()) as { device_id?: string; command?: string; wait_ms?: number };
-      if (!body.device_id || !body.command) {
-        return json({ error: "device_id and command required" }, 400);
-      }
-      if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-      const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
-      const fp = fingerprintFromHeaders(request.headers);
-      return stub.fetch(
-        new Request("https://device/run", {
-          method: "POST",
-          headers: operatorHeaders(request),
-          body: JSON.stringify({ command: body.command, wait_ms: body.wait_ms, fingerprint: fp }),
-        }),
-      );
-    }
-
-    if (url.pathname === "/v1/type" && request.method === "POST") {
-      const body = (await request.json()) as { device_id?: string; keys?: string; key?: string; corr?: string };
-      if (!body.device_id || (body.keys == null && body.key == null)) return json({ error: "device_id and keys or key required" }, 400);
-      if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-      const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
-      const fp = fingerprintFromHeaders(request.headers);
-      return stub.fetch(
-        new Request("https://device/type", {
-          method: "POST",
-          headers: operatorHeaders(request),
-          body: JSON.stringify({ keys: body.keys, key: body.key, corr: body.corr, fingerprint: fp }),
-        }),
-      );
-    }
-
-    if (url.pathname === "/v1/read_screen" && request.method === "POST") {
-      const body = (await request.json()) as { device_id?: string; corr?: string };
-      if (!body.device_id) return json({ error: "device_id required" }, 400);
-      if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-      const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
-      const q = body.corr ? `?corr=${encodeURIComponent(body.corr)}` : "";
-      return stub.fetch(new Request(`https://device/screen${q}`, { headers: operatorHeaders(request) }));
-    }
-
-    if (url.pathname === "/v1/list_panes" && request.method === "POST") {
-      const body = (await request.json()) as { device_id?: string };
-      if (!body.device_id) return json({ error: "device_id required" }, 400);
-      if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-      const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
-      return stub.fetch(new Request("https://device/panes", { method: "POST" }));
-    }
-
-    if (url.pathname === "/v1/get_result" && request.method === "POST") {
-      const body = (await request.json()) as { device_id?: string; corr?: string; wait_ms?: number };
-      if (!body.device_id) return json({ error: "device_id required" }, 400);
-      if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-      const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
-      const q = new URLSearchParams();
-      if (body.corr) q.set("corr", body.corr);
-      const waitMs = clampHubWaitMs(body.wait_ms);
-      if (waitMs > 0) q.set("wait_ms", String(waitMs));
-      const suffix = q.toString() ? `?${q}` : "";
-      return stub.fetch(new Request(`https://device/result${suffix}`, { headers: operatorHeaders(request) }));
-    }
-
-    return json({ error: "not found" }, 404);
+    const response = await handleAuthorizedOperatorRequest(request, env, fleet, resolved.actor);
+    return response ?? json({ error: "not found" }, 404);
   },
 };
+
+async function handleAuthorizedOperatorRequest(
+  request: Request,
+  env: Env,
+  fleet: DurableObjectStub,
+  actor: Actor,
+): Promise<Response | null> {
+  const url = new URL(request.url);
+
+  if (url.pathname === "/v1/list_computers" && request.method === "POST") {
+    const q = actor.super ? "" : `?user=${encodeURIComponent(actor.id)}`;
+    return fleet.fetch(new Request(`https://fleet/list${q}`));
+  }
+
+  if (url.pathname === "/v1/get_computer" && request.method === "POST") {
+    const body = (await request.json()) as { device_id?: string };
+    if (!body.device_id) return json({ error: "device_id required" }, 400);
+    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
+    const res = await fleet.fetch(new Request(`https://fleet/device?id=${encodeURIComponent(body.device_id)}`));
+    const row = computerPublic(await res.json());
+    return row ? json(row) : json({ error: "not found" }, 404);
+  }
+
+  if (url.pathname === "/v1/heartbeat" && request.method === "POST") {
+    const body = (await request.json()) as { device_id?: string; wait_ms?: number };
+    if (!body.device_id) return json({ error: "device_id required" }, 400);
+    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
+    const catalog = await fleet.fetch(new Request(`https://fleet/device?id=${encodeURIComponent(body.device_id)}`));
+    if (!computerPublic(await catalog.json())) return json({ error: "not found" }, 404);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+    return stub.fetch(
+      new Request("https://device/heartbeat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ device_id: body.device_id, wait_ms: body.wait_ms }),
+      }),
+    );
+  }
+
+  if (
+    (url.pathname === "/v1/desktop_screenshot" || url.pathname === "/v1/desktop_action") &&
+    request.method === "POST"
+  ) {
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const deviceId = String(body.device_id ?? "");
+    if (!deviceId) return json({ error: "device_id required" }, 400);
+    if (!(await owns(fleet, actor, deviceId))) return json({ error: "not found" }, 404);
+    const catalog = await fleet.fetch(new Request(`https://fleet/device?id=${encodeURIComponent(deviceId)}`));
+    const row = (await catalog.json()) as DeviceRow;
+    if (!computerPublic(row)) return json({ error: "not found" }, 404);
+    if (!hasComputerUse(row)) return json(unsupportedCapBody(row), 409);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(deviceId));
+    return stub.fetch(
+      new Request("https://device/desktop", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(desktopPlan(url.pathname, body)),
+      }),
+    );
+  }
+
+  if (url.pathname === "/v1/select_computer" && request.method === "POST") {
+    const body = (await request.json()) as { id?: string };
+    return body.id ? json({ selected: body.id }) : json({ error: "id required" }, 400);
+  }
+
+  if (url.pathname === "/v1/run" && request.method === "POST") {
+    const body = (await request.json()) as { device_id?: string; command?: string; wait_ms?: number };
+    if (!body.device_id || !body.command) return json({ error: "device_id and command required" }, 400);
+    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+    const fp = fingerprintFromHeaders(request.headers);
+    return stub.fetch(
+      new Request("https://device/run", {
+        method: "POST",
+        headers: operatorHeaders(request),
+        body: JSON.stringify({ command: body.command, wait_ms: body.wait_ms, fingerprint: fp }),
+      }),
+    );
+  }
+
+  if (url.pathname === "/v1/type" && request.method === "POST") {
+    const body = (await request.json()) as { device_id?: string; keys?: string; key?: string; corr?: string };
+    if (!body.device_id || (body.keys == null && body.key == null)) {
+      return json({ error: "device_id and keys or key required" }, 400);
+    }
+    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+    const fp = fingerprintFromHeaders(request.headers);
+    return stub.fetch(
+      new Request("https://device/type", {
+        method: "POST",
+        headers: operatorHeaders(request),
+        body: JSON.stringify({ keys: body.keys, key: body.key, corr: body.corr, fingerprint: fp }),
+      }),
+    );
+  }
+
+  if (url.pathname === "/v1/read_screen" && request.method === "POST") {
+    const body = (await request.json()) as { device_id?: string; corr?: string };
+    if (!body.device_id) return json({ error: "device_id required" }, 400);
+    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+    const q = body.corr ? `?corr=${encodeURIComponent(body.corr)}` : "";
+    return stub.fetch(new Request(`https://device/screen${q}`, { headers: operatorHeaders(request) }));
+  }
+
+  if (url.pathname === "/v1/list_panes" && request.method === "POST") {
+    const body = (await request.json()) as { device_id?: string };
+    if (!body.device_id) return json({ error: "device_id required" }, 400);
+    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+    return stub.fetch(new Request("https://device/panes", { method: "POST" }));
+  }
+
+  if (url.pathname === "/v1/get_result" && request.method === "POST") {
+    const body = (await request.json()) as { device_id?: string; corr?: string; wait_ms?: number };
+    if (!body.device_id) return json({ error: "device_id required" }, 400);
+    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+    const q = new URLSearchParams();
+    if (body.corr) q.set("corr", body.corr);
+    const waitMs = clampHubWaitMs(body.wait_ms);
+    if (waitMs > 0) q.set("wait_ms", String(waitMs));
+    const suffix = q.toString() ? `?${q}` : "";
+    return stub.fetch(new Request(`https://device/result${suffix}`, { headers: operatorHeaders(request) }));
+  }
+
+  return null;
+}
 
 export class FleetDO implements DurableObject {
   ctx: DurableObjectState;
@@ -476,6 +491,14 @@ export class FleetDO implements DurableObject {
     if (url.pathname === "/resolve-wrap" && request.method === "POST") {
       const body = (await request.json()) as { kid?: string; wrap?: string };
       return this.resolveWrap(body.kid ?? "", body.wrap ?? "");
+    }
+    if (url.pathname === "/resolve-bearer" && request.method === "POST") {
+      const body = (await request.json()) as { token?: string };
+      return this.resolveBearer(body.token ?? "");
+    }
+    if (url.pathname === "/validate-mcp" && request.method === "POST") {
+      const body = (await request.json()) as { id?: string; kid?: string };
+      return this.validateMcp(body.id ?? "", body.kid ?? "");
     }
     if (url.pathname === "/token-meta") {
       const userId = url.searchParams.get("user") ?? "";
@@ -595,6 +618,41 @@ export class FleetDO implements DurableObject {
     }
     const hash = await hashHubToken(opened.sec);
     if (hash !== user.tokenHash) return highSecJson(HIGH_SEC_KEY_MISMATCH, 401);
+    return json({ id: user.id, email: user.email });
+  }
+
+  async resolveBearer(token: string): Promise<Response> {
+    let claims: Awaited<ReturnType<typeof verifyTokenV1>>;
+    try {
+      claims = await verifyTokenV1(token);
+    } catch (error) {
+      return highSecJson(error instanceof Error ? error.message : HIGH_SEC_UPGRADE, 401);
+    }
+    const origin = configuredOrigin(this.env);
+    if (claims.aud !== origin) return highSecJson(audMismatch(claims.aud, origin), 401);
+    const userId = await this.ctx.storage.get<string>(`kid:${claims.kid}`);
+    const user = userId ? await this.userById(userId) : null;
+    const banned = rejectIfBanned(user);
+    if (banned) return json({ error: banned.error }, banned.status);
+    const hash = await hashHubToken(claims.sec);
+    if (
+      !user ||
+      user.kid !== claims.kid ||
+      user.pub !== claims.pub ||
+      user.tokenHash !== hash
+    ) {
+      return highSecJson(HIGH_SEC_KEY_MISMATCH, 401);
+    }
+    return json({ id: user.id, email: user.email, kid: claims.kid });
+  }
+
+  async validateMcp(userId: string, kid: string): Promise<Response> {
+    const user = userId ? await this.userById(userId) : null;
+    const banned = rejectIfBanned(user);
+    if (banned) return json({ error: banned.error }, banned.status);
+    if (!user || !kid || user.kid !== kid || !user.tokenHash) {
+      return json({ error: "Hub token was reset or revoked" }, 401);
+    }
     return json({ id: user.id, email: user.email });
   }
 
@@ -725,6 +783,93 @@ export class FleetDO implements DurableObject {
       res,
       `fleet_session=${sid}; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Lax`,
     );
+  }
+}
+
+class HubRpcError extends Error {
+  status: number;
+  body: Record<string, unknown>;
+
+  constructor(status: number, body: Record<string, unknown>) {
+    super(String(body.error || body.code || `hub returned ${status}`));
+    this.status = status;
+    this.body = body;
+  }
+}
+
+export class McpDO implements DurableObject {
+  ctx: DurableObjectState;
+  env: Env;
+  private session: McpSseSession | null = null;
+  private actor: Actor | null = null;
+  private kid = "";
+  private fingerprint = "";
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    this.ctx = ctx;
+    this.env = env;
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === "/open" && request.method === "GET") {
+      if (this.session) return json({ error: "MCP session already open" }, 409);
+      const id = request.headers.get("x-fleet-actor") ?? "";
+      const kid = request.headers.get("x-fleet-kid") ?? "";
+      const sessionId = url.searchParams.get("sessionId") ?? "";
+      if (!id || !kid || !sessionId) return json({ error: "unauthorized" }, 401);
+      this.actor = { id };
+      this.kid = kid;
+      this.fingerprint = crypto.randomUUID();
+      this.session = new McpSseSession({ rpc: (path, body) => this.rpc(path, body) });
+      return this.session.open(sessionId);
+    }
+
+    if (url.pathname === "/message" && request.method === "POST") {
+      if (!this.session || this.session.closed || !this.actor || !this.kid) {
+        return json({ error: "MCP session not found" }, 404);
+      }
+      const message = (await request.json().catch(() => null)) as JsonRpcMessage | null;
+      if (!isJsonRpcMessage(message)) return json({ error: "invalid JSON-RPC message" }, 400);
+      this.ctx.waitUntil(this.session.dispatch(message, () => this.authorize()));
+      return new Response(null, { status: 202 });
+    }
+
+    return new Response(null, { status: 405, headers: { allow: "GET, POST" } });
+  }
+
+  private async authorize(): Promise<void> {
+    if (!this.actor || !this.kid) throw new Error("MCP session not found");
+    const fleet = this.env.FLEET.get(this.env.FLEET.idFromName("fleet"));
+    const response = await fleet.fetch(
+      new Request("https://fleet/validate-mcp", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: this.actor.id, kid: this.kid }),
+      }),
+    );
+    if (response.ok) return;
+    const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    throw new HubRpcError(response.status, body);
+  }
+
+  private async rpc(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (!this.actor) throw new Error("MCP session not found");
+    const fleet = this.env.FLEET.get(this.env.FLEET.idFromName("fleet"));
+    const request = new Request(`https://mcp.local${path}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [FLEET_OPERATOR_HEADER]: this.fingerprint,
+      },
+      body: JSON.stringify(body),
+    });
+    const response =
+      (await handleAuthorizedOperatorRequest(request, this.env, fleet, this.actor)) ??
+      json({ error: "not found" }, 404);
+    const value = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!response.ok) throw new HubRpcError(response.status, value);
+    return value;
   }
 }
 
@@ -1185,6 +1330,57 @@ async function dispatchOps(
         : undefined,
     setBanned: (id, banned) => putOpsBanned(fleet, id, banned),
   });
+}
+
+async function dispatchMcpSse(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const origin = request.headers.get("origin");
+  if (origin && origin !== url.origin) return json({ error: "origin not allowed" }, 403);
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+
+  if (request.method === "GET") {
+    const token = bearerToken(request.headers.get("authorization"));
+    if (!token) return json({ error: "Authorization: Bearer <Hub token> required" }, 401);
+    const fleet = env.FLEET.get(env.FLEET.idFromName("fleet"));
+    const resolved = await fleet.fetch(
+      new Request("https://fleet/resolve-bearer", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token }),
+      }),
+    );
+    const actor = (await resolved.json().catch(() => ({}))) as Actor & { kid?: string; error?: string };
+    if (!resolved.ok || !actor.id || !actor.kid) {
+      return json({ error: actor.error || "unauthorized" }, resolved.status || 401);
+    }
+    const sessionId = crypto.randomUUID();
+    const stub = env.MCP.get(env.MCP.idFromName(sessionId));
+    return stub.fetch(
+      new Request(`https://mcp/open?sessionId=${encodeURIComponent(sessionId)}`, {
+        headers: {
+          "x-fleet-actor": actor.id,
+          "x-fleet-kid": actor.kid,
+        },
+      }),
+    );
+  }
+
+  if (request.method === "POST") {
+    const sessionId = url.searchParams.get("sessionId") ?? "";
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)) {
+      return json({ error: "MCP session not found" }, 404);
+    }
+    const stub = env.MCP.get(env.MCP.idFromName(sessionId));
+    return stub.fetch(
+      new Request("https://mcp/message", {
+        method: "POST",
+        headers: { "content-type": request.headers.get("content-type") || "application/json" },
+        body: request.body,
+      }),
+    );
+  }
+
+  return new Response(null, { status: 405, headers: { allow: "GET, POST" } });
 }
 
 function configuredOrigin(env: Env): string {

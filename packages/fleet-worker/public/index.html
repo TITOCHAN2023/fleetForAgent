@@ -122,6 +122,13 @@
       .secret code.box { display: block; width: 100%; max-height: 9.5em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all; line-height: 1.45; }
       .shade { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(0,0,0,.45); }
       .prompt { background: var(--surface); color: var(--fg); border: 1px solid var(--border); border-radius: 16px; padding: 24px; width: min(36rem, 100%); max-height: 90vh; overflow: auto; box-shadow: var(--shadow); display: grid; gap: 14px; }
+      .prompt.wide { width: min(64rem, 100%); }
+      .setup { display: grid; gap: 24px; }
+      .setup-section { display: grid; gap: 12px; }
+      .setup-section + .setup-section { border-top: 1px solid var(--border); padding-top: 24px; }
+      .setup-copy { min-width: 0; }
+      .setup-copy pre { margin: 8px 0 0; max-height: 19rem; }
+      .setup-copy .btn { height: 32px; padding: 0 12px; font-size: 12px; }
       .kv { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; font-family: var(--mono); }
       .kv span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; text-align: right; }
       input { height: 44px; padding: 0 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); width: 100%; }
@@ -228,6 +235,18 @@
           anatomyRsa: "RSA-2048 PSS。Agent 发送 Fleet-OAEP，不是 Bearer。",
           promptCancel: "取消", promptContinue: "重置", promptClose: "完成",
           toolHint: "FLEET_URL 用本站，FLEET_TOKEN 用这把钥匙。",
+          mcpTitle: "把 Fleet 接入 AI 客户端",
+          mcpBody: "可以选择现有 npx 工具提供的本地 stdio，或直接使用远程 SSE。两份配置同级，都会把 AI 端接入同一个 Fleet 中枢。",
+          mcpStdioConfig: "本地 stdio · npx（Cursor / Claude Desktop）",
+          mcpSseConfig: "远程 SSE MCP",
+          setupNeedsToken: "生成或重置 Token 后才会出现 AI 端 MCP 配置和设备安装命令。之后无法从服务端找回明文。",
+          quickTitle: "安装 Fleet 命令行 Agent",
+          quickBody: "一条命令会自动选择当前系统和 CPU 的正式 Release，校验 SHA-256，安装到用户目录，并以“需确认”权限立即连接。不需要管理员权限。",
+          posixInstall: "macOS / Linux / WSL",
+          windowsInstall: "Windows PowerShell",
+          desktopHint: "需要完整安装包、托盘和本机设置界面？",
+          desktopLink: "下载图形客户端",
+          shellHistory: "这些命令包含 Hub token。只在可信终端运行；必要时清理或保护 shell 历史记录。",
           empty: "还没有机器。装 Agent，填本站地址和 token，连上后会出现在这里。",
           online: "在线", offline: "离线",
           relTitle: "安装本机 Agent",
@@ -283,6 +302,18 @@
           anatomyRsa: "RSA-2048 PSS. Agents send Fleet-OAEP, not Bearer.",
           promptCancel: "Cancel", promptContinue: "Reset", promptClose: "Done",
           toolHint: "FLEET_URL is this origin. FLEET_TOKEN is this key.",
+          mcpTitle: "Connect Fleet to your AI client",
+          mcpBody: "Choose either local stdio through the existing npx tool or direct remote SSE. Both configurations connect the AI side to the same Fleet hub.",
+          mcpStdioConfig: "Local stdio · npx (Cursor / Claude Desktop)",
+          mcpSseConfig: "Remote SSE MCP",
+          setupNeedsToken: "Generate or reset the token to reveal AI-side MCP configurations and device install commands. The plaintext cannot be recovered later.",
+          quickTitle: "Install the Fleet CLI Agent",
+          quickBody: "One command downloads the published GitHub Release for this OS and CPU, verifies SHA-256, installs it in your user directory, and connects with Ask permission. No administrator access required.",
+          posixInstall: "macOS / Linux / WSL",
+          windowsInstall: "Windows PowerShell",
+          desktopHint: "Need the packaged desktop app, tray, and local settings UI?",
+          desktopLink: "Download the desktop client",
+          shellHistory: "These commands contain the Hub token. Run them only in a trusted terminal, then clear or protect shell history if needed.",
           empty: "No machines yet. Install an agent, paste this origin and token, then it shows up here.",
           online: "online", offline: "offline",
           relTitle: "Install the local agent",
@@ -601,6 +632,47 @@
         ];
         return `<div><p style="font-weight:600;margin:0 0 8px">${t("anatomy")}</p>${rows.map(([k,v]) => `<div class="kv"><span class="subtle">${esc(k)}</span><span>${esc(v)}</span></div>`).join("")}<p class="subtle" style="margin:8px 0 0">${t("anatomyRsa")}</p></div>`;
       }
+      function copyBlock(label, text) {
+        return `<div class="setup-copy">
+          <div class="row" style="justify-content:space-between"><span class="subtle">${esc(label)}</span><button class="btn" type="button" data-copy="${esc(text)}">${t("copy")}</button></div>
+          <pre>${esc(text)}</pre>
+        </div>`;
+      }
+      function readySetup(origin, token) {
+        const base = String(origin || "").replace(/\/+$/, "");
+        const mcpStdio = JSON.stringify({
+          mcpServers: {
+            fleet: {
+              command: "npx",
+              args: ["-y", base + "/fleet-tool.tgz"],
+              env: { FLEET_URL: base, FLEET_TOKEN: token },
+            },
+          },
+        }, null, 2);
+        const mcpSse = JSON.stringify({
+          mcpServers: {
+            fleet: {
+              type: "sse",
+              url: base + "/mcp/sse",
+              headers: { Authorization: "Bearer " + token },
+            },
+          },
+        }, null, 2);
+        const posix = `curl -fsSL '${base}/install.sh' | sh -s -- --hub '${base}' --token '${token}' --permit ask`;
+        const windows = `& ([scriptblock]::Create((irm '${base}/install.ps1'))) -Hub '${base}' -Token '${token}' -Permit ask`;
+        return `<div class="setup">
+          <section class="setup-section">
+            <div><h3>${t("mcpTitle")}</h3><p class="muted" style="margin:6px 0 0">${t("mcpBody")}</p></div>
+            <div class="grid-2">${copyBlock(t("mcpStdioConfig"), mcpStdio)}${copyBlock(t("mcpSseConfig"), mcpSse)}</div>
+          </section>
+          <section class="setup-section">
+            <div><h3>${t("quickTitle")}</h3><p class="muted" style="margin:6px 0 0">${t("quickBody")}</p></div>
+            <div class="grid-2">${copyBlock(t("posixInstall"), posix)}${copyBlock(t("windowsInstall"), windows)}</div>
+            <p class="warn" style="margin:0">${t("shellHistory")}</p>
+            <p class="muted" style="margin:0">${t("desktopHint")} <a class="nav-link" style="text-decoration:underline;text-underline-offset:4px" href="https://github.com/TITOCHAN2023/fleetForAgent/releases/latest" target="_blank" rel="noreferrer">${t("desktopLink")}</a></p>
+          </section>
+        </div>`;
+      }
       function promptView() {
         if (!state.prompt) return "";
         let inner = "";
@@ -612,9 +684,10 @@
         } else if (state.prompt === "shown" && state.secret) {
           inner = `<p class="warn">${t("secretOnce")}</p><div class="secret"><code class="box">${esc(state.secret)}</code><button class="btn" type="button" data-copy-secret="1">${t("copy")}</button></div>
             ${anatomyHtml(state.secret)}
+            ${readySetup(location.origin, state.secret)}
             <div class="row" style="justify-content:flex-end"><button class="btn primary" data-prompt="close">${t("promptClose")}</button></div>`;
         }
-        return `<div class="shade" data-prompt="shade"><div class="prompt" role="dialog" aria-modal="true">${inner}</div></div>`;
+        return `<div class="shade" data-prompt="shade"><div class="prompt${state.prompt === "shown" ? " wide" : ""}" role="dialog" aria-modal="true">${inner}</div></div>`;
       }
       function homeView() {
         return `${chrome()}
@@ -758,9 +831,9 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
             ${state.meta && state.meta.hasToken ? `<span class="subtle">${t("resetHint")}</span>` : ""}
           </div>
           <p class="muted" style="margin-top:16px">${t("toolHint")}</p>
-          <pre style="margin-top:8px">FLEET_URL=${origin}
-FLEET_TOKEN=flt_1.…
-npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
+          <div style="margin-top:24px;border-top:1px solid var(--border);padding-top:24px">
+            ${state.secret ? readySetup(origin, state.secret) : `<div><h3>${t("mcpTitle")}</h3><p class="muted" style="margin:6px 0 0">${t("setupNeedsToken")}</p></div>`}
+          </div>
         </section>`;
       }
       function downloadsView() {

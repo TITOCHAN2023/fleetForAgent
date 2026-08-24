@@ -91,7 +91,9 @@ test("packed fleet-tool starts and asks for FLEET_URL / FLEET_TOKEN", () => {
 
 test("Help and Settings snippets use npx, not a repo clone", () => {
   assert.match(html, /npx -y https:\/\/fleet\.ginfo\.cc\/fleet-tool\.tgz/);
-  assert.equal((html.match(/npx -y https:\/\/fleet\.ginfo\.cc\/fleet-tool\.tgz/g) || []).length, 3);
+  assert.equal((html.match(/npx -y https:\/\/fleet\.ginfo\.cc\/fleet-tool\.tgz/g) || []).length, 2);
+  assert.match(html, /command: "npx"/);
+  assert.match(html, /args: \["-y", base \+ "\/fleet-tool\.tgz"\]/);
   assert.doesNotMatch(html, /node packages\/fleet-tool\/index\.mjs/);
   assert.doesNotMatch(html, /git clone/);
 });
@@ -119,13 +121,14 @@ test("Worker refuses an HTML SPA fallback for /fleet-tool.tgz", async () => {
   assert.equal(body[1], 0x8b);
 });
 
-test("wrangler still SPA-falls-back other paths; no new DO migration or token vars", () => {
+test("wrangler keeps SPA fallback, explicit DO migrations, and token vars secret", () => {
   assert.match(wrangler, /not_found_handling = "single-page-application"/);
   assert.match(wrangler, /run_worker_first = true/);
   assert.match(worker, /isFleetToolTgzPath/);
   assert.match(worker, /serveFleetToolTgz/);
-  assert.equal((wrangler.match(/new_sqlite_classes/g) || []).length, 1);
+  assert.equal((wrangler.match(/new_sqlite_classes/g) || []).length, 2);
   assert.match(wrangler, /new_sqlite_classes = \["DeviceDO", "FleetDO"\]/);
+  assert.match(wrangler, /new_sqlite_classes = \["McpDO"\]/);
   const varsBlock = wrangler.slice(wrangler.indexOf("\n[vars]"));
   const varsEnd = varsBlock.search(/\n\[\[|\n\[assets\]/);
   const vars = varsBlock.slice(0, varsEnd === -1 ? undefined : varsEnd);

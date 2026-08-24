@@ -42,11 +42,13 @@ Google 必须返回已验证邮箱（`verified_email: true`）。X 账号按用�
 
 设置页为每个账号生成一对 RSA-2048 密钥。复制出来的字符串是 `flt_1.<payload>.<sig>`：里面装着公钥和一份 secret，并且绑定 `HUB_ORIGIN`（`https://fleet.ginfo.cc`），不绑 HTTP Host。
 
-Agent 和 MCP 不会把整串当 `Authorization: Bearer` 发出去。它们会：
+Agent 和本地 stdio MCP 不会把整串原样当 `Authorization: Bearer` 发出去。它们会：
 
 1. `GET /v1/challenge?kid=…` — 中枢用对应私钥对 nonce 做 PSS 签名。
 2. 用 token 里的公钥 OAEP 封装 `{sec, nonce}`。
 3. 在 WSS `/v1/device` 和每次操作 HTTPS 上发送 `Authorization: Fleet-OAEP <kid>.<wrap>`。
+
+远程 SSE 直连是明确的例外。首次 `GET /mcp/sse` 会发送一次 `Authorization: Bearer <token>`。Worker 校验 token 签名和服务端保存的 secret hash 后，为它创建隔离的 Durable Object 会话，并返回随机的 `/mcp/sse?sessionId=…` 消息端点。这个端点不包含 token，也不接受 token 查询参数；每条 JSON-RPC 消息都会重新检查账号当前的 key id，所以重置 token 后下一次调用立即失效。
 
 重置 token 会删掉旧密钥，并断开该账号下所有设备的 WebSocket（`1008 token reset`）。旧的 `flt_` hex Bearer 会被拒绝，报 `HIGH_SEC` 错误（英文）：请升级 Agent / MCP 客户端，再重新签发 token。
 

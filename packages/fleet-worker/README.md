@@ -8,7 +8,7 @@ Jobs do **not** run on the Worker. The device keeps a pane buffer (tmux-style sn
 
 Full steps: [English](../../docs/en/deploy.md) · [中文](../../docs/zh/deploy.md)
 
-Hub tokens are `flt_1` (RSA-2048, bound to `HUB_ORIGIN` in `wrangler.toml`). Agents and MCP authenticate with `Fleet-OAEP`, not plaintext Bearer. After deploy, users must issue a new token and run agent 0.2.9+.
+Hub tokens are `flt_1` (RSA-2048, bound to `HUB_ORIGIN` in `wrangler.toml`). Agents and stdio MCP authenticate with `Fleet-OAEP`. Direct remote MCP uses `Authorization: Bearer` only on the initial `GET /mcp/sse`; the Worker validates it, opens an isolated `McpDO`, and announces a random message URL that contains no token. After deploy, users must issue a new token and run agent 0.2.9+.
 
 ```bash
 cd packages/fleet-worker

@@ -22,9 +22,9 @@ func apiRoot() string {
 func isCLICommand(name string) bool {
 	switch name {
 	case "help", "-h", "--help", "version", "--version",
-		"status", "start", "stop", "quit",
+		"status", "start", "stop", "quit", "restart",
 		"enable", "disable", "permit", "connect",
-		"approve", "deny", "install":
+		"approve", "deny", "install", "update", "rollback":
 		return true
 	default:
 		return false
@@ -50,6 +50,12 @@ func runCLI(args []string) int {
 		err = cliStop()
 	case "quit":
 		err = cliQuit()
+	case "restart":
+		err = cliRestart()
+	case "update":
+		err = cliUpdate(rest)
+	case "rollback":
+		err = cliRollback()
 	case "enable":
 		err = cliEnabled(true)
 	case "disable":
@@ -86,6 +92,9 @@ CLI and UI share one state. Do not edit config.json while it runs.
   fleet start [--hub URL] [--token TOKEN] [--permit off|ask|allow]
   fleet stop                 disable (daemon stays in the tray)
   fleet quit                 exit the daemon
+  fleet restart              this process respawns on its own listen addr
+  fleet update [--check] [--force] [--url URL] [--sha256 HEX]
+  fleet rollback             swap in the previous binary and restart
   fleet status [--json]
   fleet enable | disable
   fleet permit off|ask|allow
@@ -122,6 +131,7 @@ func cliStatus(args []string) error {
 		return enc.Encode(st)
 	}
 	fmt.Println("running: yes")
+	fmt.Println("version:", emptyDash(st.AgentVer))
 	fmt.Println("enabled:", st.Enabled)
 	fmt.Println("conn:   ", st.Conn)
 	fmt.Println("permit: ", st.Permit)
@@ -199,6 +209,117 @@ func cliQuit() error {
 	}
 	_ = postJSON("/api/quit", map[string]string{})
 	return nil
+}
+
+func cliRestart() error {
+	if !agentRunning() {
+		return fmt.Errorf("agent not running; fleet start")
+	}
+	if err := postJSON("/api/restart", map[string]string{}); err != nil {
+		return err
+	}
+	time.Sleep(200 * time.Millisecond)
+	if err := waitReady(20 * time.Second); err != nil {
+		return err
+	}
+	return cliStatus(nil)
+}
+
+func cliUpdate(args []string) error {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	check := fs.Bool("check", false, "")
+	force := fs.Bool("force", false, "")
+	rawURL := fs.String("url", "", "")
+	sum := fs.String("sha256", "", "")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if !agentRunning() {
+		if *check {
+			info, err := checkUpdate()
+			printUpdateInfo(info)
+			return err
+		}
+		return fmt.Errorf("agent not running; fleet start, then fleet update")
+	}
+	if *check {
+		info, err := getUpdate("/api/update?refresh=1")
+		printUpdateInfo(info)
+		return err
+	}
+	body := updateRequest{URL: *rawURL, SHA256: *sum, Force: *force}
+	if err := postJSON("/api/update", body); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(3 * time.Minute)
+	for time.Now().Before(deadline) {
+		info, err := getUpdate("/api/update")
+		if err != nil {
+			if waitErr := waitReady(20 * time.Second); waitErr == nil {
+				return cliStatus(nil)
+			}
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+		if info.Phase == "error" && info.Error != "" {
+			return fmt.Errorf("%s", info.Error)
+		}
+		if info.Phase == "idle" {
+			printUpdateInfo(info)
+			return nil
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if err := waitReady(8 * time.Second); err != nil {
+		return err
+	}
+	return cliStatus(nil)
+}
+
+func cliRollback() error {
+	if !agentRunning() {
+		return fmt.Errorf("agent not running; fleet start")
+	}
+	if err := postJSON("/api/rollback", map[string]string{}); err != nil {
+		return err
+	}
+	time.Sleep(200 * time.Millisecond)
+	if err := waitReady(20 * time.Second); err != nil {
+		return err
+	}
+	return cliStatus(nil)
+}
+
+func printUpdateInfo(info updateInfo) {
+	fmt.Println("current:", info.Current)
+	if info.Latest != "" {
+		fmt.Println("latest: ", info.Latest)
+	}
+	if info.Asset != "" {
+		fmt.Println("asset:  ", info.Asset)
+	}
+	fmt.Println("available:", info.Available)
+	if info.Error != "" {
+		fmt.Println("error:  ", info.Error)
+	}
+}
+
+func getUpdate(path string) (updateInfo, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	res, err := client.Get(apiRoot() + path)
+	if err != nil {
+		return updateInfo{}, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		return updateInfo{}, fmt.Errorf("agent http %s", res.Status)
+	}
+	var info updateInfo
+	if err := json.NewDecoder(res.Body).Decode(&info); err != nil {
+		return updateInfo{}, err
+	}
+	return info, nil
 }
 
 func cliEnabled(on bool) error {

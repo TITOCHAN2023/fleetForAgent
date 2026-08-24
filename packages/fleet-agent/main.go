@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	agentVersion = "0.3.0"
+	agentVersion = "0.3.1"
 )
 
 //go:embed ui/index.html
@@ -83,6 +83,7 @@ type State struct {
 	HubInput string    `json:"hubInput"`
 	HubToken string    `json:"hubToken"`
 	DeviceID string    `json:"deviceId"`
+	AgentVer string    `json:"agentVer"`
 	WSS      string    `json:"wss"`
 	Conn     string    `json:"conn"`
 	Error    string    `json:"error"`
@@ -118,6 +119,7 @@ type Agent struct {
 	cfgPath             string
 	panes               *supervisor
 	hb                  time.Duration
+	restarting          bool
 }
 
 func (a *Agent) log(level, msg string) {
@@ -143,6 +145,7 @@ func (a *Agent) snapshot() State {
 		HubInput: a.hubInput,
 		HubToken: a.hubToken,
 		DeviceID: a.deviceID,
+		AgentVer: agentVersion,
 		WSS:      a.wss,
 		Conn:     a.conn,
 		Error:    a.err,
@@ -423,7 +426,7 @@ func (a *Agent) maintain() {
 	for {
 		time.Sleep(500 * time.Millisecond)
 		a.mu.Lock()
-		want := a.enabled && strings.TrimSpace(a.hubInput) != "" && a.ws == nil && a.conn != "connecting"
+		want := a.wantsReconnectLocked()
 		hub := a.hubInput
 		a.mu.Unlock()
 		if !want {
@@ -432,7 +435,7 @@ func (a *Agent) maintain() {
 		}
 		time.Sleep(backoff)
 		a.mu.Lock()
-		want = a.enabled && strings.TrimSpace(a.hubInput) != "" && a.ws == nil && a.conn != "connecting"
+		want = a.wantsReconnectLocked()
 		hub = a.hubInput
 		a.mu.Unlock()
 		if !want {
@@ -830,6 +833,7 @@ func main() {
 		os.Exit(runCLI(args))
 	}
 	maybeDaemonize()
+	maybePromoteBinary()
 
 	dir := fleetHome()
 	_ = os.MkdirAll(dir, 0o700)
@@ -917,6 +921,52 @@ func main() {
 			requestQuit()
 		}()
 	})
+	mux.HandleFunc("/api/restart", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"ok": true, "mode": restartModeSpawnThenExit, "addr": settingsAddr()})
+		go func() {
+			time.Sleep(80 * time.Millisecond)
+			if err := agent.requestRestart(); err != nil {
+				agent.mu.Lock()
+				agent.log("error", "restart: "+err.Error())
+				agent.mu.Unlock()
+				agent.pushUI()
+			}
+		}()
+	})
+	mux.HandleFunc("/api/update", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			if r.URL.Query().Get("refresh") == "1" {
+				info, err := checkUpdate()
+				if err != nil {
+					writeJSON(w, info)
+					return
+				}
+				writeJSON(w, info)
+				return
+			}
+			writeJSON(w, updateStatus())
+			return
+		}
+		var req updateRequest
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req)
+		if err := startUpdate(agent, req); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "started": true})
+	})
+	mux.HandleFunc("/api/rollback", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"ok": true})
+		go func() {
+			time.Sleep(80 * time.Millisecond)
+			if err := agent.requestRollback(); err != nil {
+				agent.mu.Lock()
+				agent.log("error", "rollback: "+err.Error())
+				agent.mu.Unlock()
+				agent.pushUI()
+			}
+		}()
+	})
 
 	addr := settingsAddr()
 	if !isLoopbackListenAddr(addr) {
@@ -933,9 +983,7 @@ func main() {
 		time.Sleep(400 * time.Millisecond)
 		return
 	}
-	go func() {
-		log.Fatal(http.Serve(ln, mux))
-	}()
+	go settingsNet.serve(ln, mux)
 	if runtime.GOOS == "linux" {
 		log.Println("linux tray; hub from FLEET_URL + FLEET_TOKEN or", configPath())
 	} else {

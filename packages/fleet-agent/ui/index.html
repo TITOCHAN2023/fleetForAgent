@@ -102,7 +102,12 @@
       <section class="card">
         <p id="t-body">Enter the hub address and dial out. No inbound port.</p>
         <p id="t-stay" class="muted">Close this page anytime. The agent stays in the menu bar (Mac, next to the clock) or the tray (Windows, by the clock). Right-click to switch on/off and run policy. CLI: fleet status</p>
-        <p class="muted">Device <code id="deviceId">—</code></p>
+        <p class="muted">Device <code id="deviceId">—</code> · Agent <code id="agentVer">—</code></p>
+        <div class="row" style="margin-top:12px">
+          <button id="restart">Restart</button>
+          <button id="update">Update</button>
+        </div>
+        <p id="updateMsg" class="muted"></p>
         <div class="row" style="margin-top:16px">
           <span id="t-allow">Allow this computer to run</span>
           <button id="enabled">On</button>
@@ -154,6 +159,7 @@
           allowTitle: "Allow all",
           allowSub: "Shell and desktop (screen + mouse/keyboard) run immediately",
           consent: "Needs approval here", approve: "Allow", deny: "Deny", logs: "Logs",
+          restart: "Restart", update: "Update",
         },
         zh: {
           body: "填中枢地址，Agent 会主动连出去。可以用 https://fleet.ginfo.cc，也可以是你自己的 Worker。不需要入站端口。",
@@ -172,6 +178,7 @@
           allowTitle: "自动执行",
           allowSub: "命令和桌面（看屏+键鼠）都立刻执行",
           consent: "需要当面同意", approve: "同意执行", deny: "拒绝", logs: "运行日志",
+          restart: "重启", update: "更新",
         }
       };
       let locale = localStorage.getItem("fleet-locale") === "zh" ? "zh" : "en";
@@ -219,6 +226,8 @@
         $("approve").textContent = t.approve;
         $("deny").textContent = t.deny;
         $("t-logs").textContent = t.logs;
+        $("restart").textContent = t.restart;
+        $("update").textContent = t.update;
         $("en").classList.toggle("on", locale === "en");
         $("zh").classList.toggle("on", locale === "zh");
         requestAnimationFrame(syncSegments);
@@ -253,6 +262,7 @@
         }
         $("err").textContent = s.error || "";
         $("deviceId").textContent = s.deviceId || "—";
+        $("agentVer").textContent = s.agentVer || "—";
         document.querySelectorAll(".level").forEach((b) => b.classList.toggle("on", b.dataset.permit === s.permit));
         if (s.pending) { $("pendingCard").style.display = "block"; $("pendingCmd").textContent = s.pending.command; }
         else $("pendingCard").style.display = "none";
@@ -268,6 +278,14 @@
       });
       $("approve").onclick = async () => render(await api("/api/approve", {}));
       $("deny").onclick = async () => render(await api("/api/deny", {}));
+      $("restart").onclick = async () => {
+        $("updateMsg").textContent = I18N[locale].restart + "…";
+        await api("/api/restart", {});
+      };
+      $("update").onclick = async () => {
+        $("updateMsg").textContent = I18N[locale].update + "…";
+        await api("/api/update", {});
+      };
       applyTheme(themePref);
       applyLang();
       async function poll() { try { render(await api("/api/state")); } catch {} }

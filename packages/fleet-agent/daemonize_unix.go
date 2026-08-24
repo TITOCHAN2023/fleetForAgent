@@ -13,8 +13,6 @@ import (
 )
 
 // Internal double-fork stage. Not a restarter protocol; only --daemon uses it.
-const daemonStageEnv = "_FLEET_DAEMON_STAGE"
-
 const (
 	daemonStageLeader = "1"
 	daemonStageRun    = "2"

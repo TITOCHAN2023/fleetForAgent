@@ -19,13 +19,15 @@ type trayMenu struct {
 	open      *systray.MenuItem
 	reconnect *systray.MenuItem
 	enabled   *systray.MenuItem
-	off     *systray.MenuItem
-	ask     *systray.MenuItem
-	allow   *systray.MenuItem
-	consent *systray.MenuItem
-	deny    *systray.MenuItem
-	quit    *systray.MenuItem
-	ready   bool
+	off       *systray.MenuItem
+	ask       *systray.MenuItem
+	allow     *systray.MenuItem
+	consent   *systray.MenuItem
+	deny      *systray.MenuItem
+	restart   *systray.MenuItem
+	update    *systray.MenuItem
+	quit      *systray.MenuItem
+	ready     bool
 }
 
 var tray trayMenu
@@ -99,6 +101,9 @@ func onTrayReady(a *Agent) {
 	tray.consent.Hide()
 	tray.deny.Hide()
 	systray.AddSeparator()
+	tray.restart = systray.AddMenuItem("Restart", "Respawn this agent on its listen address")
+	tray.update = systray.AddMenuItem("Update", "Fetch the latest GitHub release and restart")
+	systray.AddSeparator()
 	tray.quit = systray.AddMenuItem("Quit Fleet Agent", "")
 
 	tray.open.Click(func() { openBrowser(settingsURL()) })
@@ -121,6 +126,26 @@ func onTrayReady(a *Agent) {
 	tray.allow.Click(func() { a.setPermit(PermitAllow) })
 	tray.consent.Click(func() { a.approve(); a.pushUI() })
 	tray.deny.Click(func() { a.deny(); a.pushUI() })
+	tray.restart.Click(func() {
+		go func() {
+			if err := a.requestRestart(); err != nil {
+				a.mu.Lock()
+				a.log("error", "restart: "+err.Error())
+				a.mu.Unlock()
+				a.pushUI()
+			}
+		}()
+	})
+	tray.update.Click(func() {
+		go func() {
+			if err := startUpdate(a, updateRequest{}); err != nil {
+				a.mu.Lock()
+				a.log("error", "update: "+err.Error())
+				a.mu.Unlock()
+				a.pushUI()
+			}
+		}()
+	})
 	tray.quit.Click(func() { systray.Quit() })
 
 	tray.ready = true

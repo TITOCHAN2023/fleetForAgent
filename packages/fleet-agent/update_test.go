@@ -145,6 +145,7 @@ func TestDiscoverFromUpdateBase(t *testing.T) {
 	t.Cleanup(srv.Close)
 	t.Setenv("FLEET_UPDATE_BASE", srv.URL)
 	t.Setenv("FLEET_UPDATE_API", "")
+	setUpdateChannel("")
 	rel, err := discoverRelease()
 	if err != nil {
 		t.Fatal(err)
@@ -158,6 +159,70 @@ func TestDiscoverFromUpdateBase(t *testing.T) {
 	}
 	if gotSum != sum {
 		t.Fatalf("sum=%q", gotSum)
+	}
+}
+
+func TestDiscoverUsesAdvertisedVersionedChecksums(t *testing.T) {
+	name := releaseAssetNames(runtime.GOOS, runtime.GOARCH)[0]
+	sum := sha256Hex("hello-agent")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/checksums-0.3.2.txt":
+			_, _ = w.Write([]byte(sum + "  " + name + "\n"))
+		case "/" + name:
+			_, _ = w.Write([]byte("hello-agent"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("FLEET_UPDATE_BASE", srv.URL)
+	t.Setenv("FLEET_UPDATE_API", "")
+	setUpdateChannel("")
+	rememberUpdateChannel(versionSignal{
+		Version:      "0.3.2",
+		Base:         srv.URL,
+		ChecksumsURL: srv.URL + "/checksums-0.3.2.txt",
+	})
+	t.Cleanup(func() { setUpdateChannel("") })
+	rel, err := discoverRelease()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel.Version != "0.3.2" {
+		t.Fatalf("version=%q", rel.Version)
+	}
+	asset, gotSum, err := pickAsset(rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asset.Name != name || gotSum != sum {
+		t.Fatalf("asset=%q sum=%q", asset.Name, gotSum)
+	}
+}
+
+func TestDiscoverUsesInlineAdvertisedSums(t *testing.T) {
+	name := releaseAssetNames(runtime.GOOS, runtime.GOARCH)[0]
+	sum := sha256Hex("inline")
+	t.Setenv("FLEET_UPDATE_BASE", "http://127.0.0.1:9/dl")
+	t.Setenv("FLEET_UPDATE_API", "")
+	setUpdateChannel("")
+	rememberUpdateChannel(versionSignal{
+		Version: "0.3.2",
+		Base:    "http://127.0.0.1:9/dl",
+		Sums:    map[string]string{name: sum},
+	})
+	t.Cleanup(func() { setUpdateChannel("") })
+	rel, err := discoverRelease()
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset, gotSum, err := pickAsset(rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asset.URL != "http://127.0.0.1:9/dl/"+name || gotSum != sum {
+		t.Fatalf("url=%q sum=%q", asset.URL, gotSum)
 	}
 }
 

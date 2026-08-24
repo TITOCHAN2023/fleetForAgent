@@ -63,6 +63,17 @@ export interface Env {
   X_CLIENT_SECRET?: string;
   LATEST_AGENT_VER?: string;
   AGENT_UPDATE_BASE?: string;
+  AGENT_UPDATE_CHECKSUMS?: string;
+  AGENT_UPDATE_SUMS?: string;
+}
+
+function updateAdvert(env: Env) {
+  return advertisedUpdate({
+    latestAgentVer: env.LATEST_AGENT_VER,
+    updateBase: env.AGENT_UPDATE_BASE,
+    checksumsUrl: env.AGENT_UPDATE_CHECKSUMS,
+    checksumsText: env.AGENT_UPDATE_SUMS,
+  });
 }
 
 const HUB_WAIT_MAX_MS = 30_000;
@@ -181,7 +192,7 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
 
     if (url.pathname === "/v1/health") {
-      return json({ name: "fleet-hub", v: 1, ok: true });
+      return json({ name: "fleet-hub", v: 1, ok: true, ...updateAdvert(env) });
     }
 
     const oauth = await handleOAuth(request, env);
@@ -758,7 +769,7 @@ export class DeviceDO implements DurableObject {
         os: request.headers.get("x-device-os") ?? "linux",
         userId,
       });
-      pair[1].send(JSON.stringify(envelope("hello_ok", { heartbeat_s: 3600, ...advertisedUpdate({ latestAgentVer: this.env.LATEST_AGENT_VER, updateBase: this.env.AGENT_UPDATE_BASE }) })));
+      pair[1].send(JSON.stringify(envelope("hello_ok", { heartbeat_s: 3600, ...updateAdvert(this.env) })));
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
 
@@ -852,7 +863,7 @@ export class DeviceDO implements DurableObject {
       const id = body.device_id || att.deviceId || "unknown";
       const waitMs = clampHeartbeatWaitMs(body.wait_ms);
       const pending = this.waitNextBeat(waitMs);
-      sockets[0]!.send(JSON.stringify(envelope("ask_heartbeat", advertisedUpdate({ latestAgentVer: this.env.LATEST_AGENT_VER, updateBase: this.env.AGENT_UPDATE_BASE }))));
+      sockets[0]!.send(JSON.stringify(envelope("ask_heartbeat", updateAdvert(this.env))));
       const got = await pending;
       if (!got) return json({ error: "no heartbeat" }, 409);
       const res = await this.fleet().fetch(new Request(`https://fleet/device?id=${encodeURIComponent(id)}`));
@@ -943,7 +954,7 @@ export class DeviceDO implements DurableObject {
         ...(arch !== undefined ? { arch } : {}),
       });
       this.noteBeat();
-      ws.send(JSON.stringify(envelope("pong", advertisedUpdate({ latestAgentVer: this.env.LATEST_AGENT_VER, updateBase: this.env.AGENT_UPDATE_BASE }), parsed.id)));
+      ws.send(JSON.stringify(envelope("pong", updateAdvert(this.env), parsed.id)));
       return;
     }
 

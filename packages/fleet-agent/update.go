@@ -286,6 +286,12 @@ func downloadTo(raw, dest string) error {
 
 func discoverRelease() (*discoveredRelease, error) {
 	rel := &discoveredRelease{Sums: map[string]string{}}
+	if v := advertisedChannelVersion(); v != "" {
+		rel.Version = v
+	}
+	if sums := advertisedChannelSums(); len(sums) > 0 {
+		rel.Sums = sums
+	}
 	if api := updateAPI(); api != "" {
 		if err := fillReleaseFromAPI(rel, api); err != nil && strings.TrimSpace(os.Getenv("FLEET_UPDATE_BASE")) == "" {
 			// still try constructed latest/download URLs below
@@ -297,8 +303,20 @@ func discoverRelease() (*discoveredRelease, error) {
 			rel.Assets = append(rel.Assets, releaseAsset{Name: name, URL: base + "/" + name})
 		}
 	}
-	if len(rel.Sums) == 0 {
-		rel.Sums = fetchChecksums(rel, base)
+	if rel.Version == "" {
+		if v := advertisedChannelVersion(); v != "" {
+			rel.Version = v
+		}
+	}
+	if checksumsNeedFetch(rel) {
+		for k, v := range fetchChecksums(rel, base) {
+			if rel.Sums == nil {
+				rel.Sums = map[string]string{}
+			}
+			if rel.Sums[k] == "" {
+				rel.Sums[k] = v
+			}
+		}
 	}
 	if len(rel.Assets) == 0 {
 		return nil, fmt.Errorf("update: no assets for %s/%s", runtime.GOOS, runtime.GOARCH)
@@ -349,13 +367,35 @@ func fillReleaseFromAPI(rel *discoveredRelease, api string) error {
 	return nil
 }
 
+func checksumsNeedFetch(rel *discoveredRelease) bool {
+	if rel == nil || len(rel.Sums) == 0 {
+		return true
+	}
+	for _, name := range releaseAssetNames(runtime.GOOS, runtime.GOARCH) {
+		if checksumFor(rel.Sums, name) == "" {
+			return true
+		}
+	}
+	return false
+}
+
 func fetchChecksums(rel *discoveredRelease, base string) map[string]string {
 	out := map[string]string{}
 	candidates := []string{}
+	if u := advertisedChecksumsURL(); u != "" {
+		candidates = append(candidates, u)
+	}
 	if base != "" {
 		candidates = append(candidates, base+"/checksums.txt")
-		if rel.Version != "" {
-			candidates = append(candidates, base+"/checksums-"+rel.Version+".txt")
+		ver := ""
+		if rel != nil {
+			ver = rel.Version
+		}
+		if ver == "" {
+			ver = advertisedChannelVersion()
+		}
+		if ver != "" {
+			candidates = append(candidates, base+"/checksums-"+strings.TrimPrefix(ver, "v")+".txt")
 		}
 	}
 	seen := map[string]bool{}

@@ -47,9 +47,19 @@ func TestParseVersionSignal(t *testing.T) {
 		"latest_agent_ver": "0.3.2",
 		"update_base":      "http://127.0.0.1:9",
 		"update_sha256":    "ABC",
+		"update_checksums": "http://127.0.0.1:9/checksums-0.3.2.txt",
+		"update_sums": map[string]any{
+			"fleet-agent-linux-amd64.tar.gz": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
 	}, now)
 	if !ok || sig.Version != "0.3.2" || sig.Base != "http://127.0.0.1:9" || sig.SHA256 != "abc" {
 		t.Fatalf("%+v", sig)
+	}
+	if sig.ChecksumsURL != "http://127.0.0.1:9/checksums-0.3.2.txt" {
+		t.Fatalf("checksums url %q", sig.ChecksumsURL)
+	}
+	if sig.Sums["fleet-agent-linux-amd64.tar.gz"] != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("sums %+v", sig.Sums)
 	}
 }
 

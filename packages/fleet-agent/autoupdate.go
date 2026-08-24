@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,11 +16,13 @@ const (
 )
 
 type versionSignal struct {
-	Version string
-	Base    string
-	URL     string
-	SHA256  string
-	Seen    time.Time
+	Version      string
+	Base         string
+	URL          string
+	SHA256       string
+	ChecksumsURL string
+	Sums         map[string]string
+	Seen         time.Time
 }
 
 type autoUpdateDecision struct {
@@ -28,20 +31,70 @@ type autoUpdateDecision struct {
 }
 
 var (
-	channelMu   sync.Mutex
-	channelBase string
+	channelMu      sync.Mutex
+	channelBase    string
+	channelSumsURL string
+	channelVer     string
+	channelSums    map[string]string
 )
 
 func setUpdateChannel(base string) {
 	channelMu.Lock()
+	defer channelMu.Unlock()
 	channelBase = strings.TrimRight(strings.TrimSpace(base), "/")
-	channelMu.Unlock()
+	if channelBase == "" {
+		channelSumsURL = ""
+		channelVer = ""
+		channelSums = nil
+	}
+}
+
+func rememberUpdateChannel(sig versionSignal) {
+	channelMu.Lock()
+	defer channelMu.Unlock()
+	if sig.Base != "" {
+		channelBase = strings.TrimRight(strings.TrimSpace(sig.Base), "/")
+	}
+	if sig.ChecksumsURL != "" {
+		channelSumsURL = strings.TrimSpace(sig.ChecksumsURL)
+	}
+	if sig.Version != "" {
+		channelVer = strings.TrimPrefix(strings.TrimSpace(sig.Version), "v")
+	}
+	if len(sig.Sums) > 0 {
+		channelSums = sig.Sums
+	}
 }
 
 func advertisedUpdateBase() string {
 	channelMu.Lock()
 	defer channelMu.Unlock()
 	return channelBase
+}
+
+func advertisedChecksumsURL() string {
+	channelMu.Lock()
+	defer channelMu.Unlock()
+	return channelSumsURL
+}
+
+func advertisedChannelVersion() string {
+	channelMu.Lock()
+	defer channelMu.Unlock()
+	return channelVer
+}
+
+func advertisedChannelSums() map[string]string {
+	channelMu.Lock()
+	defer channelMu.Unlock()
+	if len(channelSums) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(channelSums))
+	for k, v := range channelSums {
+		out[k] = v
+	}
+	return out
 }
 
 func updateFreshWindow() time.Duration {
@@ -63,12 +116,33 @@ func parseVersionSignal(body map[string]any, now time.Time) (versionSignal, bool
 		return versionSignal{}, false
 	}
 	return versionSignal{
-		Version: ver,
-		Base:    stringFromAny(body["update_base"]),
-		URL:     stringFromAny(body["update_url"]),
-		SHA256:  strings.ToLower(stringFromAny(body["update_sha256"])),
-		Seen:    now,
+		Version:      ver,
+		Base:         stringFromAny(body["update_base"]),
+		URL:          stringFromAny(body["update_url"]),
+		SHA256:       strings.ToLower(stringFromAny(body["update_sha256"])),
+		ChecksumsURL: stringFromAny(body["update_checksums"]),
+		Sums:         sumsFromAny(body["update_sums"]),
+		Seen:         now,
 	}, true
+}
+
+func sumsFromAny(v any) map[string]string {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for name, raw := range m {
+		sum := strings.ToLower(strings.TrimSpace(stringFromAny(raw)))
+		if name == "" || len(sum) != 64 {
+			continue
+		}
+		out[filepath.Base(name)] = sum
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func stringFromAny(v any) string {
@@ -152,9 +226,7 @@ func (a *Agent) noteHubUpdate(body map[string]any) {
 	a.mu.Lock()
 	a.updateSig = sig
 	a.mu.Unlock()
-	if sig.Base != "" {
-		setUpdateChannel(sig.Base)
-	}
+	rememberUpdateChannel(sig)
 	newer := versionGreater(sig.Version, agentVersion)
 	setUpdateStatus(func(s *updateInfo) {
 		s.Latest = sig.Version

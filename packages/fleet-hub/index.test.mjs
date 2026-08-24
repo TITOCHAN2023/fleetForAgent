@@ -723,17 +723,26 @@ test("hello_ok and pong advertise latest_agent_ver + update_base", async (t) => 
   const hub = createHub({
     latestAgentVer: "0.3.2",
     updateBase: "http://127.0.0.1:9/dl",
+    checksumsText: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  fleet-agent-linux-amd64.tar.gz\n",
   });
   t.after(() => hub.close());
-  const { ws: wsUrl } = await listen(hub);
+  const { http, ws: wsUrl } = await listen(hub);
+  const health = await fetch(`${http}/v1/health`).then((r) => r.json());
+  assert.equal(health.latest_agent_ver, "0.3.2");
+  assert.equal(health.update_base, "http://127.0.0.1:9/dl");
+  assert.equal(health.update_checksums, "http://127.0.0.1:9/dl/checksums-0.3.2.txt");
+  assert.equal(health.update_sums["fleet-agent-linux-amd64.tar.gz"], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   const dev = connectDevice(wsUrl, { id: "upd-1" });
   t.after(() => dev.ws.close());
   await dev.opened;
   const hello = await waitType(dev.inbox, "hello_ok");
   assert.equal(hello.body.latest_agent_ver, "0.3.2");
   assert.equal(hello.body.update_base, "http://127.0.0.1:9/dl");
+  assert.equal(hello.body.update_checksums, "http://127.0.0.1:9/dl/checksums-0.3.2.txt");
+  assert.equal(hello.body.update_sums["fleet-agent-linux-amd64.tar.gz"], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   dev.ws.send(JSON.stringify({ v: 1, type: "ping", id: "p-up", t: Date.now(), body: { agent_ver: "0.3.0" } }));
   const pong = await waitType(dev.inbox, "pong");
   assert.equal(pong.body.latest_agent_ver, "0.3.2");
   assert.equal(pong.body.update_base, "http://127.0.0.1:9/dl");
+  assert.equal(pong.body.update_checksums, "http://127.0.0.1:9/dl/checksums-0.3.2.txt");
 });

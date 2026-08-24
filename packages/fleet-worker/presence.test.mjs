@@ -4,21 +4,50 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
+  DEFAULT_UPDATE_BASE,
   DESKTOP_WAIT_MS,
   HEARTBEAT_WAIT_DEFAULT_MS,
   HEARTBEAT_WAIT_MAX_MS,
+  advertisedUpdate,
   agentVerFromBody,
   archFromBody,
+  checksumsURL,
   clampHeartbeatWaitMs,
   computerPublic,
   hasComputerUse,
   joinCaps,
   normalizeCaps,
   normalizePermit,
+  parseChecksums,
   unsupportedCapBody,
 } from "./src/presence.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+test("advertisedUpdate is empty without a version", () => {
+  assert.deepEqual(advertisedUpdate({}), {});
+  assert.deepEqual(advertisedUpdate({ latestAgentVer: "  " }), {});
+});
+
+test("advertisedUpdate includes version, channel URL, and checksums URL", () => {
+  const got = advertisedUpdate({ latestAgentVer: "0.3.2" });
+  assert.equal(got.latest_agent_ver, "0.3.2");
+  assert.equal(got.update_base, DEFAULT_UPDATE_BASE);
+  assert.equal(got.update_checksums, checksumsURL(DEFAULT_UPDATE_BASE, "0.3.2"));
+  assert.equal(got.update_checksums.endsWith("/checksums-0.3.2.txt"), true);
+});
+
+test("advertisedUpdate can inline checksums.txt so the client does not guess", () => {
+  const got = advertisedUpdate({
+    latestAgentVer: "0.3.2",
+    updateBase: "http://127.0.0.1:9/dl",
+    checksumsText: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  fleet-agent-linux-amd64.tar.gz\n",
+  });
+  assert.equal(got.update_base, "http://127.0.0.1:9/dl");
+  assert.equal(got.update_checksums, "http://127.0.0.1:9/dl/checksums-0.3.2.txt");
+  assert.equal(got.update_sums["fleet-agent-linux-amd64.tar.gz"], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  assert.deepEqual(parseChecksums("# skip\nnot-a-sum  x\n"), {});
+});
 
 test("heartbeat with version stores that agent_ver", () => {
   assert.equal(agentVerFromBody({ agent_ver: "0.2.8" }), "0.2.8");

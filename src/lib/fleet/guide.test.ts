@@ -94,9 +94,13 @@ test("console honors /?tab=agent for Settings", () => {
   assert.match(src("src/components/fleet-console.tsx"), /initialTab/);
 });
 
-test("Settings reveals MCP plus two ready-to-run CLI installers only with plaintext token", () => {
+test("Settings reveals peer stdio and SSE MCP configs above device installers", () => {
   const settings = src("src/components/hub-access.tsx") + src("src/lib/i18n/messages.ts");
   const server = src("src/lib/fleet/mcp-sse.server.ts");
+  assert.match(settings, /command: "npx"/);
+  assert.match(settings, /https:\/\/fleet\.ginfo\.cc\/fleet-tool\.tgz/);
+  assert.match(settings, /FLEET_URL: base/);
+  assert.match(settings, /FLEET_TOKEN: token/);
   assert.match(settings, /type: "sse"/);
   assert.match(settings, /\/mcp\/sse/);
   assert.match(settings, /Authorization: `Bearer \$\{token\}`/);
@@ -107,6 +111,10 @@ test("Settings reveals MCP plus two ready-to-run CLI installers only with plaint
   assert.match(settings, /secret && origin/);
   assert.match(settings, /ReadySetup origin=\{origin\} token=\{secret\}/);
   assert.match(settings, /href="\/releases"/);
+  assert.ok(
+    settings.indexOf('t("hub.mcpStdioConfig")') < settings.indexOf('t("hub.quickTitle")'),
+    "AI-side MCP configs must render above device installers",
+  );
   assert.match(server, /highSecAuthorization/);
   assert.match(server, /handleHubHttp/);
   assert.match(server, /createSessionCorrTracker/);

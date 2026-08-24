@@ -11,6 +11,7 @@ function copy(text: string) {
 }
 
 type Prompt = "confirm" | "busy" | "shown" | null;
+const FLEET_TOOL_TGZ = "https://fleet.ginfo.cc/fleet-tool.tgz";
 
 function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -50,6 +51,22 @@ function ReadySetup({ origin, token }: { origin: string; token: string }) {
   const base = origin.replace(/\/+$/, "");
   const posixInstall = `curl -fsSL ${shellQuote(`${base}/install.sh`)} | sh -s -- --hub ${shellQuote(base)} --token ${shellQuote(token)} --permit ask`;
   const windowsInstall = `& ([scriptblock]::Create((irm ${powershellQuote(`${base}/install.ps1`)}))) -Hub ${powershellQuote(base)} -Token ${powershellQuote(token)} -Permit ask`;
+  const mcpStdioConfig = JSON.stringify(
+    {
+      mcpServers: {
+        fleet: {
+          command: "npx",
+          args: ["-y", FLEET_TOOL_TGZ],
+          env: {
+            FLEET_URL: base,
+            FLEET_TOKEN: token,
+          },
+        },
+      },
+    },
+    null,
+    2,
+  );
   const mcpSseConfig = JSON.stringify(
     {
       mcpServers: {
@@ -68,6 +85,17 @@ function ReadySetup({ origin, token }: { origin: string; token: string }) {
     <div className="grid gap-6">
       <div className="grid gap-3">
         <div>
+          <h3 className="text-sm font-medium">{t("hub.mcpTitle")}</h3>
+          <p className="mt-1 max-w-3xl text-sm text-muted">{t("hub.mcpBody")}</p>
+        </div>
+        <div className="grid gap-3 lg:grid-cols-2">
+          <CopyBlock label={t("hub.mcpStdioConfig")} text={mcpStdioConfig} />
+          <CopyBlock label={t("hub.mcpSseConfig")} text={mcpSseConfig} />
+        </div>
+      </div>
+
+      <div className="grid gap-3 border-t border-border pt-6">
+        <div>
           <h3 className="text-sm font-medium">{t("hub.quickTitle")}</h3>
           <p className="mt-1 max-w-3xl text-sm text-muted">{t("hub.quickBody")}</p>
         </div>
@@ -82,14 +110,6 @@ function ReadySetup({ origin, token }: { origin: string; token: string }) {
             {t("hub.desktopLink")}
           </a>
         </p>
-      </div>
-
-      <div className="grid gap-3 border-t border-border pt-6">
-        <div>
-          <h3 className="text-sm font-medium">{t("hub.mcpSseTitle")}</h3>
-          <p className="mt-1 max-w-3xl text-sm text-muted">{t("hub.mcpSseBody")}</p>
-        </div>
-        <CopyBlock label={t("hub.mcpSseConfig")} text={mcpSseConfig} />
       </div>
     </div>
   );
@@ -234,7 +254,7 @@ export function HubAccess() {
           <ReadySetup origin={origin} token={secret} />
         ) : (
           <div>
-            <h3 className="text-sm font-medium">{t("hub.quickTitle")}</h3>
+            <h3 className="text-sm font-medium">{t("hub.mcpTitle")}</h3>
             <p className="mt-1 text-sm text-muted">{t("hub.setupNeedsToken")}</p>
           </div>
         )}

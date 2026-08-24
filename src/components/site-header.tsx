@@ -16,6 +16,9 @@ export function SiteHeader({ brand = "Fleet" }: { brand?: string }) {
           <Link to="/help" className="hover:text-fg">
             {t("nav.help")}
           </Link>
+          <Link to="/docs" className="hover:text-fg">
+            {t("nav.docs")}
+          </Link>
           <Link to="/releases" className="hover:text-fg">
             {t("nav.downloads")}
           </Link>

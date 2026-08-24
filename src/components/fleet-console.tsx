@@ -159,6 +159,9 @@ export function FleetConsole({ initialTab }: { initialTab?: string } = {}) {
           <Link to="/help" className="text-sm text-muted hover:text-fg">
             {t("header.guide")}
           </Link>
+          <Link to="/docs" className="text-sm text-muted hover:text-fg">
+            {t("nav.docs")}
+          </Link>
           <ThemeSwitch />
           <LocaleSwitch />
           <span className="max-w-32 truncate text-sm text-muted">{label}</span>

@@ -71,6 +71,17 @@ test("landing and console link to /help", () => {
   assert.match(src("src/routes/guide.tsx"), /to="\/help"/);
 });
 
+test("docs is a public blog that compiles docs/blog markdown", () => {
+  assert.match(src("src/routes/docs.tsx"), /createFileRoute\("\/docs"\)/);
+  assert.match(src("src/routes/docs/index.tsx"), /createFileRoute\("\/docs\/"\)/);
+  assert.match(src("src/routes/docs/$slug.tsx"), /createFileRoute\("\/docs\/\$slug"\)/);
+  assert.match(src("src/components/site-header.tsx"), /to="\/docs"/);
+  assert.match(src("src/components/login-landing.tsx"), /to="\/docs"/);
+  assert.match(src("scripts/pack-blog.mjs"), /docs\/blog/);
+  assert.match(src("docs/blog/why-fleet-is-safe.zh.md"), /^---/m);
+  assert.match(src("docs/blog/why-fleet-is-safe.en.md"), /^---/m);
+});
+
 test("console honors /?tab=agent for Settings", () => {
   assert.match(src("src/routes/index.tsx"), /validateSearch/);
   assert.match(src("src/components/fleet-console.tsx"), /initialTab/);

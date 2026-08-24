@@ -8,7 +8,7 @@
 
 每台电脑装一个 Agent，工具里导入 **网站地址 + Hub token**。Cursor / Claude 只连中枢；每台 Windows / Linux / Mac 都主动向中枢建立 WebSocket，中枢手里握着所有连接。能跑 Agent 的架构，就能加入同一支舰队。
 
-[打开 fleet.ginfo.cc](https://fleet.ginfo.cc) · [部署](deploy.md) · [登录](auth.md)
+[打开 fleet.ginfo.cc](https://fleet.ginfo.cc) · [文档](https://fleet.ginfo.cc/docs) · [部署](deploy.md) · [登录](auth.md) · [手记](notes.md)
 
 English: [../en/README.md](../en/README.md)
 

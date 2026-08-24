@@ -1,0 +1,36 @@
+{
+  "posts": [
+    {
+      "slug": "one-machine-was-not-enough",
+      "date": "2026-08-24",
+      "langs": [
+        "en",
+        "zh"
+      ],
+      "title": {
+        "en": "One machine was not enough",
+        "zh": "一台不够"
+      },
+      "summary": {
+        "en": "The grok bot could only touch one machine at a time, and that machine was not mine. I wanted any agent that loads an MCP server to reach all of my own computers, which meant solving dial-out first and then solving models that re-send commands.",
+        "zh": "Grok 那个 bot 一次只能碰一台机器，那台机器还不是我的。我想要的是让任何能加载 MCP 的 agent 够到我自己所有的电脑，于是先解决出站，再解决模型会重发命令这件事。"
+      }
+    },
+    {
+      "slug": "why-fleet-is-safe",
+      "date": "2026-08-21",
+      "langs": [
+        "en",
+        "zh"
+      ],
+      "title": {
+        "en": "Who can touch your machines",
+        "zh": "谁能动你的电脑"
+      },
+      "summary": {
+        "en": "Devices only dial out, the token rides a one-shot asymmetric handshake, every query is cut by account, and the last switch stays on your own machine. Including the layers I can bypass myself.",
+        "zh": "设备只往外拨，token 走一次性的非对称握手，每条查询按账号切，最后一道开关留在你自己的机器上。也写清楚哪几层我自己就能绕过去。"
+      }
+    }
+  ]
+}

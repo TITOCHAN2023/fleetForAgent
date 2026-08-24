@@ -38,6 +38,9 @@ export function LoginLanding() {
           <Link to="/help" className="text-center text-sm text-muted underline underline-offset-4 hover:text-fg">
             {t("nav.help")}
           </Link>
+          <Link to="/docs" className="text-center text-sm text-muted underline underline-offset-4 hover:text-fg">
+            {t("nav.docs")}
+          </Link>
         </div>
       </div>
 

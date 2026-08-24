@@ -266,7 +266,7 @@ function json(data, status = 200) {
 
 export function opsPageHtml() {
   return `<!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -420,7 +420,7 @@ export function opsPageHtml() {
         },
       };
       const state = {
-        locale: localStorage.getItem("fleet-locale") === "en" ? "en" : "zh",
+        locale: localStorage.getItem("fleet-locale") === "zh" ? "zh" : "en",
         themePref: localStorage.getItem("fleet-theme") || "system",
         data: null,
         err: "",

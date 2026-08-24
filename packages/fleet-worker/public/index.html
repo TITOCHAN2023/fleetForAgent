@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -119,6 +119,23 @@
       .help h2 { margin-top: 32px; }
       .help ol { color: var(--muted); padding-left: 1.2em; }
       .help li { margin: 8px 0; }
+      .blog h1 { max-width: none; }
+      .blog-list { list-style: none; padding: 0; margin: 48px 0 0; }
+      .blog-list li { border-top: 1px solid var(--border); }
+      .blog-list a { display: flex; flex-direction: column; gap: 8px; padding: 28px 0; color: inherit; }
+      @media (min-width: 640px) { .blog-list a { flex-direction: row; gap: 40px; align-items: baseline; } }
+      .blog-list a .when { width: 7rem; flex-shrink: 0; font-family: var(--mono); font-size: 12px; letter-spacing: 0.04em; color: var(--subtle); }
+      .blog-list a strong { font-size: 18px; font-weight: 500; letter-spacing: -0.03em; }
+      .blog-list a:hover strong { text-decoration: underline; text-underline-offset: 4px; }
+      .blog-prose { margin-top: 40px; font-size: 16px; line-height: 1.7; color: var(--muted); max-width: 42rem; }
+      .blog-prose > * + * { margin-top: 1.1em; }
+      .blog-prose h1, .blog-prose h2, .blog-prose h3 { color: var(--fg); font-weight: 550; letter-spacing: -0.03em; line-height: 1.25; }
+      .blog-prose h2 { font-size: 1.25em; margin-top: 2em; }
+      .blog-prose a { color: var(--fg); text-decoration: underline; text-underline-offset: 4px; }
+      .blog-prose img { display: block; width: 100%; border-radius: 16px; border: 1px solid var(--border); }
+      .blog-prose code { font-family: var(--mono); font-size: 0.84em; background: var(--elevated); padding: 0.1em 0.35em; border-radius: 6px; }
+      .blog-prose pre { overflow: auto; background: var(--elevated); border: 1px solid var(--border); border-radius: 16px; padding: 16px 18px; }
+      .blog-prose pre code { background: none; padding: 0; font-size: 12px; }
       .dl { display: grid; gap: 12px; }
       @media (min-width: 800px) { .dl { grid-template-columns: 1fr 1fr; } }
       @media (prefers-reduced-motion: reduce) {
@@ -132,7 +149,7 @@
       function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\"/g,"&quot;"); }
       const T = {
         zh: {
-          help: "帮助", downloads: "下载", signOut: "退出", settings: "设置", fleet: "机器", ops: "管理",
+          help: "帮助", docs: "文档", downloads: "下载", signOut: "退出", settings: "设置", fleet: "机器", ops: "管理",
           kicker: "fleet.ginfo.cc",
           hero: "一个工具，连上你所有电脑。随时随地。",
           body: "用本站地址和 token 导入工具。Windows、Linux、macOS 上的 Agent 会通过 WebSocket 主动连出来。",
@@ -152,6 +169,10 @@
           cloudBody: "把中枢部署上云，或直接用本站。一个账号，所有电脑。",
           helpTitle: "怎么用",
           helpLead: "这个网站就是中枢。登录、给每台电脑装 Agent、导入工具。之后任何 MCP 客户端都能操作你所有机器。",
+          docsTitle: "文档",
+          docsLead: "做 Fleet 时记下的东西。docs/blog/ 里的 markdown 会变成一篇。Help 是怎么用，这里是怎么做成的。",
+          docsEmpty: "还没有文章。",
+          docsBack: "全部手记",
           s1: "1. 登录并生成 Hub token",
           s1b: "设置页生成 token，明文只显示一次。中枢地址就是本站 origin：https://fleet.ginfo.cc。",
           s2: "2. 每台电脑装 Agent",
@@ -181,7 +202,7 @@
           themeL: "浅色", themeD: "深色", themeS: "系统",
         },
         en: {
-          help: "Help", downloads: "Downloads", signOut: "Sign out", settings: "Settings", fleet: "Machines", ops: "Ops",
+          help: "Help", docs: "Docs", downloads: "Downloads", signOut: "Sign out", settings: "Settings", fleet: "Machines", ops: "Ops",
           kicker: "fleet.ginfo.cc",
           hero: "One tool. Every computer. Anywhere.",
           body: "Import the MCP tool with this URL and a token. Agents on Windows, Linux, and macOS dial out over WebSocket.",
@@ -201,6 +222,10 @@
           cloudBody: "Deploy the hub, or just use this site. One account, every PC.",
           helpTitle: "How to use Fleet",
           helpLead: "This website is the hub. Sign in, install an Agent on each computer, import the tool. Then any MCP client can reach every machine.",
+          docsTitle: "Docs",
+          docsLead: "Notes from building Fleet. Markdown in docs/blog/ becomes a post. Help is how to use it; this is how it is built.",
+          docsEmpty: "Nothing here yet.",
+          docsBack: "All notes",
           s1: "1. Sign in and mint a Hub token",
           s1b: "Generate a token under Settings. Plaintext is shown once. Hub address is this origin: https://fleet.ginfo.cc.",
           s2: "2. Install Agent on each computer",
@@ -232,7 +257,7 @@
       };
       const GH = "https://github.com/TITOCHAN2023/fleetForAgent/releases/latest/download";
       const state = {
-        locale: localStorage.getItem("fleet-locale") === "en" ? "en" : "zh",
+        locale: localStorage.getItem("fleet-locale") === "zh" ? "zh" : "en",
         themePref: localStorage.getItem("fleet-theme") || "system",
         user: null,
         tab: "fleet",
@@ -260,12 +285,40 @@
         document.documentElement.setAttribute("data-theme-pref", state.themePref);
         document.documentElement.style.colorScheme = r;
       }
+      function pathNow() {
+        return (location.pathname || "").replace(/\/+$/, "") || "/";
+      }
       function isHelp() {
-        var p = (location.pathname || "").replace(/\/+$/, "") || "/";
+        var p = pathNow();
         return p === "/help" || location.hash === "#help";
       }
-      function go(path) {
+      function isDocs() {
+        var p = pathNow();
+        return p === "/docs" || p.indexOf("/docs/") === 0;
+      }
+      async function loadBlog() {
+        if (!isDocs()) return;
+        var p = pathNow();
+        var slug = p.indexOf("/docs/") === 0 ? decodeURIComponent(p.slice("/docs/".length)) : "";
+        try {
+          if (!state.blogIndex) {
+            var idx = await fetch("/blog/index.json");
+            state.blogIndex = idx.ok ? await idx.json() : { posts: [] };
+          }
+          if (slug) {
+            var res = await fetch("/blog/posts/" + encodeURIComponent(slug) + ".json");
+            state.blogPost = res.ok ? await res.json() : null;
+          } else {
+            state.blogPost = null;
+          }
+        } catch {
+          state.blogIndex = { posts: [] };
+          state.blogPost = null;
+        }
+      }
+      async function go(path) {
         if (location.pathname !== path) history.pushState({}, "", path);
+        await loadBlog();
         render();
       }
       async function api(path, opt) {
@@ -309,6 +362,7 @@
           state.metaReady = true;
           try { const j = await api("/v1/list_computers", { method: "POST", body: "{}" }); state.computers = j.computers || []; } catch { state.computers = []; }
         }
+        await loadBlog();
         render();
       }
       function githubMark() {
@@ -348,6 +402,7 @@
         return `<header class="top">
           <a class="brand" href="/" data-go="/"><img src="/logo.png" width="28" height="28" alt="" />Fleet</a>
           <a class="nav-link" href="/help" data-go="/help">${t("help")}</a>
+          <a class="nav-link" href="/docs" data-go="/docs">${t("docs")}</a>
           ${opsSwitch()}
           <span class="spacer"></span>
           ${extra || ""}
@@ -429,12 +484,50 @@
               <a class="btn primary" href="/v1/auth/google">${t("continueG")}</a>
               <a class="btn" href="/v1/auth/x">${t("continueX")}</a>
               <a class="nav-link" href="/help" data-go="/help" style="text-align:center">${t("help")} →</a>
+              <a class="nav-link" href="/docs" data-go="/docs" style="text-align:center">${t("docs")} →</a>
             </div>
             <h2 style="margin-top:72px">${t("archTitle")}</h2>
             <p class="muted" style="margin:8px 0 20px;max-width:40em">${t("archHint")}</p>
             ${fan()}
             <h2 style="margin-top:64px">${t("keysTitle")}</h2>
             <div style="margin-top:20px">${keys()}</div>
+          </div>`;
+      }
+      function pickBlog(map) {
+        if (map == null) return null;
+        if (typeof map === "string") return map;
+        if (map.html && map.title && !map.zh && !map.en) return map;
+        const loc = state.locale === "zh" ? "zh" : "en";
+        return map[loc] || map.en || map.zh || map[""] || null;
+      }
+      function docsView() {
+        const p = pathNow();
+        const slug = p.indexOf("/docs/") === 0 ? decodeURIComponent(p.slice("/docs/".length)) : "";
+        const copy = state.blogPost ? pickBlog(state.blogPost.variants) : null;
+        if (slug && copy && copy.html) {
+          return `${chrome()}
+            <div class="wrap blog">
+              <a class="nav-link" href="/docs" data-go="/docs">${t("docsBack")}</a>
+              <p class="subtle" style="margin-top:40px;letter-spacing:.16em;text-transform:uppercase;font-family:var(--mono);font-size:11px">${esc(state.blogPost.date || "")}</p>
+              <h1>${esc(copy.title)}</h1>
+              ${copy.summary ? `<p class="lead">${esc(copy.summary)}</p>` : ""}
+              <div class="blog-prose">${copy.html}</div>
+            </div>`;
+        }
+        const posts = (state.blogIndex && state.blogIndex.posts) || [];
+        const list = posts.length
+          ? `<ul class="blog-list">${posts.map((item) => {
+              const title = pickBlog(item.title) || item.slug;
+              const summary = pickBlog(item.summary) || "";
+              return `<li><a href="/docs/${encodeURIComponent(item.slug)}" data-go="/docs/${item.slug}"><span class="when">${esc(item.date || "—")}</span><span><strong>${esc(title)}</strong>${summary ? `<span class="muted" style="display:block;margin-top:4px">${esc(summary)}</span>` : ""}</span></a></li>`;
+            }).join("")}</ul>`
+          : `<p class="muted" style="margin-top:48px">${t("docsEmpty")}</p>`;
+        return `${chrome()}
+          <div class="wrap blog">
+            <p class="kicker">${t("kicker")}</p>
+            <h1>${t("docsTitle")}</h1>
+            <p class="lead">${t("docsLead")}</p>
+            ${list}
           </div>`;
       }
       function helpView(inApp) {
@@ -550,6 +643,7 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
         document.documentElement.lang = state.locale === "zh" ? "zh-CN" : "en";
         var root = document.getElementById("app");
         if (isHelp()) root.innerHTML = helpView(signedIn());
+        else if (isDocs()) root.innerHTML = docsView();
         else if (signedIn()) root.innerHTML = appView();
         else root.innerHTML = homeView();
         root.insertAdjacentHTML("beforeend", promptView());
@@ -566,8 +660,7 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
         });
         document.querySelectorAll("[data-go]").forEach((b) => b.onclick = (e) => {
           e.preventDefault();
-          if (b.dataset.go === "/help") go("/help");
-          else go("/");
+          void go(b.dataset.go || "/");
         });
         document.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => {
           if (b.dataset.tab === "help") { state.tab = "help"; go("/help"); return; }
@@ -593,7 +686,7 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
         document.querySelectorAll("[data-copy-secret]").forEach((b) => b.onclick = () => { if (state.secret) navigator.clipboard.writeText(state.secret); });
         requestAnimationFrame(syncSegments);
       }
-      window.addEventListener("popstate", render);
+      window.addEventListener("popstate", () => { void loadBlog().then(render); });
       window.addEventListener("resize", syncSegments);
       window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
         if (state.themePref === "system") { applyTheme("system"); syncSegments(); }

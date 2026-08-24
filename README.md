@@ -13,7 +13,7 @@ Local `npm run dev` is a CLI on 127.0.0.1. The product is the cloud: agents dial
 
 Four values: **domain URL**, **hub token**, **Agent on each PC**, **import the tool**. Then Cursor / Claude can list and run on every machine you enrolled.
 
-[Try the hub](https://fleet.ginfo.cc) · [Latest release](https://github.com/TITOCHAN2023/fleetForAgent/releases/latest) · [Deploy](docs/en/deploy.md) · [中文文档](docs/zh/README.md)
+[Try the hub](https://fleet.ginfo.cc) · [Docs](https://fleet.ginfo.cc/docs) · [Latest release](https://github.com/TITOCHAN2023/fleetForAgent/releases/latest) · [Deploy](docs/en/deploy.md) · [中文文档](docs/zh/README.md)
 
 ## How it works
 
@@ -62,7 +62,7 @@ http://127.0.0.1:8080 is for hacking. A hub on loopback cannot reach Windows, Li
 | Path | What |
 |---|---|
 | `src/routes/v1/` | Website hub routes (`/v1/*`). Token per account. |
-| `packages/fleet-agent/` | Go agent. Config: site origin + Hub token |
+| `packages/fleet-agent/` | Go agent. Config: site origin + Hub token. Layout: [`packages/fleet-agent/README.md`](packages/fleet-agent/README.md) |
 | `packages/fleet-tool/` | Operator / MCP. Env: `FLEET_URL` + `FLEET_TOKEN` |
 | `packages/fleet-worker/` | Cloudflare Worker backend. Same Worker also serves `/ops` when `ADMIN_EMAILS` is set (empty = no admins). |
 | `packages/fleet-hub/` | Optional standalone Node hub |

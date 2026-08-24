@@ -37,6 +37,7 @@ test("guide architecture sentence is explicit", () => {
   assert.match(tr("login.body"), /CLI/);
   assert.match(tr("home.hero"), /Every computer/);
   assert.equal(tr("nav.help"), "Help");
+  assert.equal(tr("nav.docs"), "Docs");
   setLocale("zh");
   assert.match(tr("guide.arch"), /连出去/);
   assert.match(tr("login.try"), /fleet\.ginfo\.cc/);

@@ -13,6 +13,9 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AgentRouteImport } from './routes/agent'
 import { Route as GuideRouteImport } from './routes/guide'
 import { Route as HelpRouteImport } from './routes/help'
+import { Route as DocsRouteImport } from './routes/docs'
+import { Route as DocsIndexRouteImport } from './routes/docs/index'
+import { Route as DocsSlugRouteImport } from './routes/docs/$slug'
 import { Route as LabRouteImport } from './routes/lab'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ReleasesRouteImport } from './routes/releases'
@@ -39,6 +42,30 @@ const HelpRoute = HelpRouteImport.update({
   path: '/help',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DocsRoute = DocsRouteImport.update({
+  id: '/docs',
+  path: '/docs',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DocsIndexRoute = DocsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => DocsRoute,
+} as any)
+const DocsSlugRoute = DocsSlugRouteImport.update({
+  id: '/$slug',
+  path: '/$slug',
+  getParentRoute: () => DocsRoute,
+} as any)
+interface DocsRouteChildren {
+  DocsIndexRoute: typeof DocsIndexRoute
+  DocsSlugRoute: typeof DocsSlugRoute
+}
+const DocsRouteChildren: DocsRouteChildren = {
+  DocsIndexRoute: DocsIndexRoute,
+  DocsSlugRoute: DocsSlugRoute,
+}
+const DocsRouteWithChildren = DocsRoute._addFileChildren(DocsRouteChildren)
 const LabRoute = LabRouteImport.update({
   id: '/lab',
   path: '/lab',
@@ -70,6 +97,8 @@ export interface FileRoutesByFullPath {
   '/agent': typeof AgentRoute
   '/guide': typeof GuideRoute
   '/help': typeof HelpRoute
+  '/docs': typeof DocsRouteWithChildren
+  '/docs/$slug': typeof DocsSlugRoute
   '/lab': typeof LabRoute
   '/login': typeof LoginRoute
   '/releases': typeof ReleasesRoute
@@ -81,6 +110,8 @@ export interface FileRoutesByTo {
   '/agent': typeof AgentRoute
   '/guide': typeof GuideRoute
   '/help': typeof HelpRoute
+  '/docs': typeof DocsRouteWithChildren
+  '/docs/$slug': typeof DocsSlugRoute
   '/lab': typeof LabRoute
   '/login': typeof LoginRoute
   '/releases': typeof ReleasesRoute
@@ -93,6 +124,8 @@ export interface FileRoutesById {
   '/agent': typeof AgentRoute
   '/guide': typeof GuideRoute
   '/help': typeof HelpRoute
+  '/docs': typeof DocsRouteWithChildren
+  '/docs/$slug': typeof DocsSlugRoute
   '/lab': typeof LabRoute
   '/login': typeof LoginRoute
   '/releases': typeof ReleasesRoute
@@ -106,6 +139,8 @@ export interface FileRouteTypes {
     | '/agent'
     | '/guide'
     | '/help'
+    | '/docs'
+    | '/docs/$slug'
     | '/lab'
     | '/login'
     | '/releases'
@@ -117,6 +152,8 @@ export interface FileRouteTypes {
     | '/agent'
     | '/guide'
     | '/help'
+    | '/docs'
+    | '/docs/$slug'
     | '/lab'
     | '/login'
     | '/releases'
@@ -128,6 +165,8 @@ export interface FileRouteTypes {
     | '/agent'
     | '/guide'
     | '/help'
+    | '/docs'
+    | '/docs/$slug'
     | '/lab'
     | '/login'
     | '/releases'
@@ -140,6 +179,7 @@ export interface RootRouteChildren {
   AgentRoute: typeof AgentRoute
   GuideRoute: typeof GuideRoute
   HelpRoute: typeof HelpRoute
+  DocsRoute: typeof DocsRouteWithChildren
   LabRoute: typeof LabRoute
   LoginRoute: typeof LoginRoute
   ReleasesRoute: typeof ReleasesRoute
@@ -176,6 +216,27 @@ declare module '@tanstack/react-router' {
       fullPath: '/help'
       preLoaderRoute: typeof HelpRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/docs': {
+      id: '/docs'
+      path: '/docs'
+      fullPath: '/docs'
+      preLoaderRoute: typeof DocsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/docs/': {
+      id: '/'
+      path: '/'
+      fullPath: '/docs/'
+      preLoaderRoute: typeof DocsIndexRouteImport
+      parentRoute: typeof DocsRoute
+    }
+    '/docs/$slug': {
+      id: '/$slug'
+      path: '/$slug'
+      fullPath: '/docs/$slug'
+      preLoaderRoute: typeof DocsSlugRouteImport
+      parentRoute: typeof DocsRoute
     }
     '/lab': {
       id: '/lab'
@@ -220,6 +281,7 @@ const rootRouteChildren: RootRouteChildren = {
   AgentRoute: AgentRoute,
   GuideRoute: GuideRoute,
   HelpRoute: HelpRoute,
+  DocsRoute: DocsRouteWithChildren,
   LabRoute: LabRoute,
   LoginRoute: LoginRoute,
   ReleasesRoute: ReleasesRoute,

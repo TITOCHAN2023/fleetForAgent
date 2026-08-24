@@ -73,9 +73,14 @@ test("login and authenticated reads return 403 when the row is banned", () => {
   ]) {
     assert.match(sliceFrom(worker, marker), /rejectIfBanned/, marker);
   }
-  const resolve = sliceFrom(worker, "async function resolveActor", 1400);
+  const resolve = sliceFrom(worker, "async function resolveActor", 2200);
   assert.match(resolve, /sess\.banned/);
   assert.match(resolve, /data\.error === "banned"/);
+  assert.match(resolve, /if \(cookie\(request, "fleet_session"\)\)/);
+  assert.ok(
+    resolve.indexOf('auth.kind === "oaep"') < resolve.indexOf('cookie(request, "fleet_session")'),
+    "explicit OAEP auth must not pay for an empty cookie-session lookup",
+  );
   const catchAll = worker.search(
     /^    const resolved = await resolveActor\(request, env, fleet\);\r?\n    if \(!resolved\.actor\) return deny\(resolved\);/m,
   );

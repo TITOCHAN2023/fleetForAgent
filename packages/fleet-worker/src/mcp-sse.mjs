@@ -7,6 +7,7 @@ import {
 
 export const MCP_PROTOCOL_VERSION = "2024-11-05";
 export const MCP_KEEPALIVE_MS = 15_000;
+export const MCP_SESSION_IDLE_MS = 10 * 60 * 1000;
 export const MCP_SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
 const encoder = new TextEncoder();
@@ -43,16 +44,22 @@ export function isJsonRpcMessage(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+export function isMcpSessionExpired({ now, expiresAt, lastActivityAt, idleMs }) {
+  return now >= expiresAt || now - lastActivityAt >= idleMs;
+}
+
 export class McpSseSession {
-  constructor({ rpc, now = Date.now, keepaliveMs = MCP_KEEPALIVE_MS } = {}) {
+  constructor({ rpc, now = Date.now, keepaliveMs = MCP_KEEPALIVE_MS, idleMs = MCP_SESSION_IDLE_MS } = {}) {
     if (typeof rpc !== "function") throw new Error("rpc required");
     this.operator = createOperator({ rpc, env: {} });
     this.now = now;
     this.keepaliveMs = keepaliveMs;
+    this.idleMs = idleMs;
     this.cancelled = new Map();
     this.controller = null;
     this.timer = null;
     this.expiresAt = 0;
+    this.lastActivityAt = 0;
     this.opened = false;
     this.closed = false;
   }
@@ -65,7 +72,8 @@ export class McpSseSession {
       });
     }
     this.opened = true;
-    this.expiresAt = this.now() + MCP_SESSION_MAX_AGE_MS;
+    this.lastActivityAt = this.now();
+    this.expiresAt = this.lastActivityAt + MCP_SESSION_MAX_AGE_MS;
     const endpoint = `/mcp/sse?sessionId=${encodeURIComponent(sessionId)}`;
     const stream = new ReadableStream({
       start: (controller) => {
@@ -73,7 +81,12 @@ export class McpSseSession {
         controller.enqueue(sseEvent("endpoint", endpoint));
         this.timer = setInterval(() => {
           if (this.closed) return;
-          if (this.expiresAt <= this.now()) {
+          if (isMcpSessionExpired({
+            now: this.now(),
+            expiresAt: this.expiresAt,
+            lastActivityAt: this.lastActivityAt,
+            idleMs: this.idleMs,
+          })) {
             this.close();
             return;
           }
@@ -136,6 +149,7 @@ export class McpSseSession {
     if (this.closed) return;
     const id = message.id;
     const method = message.method || "";
+    if (method !== "ping" && method !== "notifications/initialized") this.lastActivityAt = this.now();
     try {
       await authorize();
       if (method === "notifications/initialized") return;

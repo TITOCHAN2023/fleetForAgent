@@ -123,7 +123,8 @@ test("Worker refuses an HTML SPA fallback for /fleet-tool.tgz", async () => {
 
 test("wrangler keeps SPA fallback, explicit DO migrations, and token vars secret", () => {
   assert.match(wrangler, /not_found_handling = "single-page-application"/);
-  assert.match(wrangler, /run_worker_first = true/);
+  assert.match(wrangler, /run_worker_first = \["\/v1", "\/v1\/\*", "\/mcp\/sse", "\/ops", "\/fleet-tool\.tgz"\]/);
+  assert.doesNotMatch(wrangler, /run_worker_first = true/);
   assert.match(worker, /isFleetToolTgzPath/);
   assert.match(worker, /serveFleetToolTgz/);
   assert.equal((wrangler.match(/new_sqlite_classes/g) || []).length, 2);

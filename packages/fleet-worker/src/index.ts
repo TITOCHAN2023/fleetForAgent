@@ -16,6 +16,12 @@
 import { handleOAuth } from "./oauth";
 import { applyBannedState, rejectIfBanned } from "./ban.mjs";
 import { canClaimDevice, deviceOwnerConflict } from "./bind.mjs";
+import {
+  deviceCatalogKey,
+  listCatalogDevices,
+  markUserDeviceIndexReady,
+  rememberDeviceOwner,
+} from "./device-catalog.mjs";
 import { handleOpsRoute, isOpsAdmin } from "./ops.mjs";
 import {
   DESKTOP_WAIT_MS,
@@ -233,11 +239,10 @@ export default {
     if (url.pathname === "/v1/me" && request.method === "GET") {
       const resolved = await resolveActor(request, env, fleet);
       if (!resolved.actor || resolved.actor.super) return deny(resolved, true);
-      const sess = await resolveSession(request, fleet);
       return json({
         id: resolved.actor.id,
         email: resolved.actor.email,
-        ops: isOpsAdmin(sess, env.ADMIN_EMAILS),
+        ops: isOpsAdmin(resolved.actor, env.ADMIN_EMAILS),
       });
     }
     if (url.pathname === "/v1/hub_token" && request.method === "GET") {
@@ -437,18 +442,19 @@ export class FleetDO implements DurableObject {
     }
     if (url.pathname === "/device") {
       const id = url.searchParams.get("id") ?? "";
-      const row = await this.ctx.storage.get<DeviceRow>(`d:${id}`);
+      const row = await this.ctx.storage.get<DeviceRow>(deviceCatalogKey(id));
       return json(row ?? {});
     }
     if (url.pathname === "/upsert" && request.method === "POST") {
       const row = (await request.json()) as DeviceRow;
-      const prev = await this.ctx.storage.get<DeviceRow>(`d:${row.id}`);
+      const prev = await this.ctx.storage.get<DeviceRow>(deviceCatalogKey(row.id));
       if (deviceOwnerConflict(prev?.userId, row.userId)) {
         return json({ error: "taken" }, 409);
       }
       const next: DeviceRow = { ...prev, ...row, id: row.id };
       if (prev?.userId && !row.userId) next.userId = prev.userId;
-      await this.ctx.storage.put(`d:${row.id}`, next);
+      await this.ctx.storage.put(deviceCatalogKey(row.id), next);
+      await rememberDeviceOwner(this.ctx.storage, prev, next);
       return json({ ok: true });
     }
     if (url.pathname === "/oauth" && request.method === "POST") {
@@ -546,9 +552,7 @@ export class FleetDO implements DurableObject {
   }
 
   async list(userId: string | null): Promise<DeviceRow[]> {
-    const map = await this.ctx.storage.list<DeviceRow>({ prefix: "d:" });
-    let rows = [...map.values()];
-    if (userId) rows = rows.filter((r) => r.userId === userId);
+    const rows = await listCatalogDevices<DeviceRow>(this.ctx.storage, userId);
     rows.sort((a, b) => Number(b.online) - Number(a.online) || b.lastSeen - a.lastSeen);
     return rows.map((r) => ({
       id: r.id,
@@ -740,6 +744,7 @@ export class FleetDO implements DurableObject {
     };
     await this.ctx.storage.put(`u:${email}`, user);
     await this.ctx.storage.put(`id:${user.id}`, email);
+    await markUserDeviceIndexReady(this.ctx.storage, user.id);
     return this.issueSession(user);
   }
 
@@ -758,6 +763,7 @@ export class FleetDO implements DurableObject {
       };
       await this.ctx.storage.put(`u:${email}`, user);
       await this.ctx.storage.put(`id:${user.id}`, email);
+      await markUserDeviceIndexReady(this.ctx.storage, user.id);
     }
     return this.issueSession(user);
   }
@@ -1416,12 +1422,6 @@ async function resolveActor(
   const auth = parseAuthorization(request.headers.get("authorization"));
   if (need && auth.kind === "bearer" && auth.token === need) return { actor: { id: "*", super: true } };
 
-  const sess = await resolveSession(request, fleet);
-  if (sess) {
-    if (sess.banned) return { error: "banned", status: 403 };
-    return { actor: sess };
-  }
-
   if (auth.kind === "oaep") {
     const wrapRes = await fleet.fetch(
       new Request("https://fleet/resolve-wrap", {
@@ -1444,6 +1444,13 @@ async function resolveActor(
   }
   if (auth.kind === "bearer" && auth.token.startsWith("flt_1.")) {
     return { error: HIGH_SEC_UPGRADE, status: 401, code: "HIGH_SEC" };
+  }
+  if (cookie(request, "fleet_session")) {
+    const sess = await resolveSession(request, fleet);
+    if (sess) {
+      if (sess.banned) return { error: "banned", status: 403 };
+      return { actor: sess };
+    }
   }
   return { error: "unauthorized", status: 401 };
 }

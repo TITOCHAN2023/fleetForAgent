@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { McpSseSession, isJsonRpcMessage } from "./src/mcp-sse.mjs";
+import {
+  MCP_SESSION_IDLE_MS,
+  McpSseSession,
+  isJsonRpcMessage,
+  isMcpSessionExpired,
+} from "./src/mcp-sse.mjs";
 
 async function readEvent(reader) {
   const chunk = await reader.read();
@@ -84,4 +89,37 @@ test("closed Worker MCP SSE sessions cannot dispatch more work", async () => {
   );
   assert.equal(session.closed, true);
   assert.equal(authChecks, 0);
+});
+
+test("Worker MCP SSE expires idle sessions without treating protocol pings as work", async () => {
+  let now = 1_000;
+  const session = new McpSseSession({
+    rpc: async () => ({}),
+    now: () => now,
+    keepaliveMs: 60_000,
+  });
+  const reader = session.open("idle").body.getReader();
+  await readEvent(reader);
+  await session.dispatch({ jsonrpc: "2.0", id: 1, method: "ping" });
+  assert.equal(session.lastActivityAt, 1_000);
+  now += MCP_SESSION_IDLE_MS;
+  assert.equal(isMcpSessionExpired({
+    now,
+    expiresAt: session.expiresAt,
+    lastActivityAt: session.lastActivityAt,
+    idleMs: session.idleMs,
+  }), true);
+  await reader.cancel();
+});
+
+test("meaningful MCP work refreshes the idle deadline", async () => {
+  let now = 1_000;
+  const session = new McpSseSession({ rpc: async () => ({}), now: () => now });
+  const reader = session.open("active").body.getReader();
+  await readEvent(reader);
+  now += 5_000;
+  await session.dispatch({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+  assert.equal(session.lastActivityAt, now);
+  await readEvent(reader);
+  await reader.cancel();
 });

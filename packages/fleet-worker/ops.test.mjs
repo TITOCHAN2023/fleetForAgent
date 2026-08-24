@@ -355,7 +355,9 @@ test("worker gates /ops before assets and /v1/ops before the catch-all actor", (
   assert.match(worker, /handleOpsRoute/);
   assert.match(worker, /archFromBody/);
   assert.match(worker, /ADMIN_EMAILS/);
-  assert.match(worker, /ops: isOpsAdmin\(sess, env\.ADMIN_EMAILS\)/);
+  assert.match(worker, /ops: isOpsAdmin\(resolved\.actor, env\.ADMIN_EMAILS\)/);
+  const me = worker.slice(worker.indexOf('url.pathname === "/v1/me"'), worker.indexOf('url.pathname === "/v1/hub_token"'));
+  assert.equal((me.match(/resolveSession/g) || []).length, 0, "/v1/me must reuse its resolved actor");
 });
 
 test("dispatchOps uses the cookie session and ignores Authorization", () => {

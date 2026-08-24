@@ -46,8 +46,9 @@ static int fleetCaptureBGRA(uint8_t **out, int *w, int *h) {
 		kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
 	CGColorSpaceRelease(cs);
 	if (!ctx) { free(buf); CFRelease(img); return -3; }
-	CGContextTranslateCTM(ctx, 0, *h);
-	CGContextScaleCTM(ctx, 1, -1);
+	// Bitmap rows already match the CGImage's top-to-bottom row order. Go's
+	// image package interprets row zero as the top, so flipping the CTM here
+	// would turn the encoded screenshot upside down.
 	CGContextDrawImage(ctx, CGRectMake(0, 0, *w, *h), img);
 	CGContextRelease(ctx);
 	CFRelease(img);
@@ -103,6 +104,22 @@ import (
 	"unsafe"
 )
 
+func rgbaFromBGRA(src []byte, w, h int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		srcRow := src[y*w*4 : (y+1)*w*4]
+		dstRow := img.Pix[y*img.Stride : y*img.Stride+w*4]
+		for x := 0; x < w; x++ {
+			o := x * 4
+			dstRow[o+0] = srcRow[o+2]
+			dstRow[o+1] = srcRow[o+1]
+			dstRow[o+2] = srcRow[o+0]
+			dstRow[o+3] = 255
+		}
+	}
+	return img
+}
+
 func desktopSupported() bool { return true }
 
 func nativeCapture() (*image.RGBA, DisplayInfo, error) {
@@ -117,17 +134,10 @@ func nativeCapture() (*image.RGBA, DisplayInfo, error) {
 	if rc := C.fleetCaptureBGRA(&raw, &w, &h); rc != 0 || raw == nil || w < 1 || h < 1 {
 		return nil, DisplayInfo{}, desktopError{code: "capture_failed", msg: "fleet: CGDisplayCreateImage failed"}
 	}
+	defer C.free(unsafe.Pointer(raw))
 	n := int(w) * int(h)
 	src := unsafe.Slice((*byte)(unsafe.Pointer(raw)), n*4)
-	img := image.NewRGBA(image.Rect(0, 0, int(w), int(h)))
-	for i := 0; i < n; i++ {
-		o := i * 4
-		img.Pix[o+0] = src[o+2]
-		img.Pix[o+1] = src[o+1]
-		img.Pix[o+2] = src[o+0]
-		img.Pix[o+3] = 255
-	}
-	C.free(unsafe.Pointer(raw))
+	img := rgbaFromBGRA(src, int(w), int(h))
 	scale := darwinBackingScale()
 	darwinCapSize.w, darwinCapSize.h = float64(w), float64(h)
 	return img, DisplayInfo{ID: "primary", Width: int(w), Height: int(h), Scale: scale}, nil

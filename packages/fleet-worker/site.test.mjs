@@ -8,6 +8,9 @@ const html = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "public/index.html"),
   "utf8",
 );
+const pluginRegistry = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "public/plugin-registry.json"), "utf8"),
+);
 
 test("hub site default locale is English", () => {
   assert.match(html, /<html lang="en">/);
@@ -45,10 +48,10 @@ test("hub site explains multi-os fleet and ships a Help page", () => {
   assert.match(html, /ops-switch/);
   assert.match(html, /href="\/ops"/);
   assert.match(html, /href="\/plugins"/);
-  assert.match(html, /fleet\.acp/);
+  assert.match(html, /plugin-registry\.json/);
+  assert.match(html, /plugin-grid/);
+  assert.match(html, /TITOCHAN2023\/fleet-plugins/);
   assert.match(html, /install_plugin/);
-  assert.match(html, /delegate_to_acp/);
-  assert.match(html, /TITOCHAN2023\/fleet-acp-plugin/);
   assert.match(html, /user\.ops/);
   assert.match(html, /command: "npx"/);
   assert.match(html, /type: "http"/);
@@ -72,6 +75,14 @@ test("hub site explains multi-os fleet and ships a Help page", () => {
     html.indexOf('t("mcpStdioConfig")') < html.indexOf('t("quickTitle")'),
     "AI-side MCP configs must render above device installers",
   );
+});
+
+test("plugin page reads the pinned public registry without exposing artifact URLs", () => {
+  assert.match(pluginRegistry.source.repository, /TITOCHAN2023\/fleet-plugins/);
+  assert.match(pluginRegistry.source.commit, /^[0-9a-f]{40}$/);
+  assert.equal(pluginRegistry.plugins[0].id, "fleet.acp");
+  assert.equal(pluginRegistry.plugins[0].artifacts, undefined);
+  assert.ok(pluginRegistry.plugins[0].platforms.length > 0);
 });
 
 test("tokenless Settings configs stay copyable and omit every token field", () => {

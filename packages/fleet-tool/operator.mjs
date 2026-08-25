@@ -1,42 +1,57 @@
+import { OFFICIAL_PLUGIN_CATALOG as GENERATED_PLUGIN_CATALOG, PLUGIN_REGISTRY_SOURCE } from "./official-plugins.generated.mjs";
+
 /**
  * MCP operator surface. Last-used lives in this process only.
  * Do not write hub_sessions, ~/.fleet, or a workspace file.
  */
 
-export const FLEET_VERSION = "0.4.0";
+export const FLEET_VERSION = "0.4.1";
 
-const ACP_RELEASE = "https://github.com/TITOCHAN2023/fleet-acp-plugin/releases/download/v0.1.0";
+export { PLUGIN_REGISTRY_SOURCE };
+export const OFFICIAL_PLUGIN_CATALOG = GENERATED_PLUGIN_CATALOG;
 
-export const OFFICIAL_PLUGINS = Object.freeze([
-  Object.freeze({
-    schema_version: 1,
-    id: "fleet.acp",
-    name: "Fleet ACP",
-    version: "0.1.0",
-    publisher: "Fleet Official",
-    license: "MIT",
-    description: "Delegate a task to any Agent Client Protocol v1 coding agent installed on the remote machine.",
-    repository: "https://github.com/TITOCHAN2023/fleet-acp-plugin",
-    actions: ["configure", "profiles", "delegate"],
-    artifacts: [
-      { os: "darwin", arch: "amd64", url: `${ACP_RELEASE}/fleet-acp-plugin-darwin-amd64`, sha256: "f1ca6f8db552703dc86965bddccfcfe95f6a8fb60700cc58940668e26a641f48", entrypoint: "fleet-acp-plugin" },
-      { os: "darwin", arch: "arm64", url: `${ACP_RELEASE}/fleet-acp-plugin-darwin-arm64`, sha256: "3112a1f9cc23bcc0df33fb40b58ba3894099417f228284bc20046d3ef9f27cec", entrypoint: "fleet-acp-plugin" },
-      { os: "linux", arch: "amd64", url: `${ACP_RELEASE}/fleet-acp-plugin-linux-amd64`, sha256: "6f5a7a128f7b66ceb8acea1c6286b5242846a499431f80912e24e4d18503642a", entrypoint: "fleet-acp-plugin" },
-      { os: "linux", arch: "arm64", url: `${ACP_RELEASE}/fleet-acp-plugin-linux-arm64`, sha256: "b8e6f4db282b4751d36796d026fa2801fae0f25b063737b4d1d7d90a322bfc08", entrypoint: "fleet-acp-plugin" },
-      { os: "windows", arch: "amd64", url: `${ACP_RELEASE}/fleet-acp-plugin-windows-amd64.exe`, sha256: "35bfd07b5cb4fae8e7b913347fdc282748b0fcef840461b8b163402bbe5e38ee", entrypoint: "fleet-acp-plugin.exe" },
-      { os: "windows", arch: "arm64", url: `${ACP_RELEASE}/fleet-acp-plugin-windows-arm64.exe`, sha256: "ff1f17171bd367e3111f09cb8f6096f8484fd71e63f6c52277cf15e554a40b18", entrypoint: "fleet-acp-plugin.exe" },
-    ],
-  }),
-]);
+function installManifest(plugin) {
+  return Object.freeze({
+    schema_version: plugin.schema_version,
+    id: plugin.id,
+    name: plugin.name,
+    version: plugin.version,
+    publisher: plugin.publisher,
+    license: plugin.license,
+    description: plugin.description.en,
+    repository: plugin.repository,
+    actions: plugin.actions,
+    artifacts: plugin.artifacts,
+  });
+}
+
+// Backward-compatible install manifests. Catalog-only entries live in
+// OFFICIAL_PLUGIN_CATALOG and are never sent to a device.
+export const OFFICIAL_PLUGINS = Object.freeze(
+  OFFICIAL_PLUGIN_CATALOG.filter((plugin) => plugin.installable).map(installManifest),
+);
 
 export function officialPlugin(id) {
   return OFFICIAL_PLUGINS.find((plugin) => plugin.id === String(id || "").trim()) || null;
 }
 
 export function publicOfficialPlugins() {
-  return OFFICIAL_PLUGINS.map(({ artifacts, ...plugin }) => ({
-    ...plugin,
-    platforms: artifacts.map(({ os, arch }) => ({ os, arch })),
+  return OFFICIAL_PLUGIN_CATALOG.map((plugin) => ({
+    schema_version: plugin.schema_version,
+    id: plugin.id,
+    order: plugin.order,
+    name: plugin.name,
+    version: plugin.version,
+    publisher: plugin.publisher,
+    license: plugin.license,
+    repository: plugin.repository,
+    homepage: plugin.homepage,
+    categories: plugin.categories,
+    description: plugin.description.en,
+    descriptions: plugin.description,
+    installable: plugin.installable,
+    actions: plugin.actions,
+    platforms: plugin.artifacts.map(({ os, arch }) => ({ os, arch })),
   }));
 }
 
@@ -923,7 +938,7 @@ export function createOperator({
     }
 
     if (name === "list_official_plugins") {
-      return { plugins: publicOfficialPlugins() };
+      return { registry: PLUGIN_REGISTRY_SOURCE, plugins: publicOfficialPlugins() };
     }
 
     if (name === "get_plugin_task") {

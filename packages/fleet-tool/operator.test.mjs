@@ -834,8 +834,8 @@ test("applyCliDevFlag sets FLEET_DEV and strips --dev", () => {
   assert.equal(isFleetDev({}), false);
 });
 
-test("MCP version is 0.4.0", () => {
-  assert.equal(FLEET_VERSION, "0.4.0");
+test("MCP version is 0.4.1", () => {
+  assert.equal(FLEET_VERSION, "0.4.1");
 });
 
 test("official plugin registry pins every platform artifact to SHA-256", () => {
@@ -847,6 +847,8 @@ test("official plugin registry pins every platform artifact to SHA-256", () => {
     assert.match(artifact.sha256, /^[0-9a-f]{64}$/);
   }
   assert.equal(publicOfficialPlugins()[0].artifacts, undefined);
+  assert.equal(publicOfficialPlugins()[0].installable, true);
+  assert.equal(publicOfficialPlugins()[0].descriptions.zh.includes("Agent"), true);
 });
 
 test("plugin tools send ids and actions but never client-supplied artifact URLs", async () => {

@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "source": {
+    "repository": "https://github.com/TITOCHAN2023/fleet-plugins",
+    "commit": "b10eb52ac817e500f459c3fa9e31ddc093aa5b25"
+  },
+  "plugins": [
+    {
+      "schema_version": 1,
+      "id": "fleet.acp",
+      "order": 10,
+      "name": "Fleet ACP",
+      "version": "0.1.0",
+      "publisher": "Fleet Official",
+      "license": "MIT",
+      "repository": "https://github.com/TITOCHAN2023/fleet-acp-plugin",
+      "homepage": "https://github.com/TITOCHAN2023/fleet-acp-plugin",
+      "categories": [
+        "Agent",
+        "ACP",
+        "Coding"
+      ],
+      "description": {
+        "en": "Delegate a task to any Agent Client Protocol v1 coding agent installed on the remote machine.",
+        "zh": "把任务交给远端机器上已经安装的任意 Agent Client Protocol v1 编码 Agent。"
+      },
+      "installable": true,
+      "actions": [
+        "configure",
+        "profiles",
+        "delegate"
+      ],
+      "source_file": "plugins/fleet-acp.md",
+      "body": "# Fleet ACP\n\nFleet ACP is an MIT-licensed bridge between Fleet and Agent Client Protocol v1.\nThe remote machine owns its ACP-compatible agent, account, model, and API keys.\nThe plugin only initializes that local process, creates a session, delegates a\nprompt, and returns streamed output through the existing Fleet task ticket.\n\nInstall it by asking an AI connected to Fleet Tool to call `install_plugin` with\n`plugin_id` set to `fleet.acp`. Software changes always require confirmation on\nthe target device.",
+      "platforms": [
+        {
+          "os": "darwin",
+          "arch": "amd64"
+        },
+        {
+          "os": "darwin",
+          "arch": "arm64"
+        },
+        {
+          "os": "linux",
+          "arch": "amd64"
+        },
+        {
+          "os": "linux",
+          "arch": "arm64"
+        },
+        {
+          "os": "windows",
+          "arch": "amd64"
+        },
+        {
+          "os": "windows",
+          "arch": "arm64"
+        }
+      ]
+    }
+  ]
+}

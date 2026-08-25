@@ -38,6 +38,7 @@ function assertNpmTarball(tgz) {
     "package/package.json",
     "package/index.mjs",
     "package/operator.mjs",
+    "package/official-plugins.generated.mjs",
     "package/tokenv1.mjs",
   ]) {
     assert.ok(listing.includes(name), `missing ${name}`);
@@ -59,7 +60,7 @@ test("packer output matches the committed tarball contents", () => {
   try {
     packFleetTool({ outFile: fresh });
     assertNpmTarball(fresh);
-    for (const name of ["package/package.json", "package/index.mjs", "package/operator.mjs", "package/tokenv1.mjs"]) {
+    for (const name of ["package/package.json", "package/index.mjs", "package/operator.mjs", "package/official-plugins.generated.mjs", "package/tokenv1.mjs"]) {
       assert.equal(tarballFile(publicTgz, name), tarballFile(fresh, name), name);
     }
   } finally {

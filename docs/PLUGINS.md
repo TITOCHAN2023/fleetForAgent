@@ -1,6 +1,6 @@
 # Fleet 插件系统
 
-Fleet 插件运行在设备上的 Fleet Agent 中，不运行在 Hub。Hub 只负责把官方插件 id 转成固定清单并转发任务；安装、校验、执行和授权都由设备完成。
+Fleet 插件运行在设备上的 Fleet Agent 中，不运行在 Hub。公开的 [`fleet-plugins`](https://github.com/TITOCHAN2023/fleet-plugins) 仓库以“一插件一 Markdown”维护收录清单；Fleet 固定到该仓库的一个 commit，再把生成快照交给网站、Tool 和 Hub。Hub 只负责把官方插件 id 转成固定清单并转发任务；安装、校验、执行和授权都由设备完成。
 
 ## 数据流
 
@@ -29,7 +29,8 @@ sequenceDiagram
 ## 安全边界
 
 - Tool 不能提交下载 URL、文件路径或 SHA；它只能提交官方插件 id。
-- Hub 从代码内的官方目录注入清单。
+- Hub 从构建时固定的注册表快照注入清单，不在安装时读取 GitHub 的可变内容。
+- 收录不等于可安装；只有 `installable: true` 且包含官方 Release 和 SHA-256 的条目才会进入安装白名单。
 - Agent 只接受 `Fleet Official`、`https://github.com/TITOCHAN2023/*/releases/download/*`，并要求当前 OS/CPU 有精确 artifact。
 - 下载上限 100 MiB，必须通过固定 SHA-256；安装使用同目录临时文件和原子替换。
 - 安装和卸载即使设备设置为 `permit=allow` 也必须在设备端确认。

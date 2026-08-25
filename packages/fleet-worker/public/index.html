@@ -180,6 +180,20 @@
       @media (min-width: 640px) { .blog-cta { flex-direction: row; align-items: center; justify-content: space-between; } }
       .dl { display: grid; gap: 12px; }
       @media (min-width: 800px) { .dl { grid-template-columns: 1fr 1fr; } }
+      .plugin-head { display: flex; flex-direction: column; align-items: flex-start; gap: 24px; }
+      .plugin-facts { display: flex; flex-wrap: wrap; gap: 10px 20px; margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); color: var(--subtle); font-size: 12px; }
+      .plugin-grid { display: grid; gap: 12px; margin-top: 16px; align-items: stretch; }
+      .plugin-card { min-width: 0; min-height: 344px; display: flex; flex-direction: column; }
+      .plugin-card-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 16px; }
+      .plugin-version { border: 1px solid var(--border); border-radius: 999px; padding: 4px 9px; background: var(--bg); font-family: var(--mono); font-size: 11px; color: var(--subtle); }
+      .plugin-summary { flex: 1; margin-top: 16px; color: var(--muted); font-size: 14px; line-height: 1.65; }
+      .plugin-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 18px; }
+      .plugin-tag { border: 1px solid var(--border); border-radius: 999px; padding: 4px 9px; color: var(--subtle); font-size: 11px; }
+      .plugin-platforms { min-height: 56px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); color: var(--subtle); font-size: 12px; line-height: 1.6; }
+      .plugin-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; margin-top: 14px; }
+      .plugin-actions .btn { min-width: 0; height: 40px; padding: 0 12px; font-size: 12px; }
+      .plugin-byline { margin-top: 10px; text-align: center; color: var(--subtle); font-size: 11px; }
+      @media (min-width: 720px) { .plugin-head { flex-direction: row; align-items: flex-end; justify-content: space-between; } .plugin-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
       @media (prefers-reduced-motion: reduce) {
         .seg .seg-thumb, .seg button, .btn { transition: none !important; transform: none !important; }
       }
@@ -337,6 +351,7 @@
         secret: "",
         meta: null,
         computers: [],
+        pluginRegistry: null,
         prompt: null,
         metaReady: false,
       };
@@ -498,9 +513,19 @@
           state.blogPost = null;
         }
       }
+      async function loadPluginRegistry() {
+        if (state.pluginRegistry) return;
+        try {
+          var response = await fetch("/plugin-registry.json");
+          var registry = response.ok ? await response.json() : null;
+          state.pluginRegistry = registry && Array.isArray(registry.plugins) ? registry : { plugins: [] };
+        } catch {
+          state.pluginRegistry = { plugins: [] };
+        }
+      }
       async function go(path) {
         if (location.pathname !== path) history.pushState({}, "", path);
-        await loadBlog();
+        await Promise.all([loadBlog(), loadPluginRegistry()]);
         render();
       }
       async function api(path, opt) {
@@ -544,7 +569,7 @@
           state.metaReady = true;
           try { const j = await api("/v1/list_computers", { method: "POST", body: "{}" }); state.computers = j.computers || []; } catch { state.computers = []; }
         }
-        await loadBlog();
+        await Promise.all([loadBlog(), loadPluginRegistry()]);
         render();
       }
       function githubMark() {
@@ -871,29 +896,35 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
       }
       function pluginsView() {
         const zh = state.locale === "zh";
-        const prompts = zh ? [
-          ["安装官方 ACP 插件", "使用 Fleet Tool：先 list_computers 并选择目标机器，然后 install_plugin，plugin_id 填 fleet.acp。拿到 corr 后持续调用 get_plugin_task，直到完成。不要改用 run 手工下载安装。"],
-          ["绑定本机 ACP Agent", "在当前 Fleet 机器上调用 configure_acp：profile 用 default，command 填这台机器上已安装的 ACP Agent 启动命令，args 按需填写。然后用 get_plugin_task 等待完成。"],
-          ["把任务交给远端 Agent", "调用 delegate_to_acp，把 cwd 设为远端机器上的绝对项目路径，prompt 设为要交给远端 Agent 的任务。默认拒绝嵌套权限；确实需要时才设 permission_mode=allow_once。用 get_plugin_task 读取结果。"],
-        ] : [
-          ["Install the official ACP plugin", "Use Fleet Tool: list_computers and select the target, then call install_plugin with plugin_id fleet.acp. Poll get_plugin_task with the returned corr until done. Do not replace this with a manual download through run."],
-          ["Bind a local ACP agent", "On the current Fleet machine call configure_acp: use profile default, set command to the ACP agent executable already installed there, and pass args if needed. Poll get_plugin_task until done."],
-          ["Delegate to the remote agent", "Call delegate_to_acp with cwd set to an absolute project path on the remote machine and prompt set to the delegated task. Nested permissions reject by default; use permission_mode=allow_once only when required. Read the result with get_plugin_task."],
-        ];
+        const registry = state.pluginRegistry || { plugins: [] };
+        const cards = registry.plugins.map((plugin) => {
+          const description = plugin.description && plugin.description[zh ? "zh" : "en"] || "";
+          const prompt = zh
+            ? `使用 Fleet Tool 安装官方插件：先调用 list_computers 并选中目标机器，再调用 install_plugin，plugin_id 填 ${plugin.id}。拿到 corr 后持续调用 get_plugin_task，直到完成。不要用 run 手工下载安装。`
+            : `Use Fleet Tool to install the official plugin: call list_computers and select the target, then call install_plugin with plugin_id ${plugin.id}. Poll get_plugin_task with the returned corr until it finishes. Do not download it manually through run.`;
+          const groups = {};
+          (plugin.platforms || []).forEach((platform) => {
+            const os = platform.os === "darwin" ? "macOS" : platform.os === "windows" ? "Windows" : "Linux";
+            (groups[os] ||= []).push(platform.arch);
+          });
+          const platforms = Object.entries(groups).map(([os, arches]) => `${os} ${arches.join(" / ")}`).join(" · ");
+          return `<article class="card plugin-card">
+            <div class="plugin-card-head"><div style="min-width:0"><p class="subtle" style="font-family:var(--mono);overflow:hidden;text-overflow:ellipsis">${esc(plugin.id)}</p><h2 style="margin-top:8px">${esc(plugin.name)}</h2></div><span class="plugin-version">v${esc(plugin.version)}</span></div>
+            <p class="plugin-summary">${esc(description)}</p>
+            <div class="plugin-tags">${(plugin.categories || []).map((category) => `<span class="plugin-tag">${esc(category)}</span>`).join("")}</div>
+            <div class="plugin-platforms">${plugin.installable ? esc(platforms) : (zh ? "已收录，暂未开放 Fleet 远程安装" : "Curated, but not yet available for remote installation")}</div>
+            <div class="plugin-actions">${plugin.installable ? `<button class="btn primary" data-copy="${esc(prompt)}">${zh ? "复制安装指令" : "Copy install prompt"}</button>` : `<button class="btn" disabled>${zh ? "仅收录" : "Catalog only"}</button>`}<a class="btn" href="${esc(plugin.repository)}" target="_blank" rel="noreferrer">GitHub ↗</a></div>
+            <p class="plugin-byline">${esc(plugin.license)} · ${esc(plugin.publisher)}</p>
+          </article>`;
+        }).join("");
+        const source = registry.source || {};
         return `${chrome()}
           <div class="wrap">
             <section class="card" style="padding:28px">
-              <p class="kicker">Fleet plugins</p>
-              <h1 style="max-width:780px">${zh ? "把能力装到远端 Agent，不把脚本塞进 Hub。" : "Install capability on the remote Agent—not scripts in the Hub."}</h1>
-              <p class="lead" style="max-width:760px;font-size:18px">${zh ? "复制下面的指令给正在使用 Fleet Tool 的 AI。Tool 只提交官方插件 id；设备核对平台和 SHA-256，并在本机确认后安装。" : "Copy a prompt below to the AI using Fleet Tool. The Tool submits only an official id; the device verifies platform and SHA-256 before local approval."}</p>
+              <div class="plugin-head"><div style="max-width:660px"><p class="kicker">Official plugin registry</p><h1 style="max-width:none;font-size:clamp(30px,5vw,44px)">${zh ? "官方收录的开源插件" : "Officially curated open-source plugins"}</h1><p class="lead" style="max-width:650px">${zh ? "每个插件来自注册表仓库中的一个 Markdown 文件。网站、Fleet Tool 和 Hub 使用同一份固定快照。" : "Each plugin comes from one Markdown file in the registry repository. The website, Fleet Tool, and Hub use the same pinned snapshot."}</p></div><a class="btn" href="${esc(source.repository || "https://github.com/TITOCHAN2023/fleet-plugins")}" target="_blank" rel="noreferrer">${zh ? "查看注册表" : "View registry"} ↗</a></div>
+              <div class="plugin-facts"><span>${zh ? "设备端确认" : "Device approval"}</span><span>Release + SHA-256</span><span style="font-family:var(--mono)">${esc((source.commit || "").slice(0, 12))}</span></div>
             </section>
-            <section class="card" style="margin-top:16px;padding:24px">
-              <div class="row" style="justify-content:space-between;align-items:flex-start;gap:20px">
-                <div style="max-width:760px"><p class="subtle" style="font-family:var(--mono)">fleet.acp · v0.1.0 · MIT · Fleet Official</p><h2 style="margin-top:12px">Fleet ACP</h2><p class="muted" style="margin-top:10px">${zh ? "通用 Agent Client Protocol v1 桥。远端机器自行安装 ACP 兼容 Agent；插件负责初始化、创建会话、下发任务并收集流式结果，不捆绑模型、账号或 API Key。" : "A generic Agent Client Protocol v1 bridge. The remote machine owns its ACP agent; the plugin initializes it, creates a session, delegates a task, and collects streamed output. No model, account, or API key is bundled."}</p></div>
-                <a class="btn" href="https://github.com/TITOCHAN2023/fleet-acp-plugin" target="_blank" rel="noreferrer">GitHub</a>
-              </div>
-            </section>
-            <div class="grid-3" style="margin-top:16px;align-items:stretch">${prompts.map(([title, prompt], i) => `<article class="card" style="display:flex;flex-direction:column;min-height:280px"><div class="row" style="justify-content:space-between"><div><p class="subtle" style="font-family:var(--mono)">0${i+1}</p><h3 style="margin-top:8px">${title}</h3></div><button class="btn" data-copy="${esc(prompt)}">${zh ? "复制" : "Copy"}</button></div><pre style="margin-top:18px;flex:1;white-space:pre-wrap">${esc(prompt)}</pre></article>`).join("")}</div>
+            <div class="plugin-grid">${cards || `<section class="card"><p class="muted">${zh ? "插件注册表暂时不可用。" : "The plugin registry is temporarily unavailable."}</p></section>`}</div>
           </div>`;
       }
       function fleetView() {
@@ -956,7 +987,7 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
         document.querySelectorAll("[data-copy-secret]").forEach((b) => b.onclick = () => { if (state.secret) navigator.clipboard.writeText(state.secret); });
         requestAnimationFrame(syncSegments);
       }
-      window.addEventListener("popstate", () => { void loadBlog().then(render); });
+      window.addEventListener("popstate", () => { void Promise.all([loadBlog(), loadPluginRegistry()]).then(render); });
       window.addEventListener("resize", syncSegments);
       window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
         if (state.themePref === "system") { applyTheme("system"); syncSegments(); void renderBlogMermaid(); }

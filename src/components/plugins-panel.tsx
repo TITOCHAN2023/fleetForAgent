@@ -1,45 +1,83 @@
 import { useState } from "react";
-import { Check, Copy, Github, Network, PackageCheck, ShieldCheck } from "lucide-react";
+import { Check, Copy, ExternalLink, FileText, PackageCheck, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { officialPlugins, pluginRegistrySource, type OfficialPlugin } from "@/lib/fleet/plugin-registry";
 import { useI18n } from "@/lib/i18n/use-i18n";
 
-const STEPS = {
-  install: {
-    zh: "使用 Fleet Tool：先 list_computers 并选择目标机器，然后 install_plugin，plugin_id 填 fleet.acp。拿到 corr 后持续调用 get_plugin_task，直到完成。不要改用 run 手工下载安装。",
-    en: "Use Fleet Tool: list_computers and select the target, then call install_plugin with plugin_id fleet.acp. Poll get_plugin_task with the returned corr until done. Do not replace this with a manual download through run.",
-  },
-  configure: {
-    zh: "在当前 Fleet 机器上调用 configure_acp：profile 用 default，command 填这台机器上已安装的 ACP Agent 启动命令，args 按需填写。然后用 get_plugin_task 等待完成。",
-    en: "On the current Fleet machine call configure_acp: use profile default, set command to the ACP agent executable already installed there, and pass args if needed. Poll get_plugin_task until done.",
-  },
-  delegate: {
-    zh: "调用 delegate_to_acp，把 cwd 设为远端机器上的绝对项目路径，prompt 设为要交给远端 Agent 的任务。默认拒绝嵌套权限；确实需要时才设 permission_mode=allow_once。用 get_plugin_task 读取结果。",
-    en: "Call delegate_to_acp with cwd set to an absolute project path on the remote machine and prompt set to the delegated task. Nested permissions reject by default; use permission_mode=allow_once only when required. Read the result with get_plugin_task.",
-  },
-} as const;
+function installPrompt(plugin: OfficialPlugin, zh: boolean) {
+  return zh
+    ? `使用 Fleet Tool 安装官方插件：先调用 list_computers 并选中目标机器，再调用 install_plugin，plugin_id 填 ${plugin.id}。拿到 corr 后持续调用 get_plugin_task，直到完成。不要用 run 手工下载安装。`
+    : `Use Fleet Tool to install the official plugin: call list_computers and select the target, then call install_plugin with plugin_id ${plugin.id}. Poll get_plugin_task with the returned corr until it finishes. Do not download it manually through run.`;
+}
 
-function CopyPrompt({ title, text, index }: { title: string; text: string; index: string }) {
+function platformLabels(plugin: OfficialPlugin) {
+  const grouped = new Map<string, Set<string>>();
+  for (const artifact of plugin.artifacts) {
+    const label = artifact.os === "darwin" ? "macOS" : artifact.os === "windows" ? "Windows" : "Linux";
+    const arches = grouped.get(label) ?? new Set<string>();
+    arches.add(artifact.arch);
+    grouped.set(label, arches);
+  }
+  return [...grouped].map(([os, arches]) => `${os} ${[...arches].join(" / ")}`);
+}
+
+function PluginCard({ plugin, zh }: { plugin: OfficialPlugin; zh: boolean }) {
   const [copied, setCopied] = useState(false);
-  async function copy() {
-    await navigator.clipboard.writeText(text);
+  async function copyInstall() {
+    await navigator.clipboard.writeText(installPrompt(plugin, zh));
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1400);
   }
+
   return (
-    <article className="flex min-h-64 flex-col rounded-xl border border-border bg-surface p-5">
+    <article className="flex min-h-80 flex-col rounded-xl border border-border bg-surface p-5">
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="font-mono text-xs text-subtle">{index}</p>
-          <h3 className="mt-2 text-sm font-medium">{title}</h3>
+        <div className="min-w-0">
+          <p className="truncate font-mono text-xs text-subtle">{plugin.id}</p>
+          <h2 className="mt-2 text-lg font-medium">{plugin.name}</h2>
         </div>
-        <Button type="button" variant="secondary" size="sm" onClick={copy}>
-          {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-          {copied ? "Copied" : "Copy"}
+        <span className="shrink-0 rounded-full border border-border bg-bg px-2.5 py-1 font-mono text-[11px] text-subtle">
+          v{plugin.version}
+        </span>
+      </div>
+
+      <p className="mt-4 flex-1 text-sm leading-6 text-muted">
+        {plugin.description[zh ? "zh" : "en"]}
+      </p>
+
+      <div className="mt-5 flex flex-wrap gap-1.5">
+        {plugin.categories.map((category) => (
+          <span key={category} className="rounded-full border border-border px-2.5 py-1 text-xs text-subtle">
+            {category}
+          </span>
+        ))}
+      </div>
+
+      <div className="mt-4 min-h-12 border-t border-border pt-4 text-xs leading-5 text-subtle">
+        {plugin.installable
+          ? platformLabels(plugin).join(" · ")
+          : zh ? "已收录，暂未开放 Fleet 远程安装" : "Curated, but not yet available for remote installation"}
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        {plugin.installable ? (
+          <Button type="button" onClick={copyInstall}>
+            {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
+            {copied ? (zh ? "已复制" : "Copied") : (zh ? "复制安装指令" : "Copy install prompt")}
+          </Button>
+        ) : (
+          <Button type="button" disabled>{zh ? "仅收录" : "Catalog only"}</Button>
+        )}
+        <Button asChild variant="secondary">
+          <a href={plugin.repository} target="_blank" rel="noreferrer">
+            GitHub <ExternalLink className="size-3.5" />
+          </a>
         </Button>
       </div>
-      <pre className="mt-5 flex-1 whitespace-pre-wrap break-words rounded-lg border border-border bg-bg p-4 font-mono text-xs leading-6 text-muted">
-        {text}
-      </pre>
+
+      <p className="mt-3 text-center text-[11px] text-subtle">
+        {plugin.license} · {plugin.publisher}
+      </p>
     </article>
   );
 }
@@ -48,60 +86,36 @@ export function PluginsPanel() {
   const { locale } = useI18n();
   const zh = locale === "zh";
   return (
-    <div className="grid gap-4">
-      <section className="overflow-hidden rounded-xl border border-border bg-surface">
-        <div className="grid gap-8 p-6 md:grid-cols-[minmax(0,1fr)_280px] md:p-8">
-          <div>
-            <p className="font-mono text-xs uppercase tracking-[0.18em] text-subtle">Fleet plugins</p>
-            <h1 className="mt-3 text-2xl font-medium tracking-tight md:text-3xl">
-              {zh ? "把能力装到远端 Agent，不把脚本塞进 Hub。" : "Install capability on the remote Agent—not scripts in the Hub."}
-            </h1>
-            <p className="mt-4 max-w-2xl text-sm leading-6 text-muted">
-              {zh
-                ? "把下面的指令复制给正在使用 Fleet Tool 的 AI。Tool 只提交官方插件 id；Hub 注入固定清单，设备核对平台和 SHA-256，并在本机确认后安装。"
-                : "Copy a prompt below to the AI using Fleet Tool. The Tool submits only an official id; the Hub injects the fixed manifest, and the device verifies platform and SHA-256 before local approval."}
-            </p>
-          </div>
-          <div className="grid content-start gap-3 rounded-xl border border-border bg-bg p-4 text-sm">
-            <div className="flex items-center gap-3"><ShieldCheck className="size-4 text-fg" /><span>{zh ? "设备端确认" : "Device-side approval"}</span></div>
-            <div className="flex items-center gap-3"><PackageCheck className="size-4 text-fg" /><span>{zh ? "Release + SHA-256" : "Release + SHA-256"}</span></div>
-            <div className="flex items-center gap-3"><Network className="size-4 text-fg" /><span>{zh ? "异步任务票据" : "Async task tickets"}</span></div>
-          </div>
-        </div>
-      </section>
-
-      <section className="rounded-xl border border-border bg-surface p-6">
-        <div className="flex flex-wrap items-start justify-between gap-5">
+    <div className="grid gap-5">
+      <section className="rounded-xl border border-border bg-surface p-6 md:p-8">
+        <div className="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
           <div className="max-w-2xl">
-            <div className="flex items-center gap-2">
-              <span className="rounded-md border border-border bg-bg px-2 py-1 font-mono text-xs">fleet.acp</span>
-              <span className="text-xs text-subtle">v0.1.0 · MIT · Fleet Official</span>
-            </div>
-            <h2 className="mt-4 text-lg font-medium">Fleet ACP</h2>
-            <p className="mt-2 text-sm leading-6 text-muted">
+            <p className="font-mono text-xs uppercase tracking-[0.18em] text-subtle">Official plugin registry</p>
+            <h1 className="mt-3 text-2xl font-medium tracking-tight md:text-3xl">
+              {zh ? "官方收录的开源插件" : "Officially curated open-source plugins"}
+            </h1>
+            <p className="mt-3 text-sm leading-6 text-muted">
               {zh
-                ? "通用 Agent Client Protocol v1 桥。远端机器自己安装 ACP 兼容 Agent；Fleet 插件负责 initialize、创建会话、下发任务并收集流式结果。它不捆绑模型、账号或 API Key。"
-                : "A generic Agent Client Protocol v1 bridge. The remote machine owns its ACP-compatible agent; the Fleet plugin initializes it, creates a session, delegates a task, and collects streamed output. No model, account, or API key is bundled."}
+                ? "每个插件来自注册表仓库中的一个 Markdown 文件。网站、Fleet Tool 和 Hub 使用同一份固定快照。"
+                : "Each plugin comes from one Markdown file in the registry repository. The website, Fleet Tool, and Hub use the same pinned snapshot."}
             </p>
           </div>
-          <Button asChild variant="secondary">
-            <a href="https://github.com/TITOCHAN2023/fleet-acp-plugin" target="_blank" rel="noreferrer">
-              <Github className="size-4" /> GitHub
+          <Button asChild variant="secondary" className="shrink-0">
+            <a href={pluginRegistrySource.repository} target="_blank" rel="noreferrer">
+              <FileText className="size-4" /> {zh ? "查看注册表" : "View registry"}
             </a>
           </Button>
         </div>
-        <div className="mt-5 flex flex-wrap gap-2 text-xs text-subtle">
-          {["macOS amd64 / arm64", "Linux amd64 / arm64", "Windows amd64 / arm64"].map((item) => (
-            <span key={item} className="rounded-full border border-border px-3 py-1.5">{item}</span>
-          ))}
+        <div className="mt-6 flex flex-wrap gap-x-5 gap-y-2 border-t border-border pt-5 text-xs text-subtle">
+          <span className="flex items-center gap-2"><ShieldCheck className="size-4" />{zh ? "设备端确认" : "Device approval"}</span>
+          <span className="flex items-center gap-2"><PackageCheck className="size-4" />Release + SHA-256</span>
+          <span className="font-mono">{pluginRegistrySource.commit.slice(0, 12)}</span>
         </div>
       </section>
 
-      <div className="grid items-stretch gap-4 lg:grid-cols-3">
-        <CopyPrompt index="01" title={zh ? "安装官方 ACP 插件" : "Install the official ACP plugin"} text={STEPS.install[locale]} />
-        <CopyPrompt index="02" title={zh ? "绑定本机 ACP Agent" : "Bind a local ACP agent"} text={STEPS.configure[locale]} />
-        <CopyPrompt index="03" title={zh ? "把任务交给远端 Agent" : "Delegate to the remote agent"} text={STEPS.delegate[locale]} />
-      </div>
+      <section className="grid items-stretch gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {officialPlugins.map((plugin) => <PluginCard key={plugin.id} plugin={plugin} zh={zh} />)}
+      </section>
     </div>
   );
 }

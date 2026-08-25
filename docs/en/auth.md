@@ -48,7 +48,7 @@ Agents and the local stdio MCP do not send that string unchanged as `Authorizati
 2. OAEP-wrap `{sec, nonce}` with the public key from the token.
 3. Send `Authorization: Fleet-OAEP <kid>.<wrap>` on WSS `/v1/device` and on every operator HTTPS call.
 
-Direct remote SSE is the explicit exception. Its initial `GET /mcp/sse` sends `Authorization: Bearer <token>` once. The Worker verifies the signed token and stored secret hash, creates an isolated Durable Object session, and announces a random `/mcp/sse?sessionId=…` message endpoint. That endpoint contains no token and accepts no token query parameter. Each JSON-RPC message rechecks the account's current key id, so a token reset invalidates the next call.
+Remote MCP is the explicit Bearer exception. The recommended Streamable HTTP endpoint is `POST /mcp`: initialize sends `Authorization: Bearer <token>`, the response returns a random `Mcp-Session-Id`, and later JSON-RPC requests use the same `/mcp` endpoint. Classic SSE remains at `/mcp/sse`: the initial GET sends Bearer and the Worker announces a random `/mcp/sse?sessionId=…` message endpoint. Neither transport puts the token in a URL, and every JSON-RPC message rechecks the account's current key id, so a token reset invalidates the next call.
 
 Resetting the token deletes the old keypair and closes every live device WebSocket for that account (`1008 token reset`). Legacy `flt_` hex Bearer is rejected with an English `HIGH_SEC` error: update the agent / MCP client, then issue a new token.
 

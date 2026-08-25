@@ -55,6 +55,11 @@ function ReadySetup({ origin, token }: { origin: string; token: string }) {
   const windowsInstall = `& ([scriptblock]::Create((irm ${powershellQuote(`${base}/install.ps1`)}))) -Hub ${powershellQuote(base)}${windowsToken} -Permit ask`;
   const stdioEnv = { FLEET_URL: base } as Record<string, string>;
   if (token) stdioEnv.FLEET_TOKEN = token;
+  const httpServer = {
+    type: "http",
+    url: `${base}/mcp`,
+  } as Record<string, unknown>;
+  if (token) httpServer.headers = { Authorization: `Bearer ${token}` };
   const sseServer = {
     type: "sse",
     url: `${base}/mcp/sse`,
@@ -82,6 +87,15 @@ function ReadySetup({ origin, token }: { origin: string; token: string }) {
     null,
     2,
   );
+  const mcpHttpConfig = JSON.stringify(
+    {
+      mcpServers: {
+        fleet: httpServer,
+      },
+    },
+    null,
+    2,
+  );
 
   return (
     <div className="grid gap-6">
@@ -91,8 +105,9 @@ function ReadySetup({ origin, token }: { origin: string; token: string }) {
           <h3 className="text-sm font-medium">{t("hub.mcpTitle")}</h3>
           <p className="mt-1 max-w-3xl text-sm text-muted">{t("hub.mcpBody")}</p>
         </div>
-        <div className="grid gap-3 lg:grid-cols-2">
+        <div className="grid gap-3 xl:grid-cols-3">
           <CopyBlock label={t("hub.mcpStdioConfig")} text={mcpStdioConfig} />
+          <CopyBlock label={t("hub.mcpHttpConfig")} text={mcpHttpConfig} />
           <CopyBlock label={t("hub.mcpSseConfig")} text={mcpSseConfig} />
         </div>
       </div>

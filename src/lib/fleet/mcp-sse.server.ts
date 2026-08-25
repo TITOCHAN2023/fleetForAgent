@@ -19,7 +19,7 @@ type JsonRpcMessage = {
   params?: Record<string, unknown>;
 };
 
-type Operator = {
+export type Operator = {
   tools: unknown[];
   prompts: unknown[];
   getPrompt: (name: string) => unknown;
@@ -31,6 +31,7 @@ type Operator = {
       onProgress?: (progress: { progress: number; total: number }) => void;
     },
   ) => Promise<unknown>;
+  getState?: () => { lastUsed?: string | null; lastCwd?: string | null; envDefault?: string | null };
 };
 
 type MakeOperator = (options: {
@@ -342,7 +343,7 @@ export function createMcpSseHandler(options: McpSseOptions = {}) {
   };
 }
 
-async function authenticateHubOperator(request: Request): Promise<Operator> {
+export async function authenticateHubOperator(request: Request): Promise<Operator> {
   const token = bearerToken(request);
   if (!token) throw new Error("Authorization: Bearer <Hub token> required");
   const [{ highSecAuthorization }, { handleHubHttp }] = await Promise.all([

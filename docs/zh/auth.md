@@ -48,7 +48,7 @@ Agent 和本地 stdio MCP 不会把整串原样当 `Authorization: Bearer` 发�
 2. 用 token 里的公钥 OAEP 封装 `{sec, nonce}`。
 3. 在 WSS `/v1/device` 和每次操作 HTTPS 上发送 `Authorization: Fleet-OAEP <kid>.<wrap>`。
 
-远程 SSE 直连是明确的例外。首次 `GET /mcp/sse` 会发送一次 `Authorization: Bearer <token>`。Worker 校验 token 签名和服务端保存的 secret hash 后，为它创建隔离的 Durable Object 会话，并返回随机的 `/mcp/sse?sessionId=…` 消息端点。这个端点不包含 token，也不接受 token 查询参数；每条 JSON-RPC 消息都会重新检查账号当前的 key id，所以重置 token 后下一次调用立即失效。
+远程 MCP 是明确的 Bearer 例外。推荐的 Streamable HTTP 入口是 `POST /mcp`：初始化请求携带 `Authorization: Bearer <token>`，响应通过 `Mcp-Session-Id` 返回随机会话标识，后续 JSON-RPC 仍发送到同一个 `/mcp`。经典 SSE 继续保留在 `/mcp/sse`：首次 GET 携带 Bearer，Worker 随后公布随机的 `/mcp/sse?sessionId=…` 消息端点。两种传输都不会把 token 放进 URL，而且每条 JSON-RPC 消息都会重新检查账号当前的 key id，所以重置 token 后下一次调用立即失效。
 
 重置 token 会删掉旧密钥，并断开该账号下所有设备的 WebSocket（`1008 token reset`）。旧的 `flt_` hex Bearer 会被拒绝，报 `HIGH_SEC` 错误（英文）：请升级 Agent / MCP 客户端，再重新签发 token。
 

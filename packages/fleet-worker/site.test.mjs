@@ -46,6 +46,8 @@ test("hub site explains multi-os fleet and ships a Help page", () => {
   assert.match(html, /href="\/ops"/);
   assert.match(html, /user\.ops/);
   assert.match(html, /command: "npx"/);
+  assert.match(html, /type: "http"/);
+  assert.match(html, /base \+ "\/mcp"/);
   assert.match(html, /type: "sse"/);
   assert.match(html, /base \+ "\/mcp\/sse"/);
   assert.match(html, /Authorization: "Bearer " \+ token/);
@@ -53,6 +55,7 @@ test("hub site explains multi-os fleet and ships a Help page", () => {
   assert.match(html, /install\.ps1/);
   assert.match(html, /data-copy=/);
   assert.match(html, /if \(token\) stdioEnv\.FLEET_TOKEN = token/);
+  assert.match(html, /if \(token\) httpServer\.headers =/);
   assert.match(html, /if \(token\) sseServer\.headers =/);
   assert.match(html, /readySetup\(origin, state\.secret\)/);
   assert.doesNotMatch(html, /state\.secret \? readySetup/);
@@ -75,6 +78,8 @@ test("tokenless Settings configs stay copyable and omit every token field", () =
 
   const tokenless = setup("https://fleet.ginfo.cc", "");
   assert.match(tokenless, /fleet-tool\.tgz/);
+  assert.match(tokenless, /&quot;type&quot;: &quot;http&quot;/);
+  assert.match(tokenless, /https:\/\/fleet\.ginfo\.cc\/mcp/);
   assert.match(tokenless, /\/mcp\/sse/);
   assert.match(tokenless, /install\.sh/);
   assert.match(tokenless, /install\.ps1/);
@@ -83,6 +88,7 @@ test("tokenless Settings configs stay copyable and omit every token field", () =
   const complete = setup("https://fleet.ginfo.cc", "flt_1.demo");
   assert.match(complete, /FLEET_TOKEN/);
   assert.match(complete, /Authorization/);
+  assert.match(complete, /mcpHttpConfig/);
   assert.match(complete, /--token/);
   assert.match(complete, /-Token/);
 });

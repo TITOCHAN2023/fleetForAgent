@@ -6,8 +6,8 @@
  * No inbound ports on the machines. No intranet overlay.
  *
  * Auth: per-account flt_1 tokens (RSA-2048, aud = HUB_ORIGIN). /v1 operators
- * and agents present Fleet-OAEP wraps. Direct MCP SSE presents Bearer once to
- * open a server-side session; its message endpoint never carries the token. Optional secret
+ * and agents present Fleet-OAEP wraps. Remote MCP uses Bearer to initialize
+ * Streamable HTTP or classic SSE sessions; session endpoints never carry the token. Optional secret
  * HUB_TOKEN is a super operator for HTTP list/run only — it cannot steal a
  * device WebSocket. Empty HUB_TOKEN = no super user. Optional ADMIN_EMAILS
  * is a cookie-session list for /ops on this same Worker. Empty = no admins.
@@ -42,7 +42,21 @@ import {
   resolveTicket,
 } from "./session.mjs";
 import { isFleetToolTgzPath, serveFleetToolTgz } from "./tarball.mjs";
-import { isJsonRpcMessage, McpSseSession, type JsonRpcMessage } from "./mcp-sse.mjs";
+import {
+  isInitializeMessage,
+  isJsonRpcMessage,
+  isMcpActivity,
+  McpRpcSession,
+  negotiateStreamableProtocolVersion,
+  type JsonRpcMessage,
+  type McpOperatorState,
+} from "../../fleet-tool/mcp-protocol.mjs";
+import {
+  MCP_SESSION_IDLE_MS,
+  MCP_SESSION_MAX_AGE_MS,
+  McpSseSession,
+  isMcpSessionExpired,
+} from "./mcp-sse.mjs";
 import {
   audMismatch,
   bearerToken,
@@ -182,8 +196,9 @@ type Resolved =
 const CORS: Record<string, string> = {
   "access-control-allow-origin": "*",
   "access-control-allow-headers":
-    "authorization, content-type, x-device-id, x-device-name, x-device-os, x-fleet-proto, x-fleet-operator",
-  "access-control-allow-methods": "GET, POST, OPTIONS",
+    "authorization, content-type, accept, mcp-session-id, mcp-protocol-version, x-device-id, x-device-name, x-device-os, x-fleet-proto, x-fleet-operator",
+  "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
+  "access-control-expose-headers": "mcp-session-id",
 };
 
 export default {
@@ -204,6 +219,10 @@ export default {
 
     if (path === "/mcp/sse") {
       return dispatchMcpSse(request, env);
+    }
+
+    if (path === "/mcp") {
+      return dispatchMcpHttp(request, env);
     }
 
     if (!hub) {
@@ -803,6 +822,18 @@ class HubRpcError extends Error {
   }
 }
 
+type McpHttpStoredSession = {
+  actorId: string;
+  kid: string;
+  fingerprint: string;
+  protocolVersion: string;
+  openedAt: number;
+  lastActivityAt: number;
+  operatorState: McpOperatorState;
+};
+
+const MCP_HTTP_STORAGE_KEY = "http:session";
+
 export class McpDO implements DurableObject {
   ctx: DurableObjectState;
   env: Env;
@@ -810,6 +841,8 @@ export class McpDO implements DurableObject {
   private actor: Actor | null = null;
   private kid = "";
   private fingerprint = "";
+  private httpSession: McpRpcSession | null = null;
+  private httpStored: McpHttpStoredSession | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
@@ -841,7 +874,102 @@ export class McpDO implements DurableObject {
       return new Response(null, { status: 202 });
     }
 
-    return new Response(null, { status: 405, headers: { allow: "GET, POST" } });
+    if (url.pathname === "/http-open" && request.method === "POST") {
+      if (await this.ctx.storage.get(MCP_HTTP_STORAGE_KEY)) {
+        return json({ error: "MCP session already open" }, 409);
+      }
+      const actorId = request.headers.get("x-fleet-actor") ?? "";
+      const kid = request.headers.get("x-fleet-kid") ?? "";
+      const message = (await request.json().catch(() => null)) as JsonRpcMessage | null;
+      if (!actorId || !kid) return json({ error: "unauthorized" }, 401);
+      if (!isInitializeMessage(message) || message.id === undefined) {
+        return jsonRpcError(null, -32600, "initialize request required", 400);
+      }
+      const now = Date.now();
+      this.actor = { id: actorId };
+      this.kid = kid;
+      this.fingerprint = crypto.randomUUID();
+      this.httpStored = {
+        actorId,
+        kid,
+        fingerprint: this.fingerprint,
+        protocolVersion: negotiateStreamableProtocolVersion(message),
+        openedAt: now,
+        lastActivityAt: now,
+        operatorState: {},
+      };
+      this.httpSession = this.newHttpSession(this.httpStored);
+      await this.ctx.storage.put(MCP_HTTP_STORAGE_KEY, this.httpStored);
+      const response = await this.httpSession.dispatch(message, () => this.authorize());
+      await this.persistHttpSession(message.method);
+      return response ? json(response) : jsonRpcError(null, -32603, "initialize failed", 500);
+    }
+
+    if (url.pathname === "/http-message" && request.method === "POST") {
+      if (!(await this.restoreHttpSession())) return json({ error: "MCP session not found" }, 404);
+      const message = (await request.json().catch(() => null)) as JsonRpcMessage | null;
+      if (!isJsonRpcMessage(message)) return jsonRpcError(null, -32700, "invalid JSON-RPC message", 400);
+      const response = await this.httpSession!.dispatch(message, () => this.authorize());
+      await this.persistHttpSession(message.method);
+      return response ? json(response) : new Response(null, { status: 202, headers: CORS });
+    }
+
+    if (url.pathname === "/http-close" && request.method === "DELETE") {
+      if (!(await this.ctx.storage.get(MCP_HTTP_STORAGE_KEY))) {
+        return json({ error: "MCP session not found" }, 404);
+      }
+      await this.ctx.storage.delete(MCP_HTTP_STORAGE_KEY);
+      this.httpSession = null;
+      this.httpStored = null;
+      this.actor = null;
+      this.kid = "";
+      this.fingerprint = "";
+      return new Response(null, { status: 204, headers: CORS });
+    }
+
+    return new Response(null, { status: 405, headers: { allow: "GET, POST, DELETE" } });
+  }
+
+  private newHttpSession(stored: McpHttpStoredSession): McpRpcSession {
+    return new McpRpcSession({
+      rpc: (path, body) => this.rpc(path, body),
+      state: stored.operatorState,
+      protocolVersion: stored.protocolVersion,
+    });
+  }
+
+  private async restoreHttpSession(): Promise<boolean> {
+    const stored =
+      this.httpStored ??
+      ((await this.ctx.storage.get<McpHttpStoredSession>(MCP_HTTP_STORAGE_KEY)) ?? null);
+    if (!stored) return false;
+    if (isMcpSessionExpired({
+      now: Date.now(),
+      expiresAt: stored.openedAt + MCP_SESSION_MAX_AGE_MS,
+      lastActivityAt: stored.lastActivityAt,
+      idleMs: MCP_SESSION_IDLE_MS,
+    })) {
+      await this.ctx.storage.delete(MCP_HTTP_STORAGE_KEY);
+      this.httpStored = null;
+      this.httpSession = null;
+      this.actor = null;
+      this.kid = "";
+      this.fingerprint = "";
+      return false;
+    }
+    this.httpStored = stored;
+    this.actor = { id: stored.actorId };
+    this.kid = stored.kid;
+    this.fingerprint = stored.fingerprint;
+    this.httpSession ??= this.newHttpSession(stored);
+    return true;
+  }
+
+  private async persistHttpSession(method: string | undefined): Promise<void> {
+    if (!this.httpStored || !this.httpSession) return;
+    if (isMcpActivity(method)) this.httpStored.lastActivityAt = Date.now();
+    this.httpStored.operatorState = this.httpSession.getState();
+    await this.ctx.storage.put(MCP_HTTP_STORAGE_KEY, this.httpStored);
   }
 
   private async authorize(): Promise<void> {
@@ -1345,20 +1473,8 @@ async function dispatchMcpSse(request: Request, env: Env): Promise<Response> {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
 
   if (request.method === "GET") {
-    const token = bearerToken(request.headers.get("authorization"));
-    if (!token) return json({ error: "Authorization: Bearer <Hub token> required" }, 401);
-    const fleet = env.FLEET.get(env.FLEET.idFromName("fleet"));
-    const resolved = await fleet.fetch(
-      new Request("https://fleet/resolve-bearer", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ token }),
-      }),
-    );
-    const actor = (await resolved.json().catch(() => ({}))) as Actor & { kid?: string; error?: string };
-    if (!resolved.ok || !actor.id || !actor.kid) {
-      return json({ error: actor.error || "unauthorized" }, resolved.status || 401);
-    }
+    const actor = await resolveMcpBearer(request, env);
+    if (actor instanceof Response) return actor;
     const sessionId = crypto.randomUUID();
     const stub = env.MCP.get(env.MCP.idFromName(sessionId));
     return stub.fetch(
@@ -1373,7 +1489,7 @@ async function dispatchMcpSse(request: Request, env: Env): Promise<Response> {
 
   if (request.method === "POST") {
     const sessionId = url.searchParams.get("sessionId") ?? "";
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)) {
+    if (!validMcpSessionId(sessionId)) {
       return json({ error: "MCP session not found" }, 404);
     }
     const stub = env.MCP.get(env.MCP.idFromName(sessionId));
@@ -1387,6 +1503,88 @@ async function dispatchMcpSse(request: Request, env: Env): Promise<Response> {
   }
 
   return new Response(null, { status: 405, headers: { allow: "GET, POST" } });
+}
+
+async function dispatchMcpHttp(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const origin = request.headers.get("origin");
+  if (origin && origin !== url.origin) return json({ error: "origin not allowed" }, 403);
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+
+  const sessionId = request.headers.get("mcp-session-id")?.trim() ?? "";
+  if (request.method === "DELETE") {
+    if (!validMcpSessionId(sessionId)) return json({ error: "MCP session not found" }, 404);
+    const stub = env.MCP.get(env.MCP.idFromName(sessionId));
+    return stub.fetch(new Request("https://mcp/http-close", { method: "DELETE" }));
+  }
+
+  if (request.method !== "POST") {
+    return new Response(null, { status: 405, headers: { allow: "POST, DELETE", ...CORS } });
+  }
+
+  const message = (await request.json().catch(() => null)) as JsonRpcMessage | null;
+  if (!isJsonRpcMessage(message)) return jsonRpcError(null, -32700, "invalid JSON-RPC message", 400);
+
+  if (!sessionId) {
+    if (!isInitializeMessage(message) || message.id === undefined) {
+      return jsonRpcError(message.id ?? null, -32600, "initialize request required", 400);
+    }
+    const actor = await resolveMcpBearer(request, env);
+    if (actor instanceof Response) return actor;
+    const nextSessionId = crypto.randomUUID();
+    const stub = env.MCP.get(env.MCP.idFromName(nextSessionId));
+    const response = await stub.fetch(
+      new Request("https://mcp/http-open", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-fleet-actor": actor.id,
+          "x-fleet-kid": actor.kid,
+        },
+        body: JSON.stringify(message),
+      }),
+    );
+    if (!response.ok) return response;
+    const headers = new Headers(response.headers);
+    headers.set("Mcp-Session-Id", nextSessionId);
+    for (const [key, value] of Object.entries(CORS)) headers.set(key, value);
+    return new Response(response.body, { status: response.status, headers });
+  }
+
+  if (!validMcpSessionId(sessionId)) return json({ error: "MCP session not found" }, 404);
+  const stub = env.MCP.get(env.MCP.idFromName(sessionId));
+  return stub.fetch(
+    new Request("https://mcp/http-message", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(message),
+    }),
+  );
+}
+
+async function resolveMcpBearer(
+  request: Request,
+  env: Env,
+): Promise<(Actor & { kid: string }) | Response> {
+  const token = bearerToken(request.headers.get("authorization"));
+  if (!token) return json({ error: "Authorization: Bearer <Hub token> required" }, 401);
+  const fleet = env.FLEET.get(env.FLEET.idFromName("fleet"));
+  const resolved = await fleet.fetch(
+    new Request("https://fleet/resolve-bearer", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token }),
+    }),
+  );
+  const actor = (await resolved.json().catch(() => ({}))) as Actor & { kid?: string; error?: string };
+  if (!resolved.ok || !actor.id || !actor.kid) {
+    return json({ error: actor.error || "unauthorized" }, resolved.status || 401);
+  }
+  return { ...actor, kid: actor.kid };
+}
+
+function validMcpSessionId(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function configuredOrigin(env: Env): string {
@@ -1525,4 +1723,8 @@ function json(data: unknown, status = 200) {
     status,
     headers: { "content-type": "application/json", ...CORS },
   });
+}
+
+function jsonRpcError(id: string | number | null, code: number, message: string, status = 200) {
+  return json({ jsonrpc: "2.0", id, error: { code, message } }, status);
 }

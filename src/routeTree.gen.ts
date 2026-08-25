@@ -19,6 +19,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as ReleasesRouteImport } from './routes/releases'
 import { Route as DocsIndexRouteImport } from './routes/docs/index'
 import { Route as DocsSlugRouteImport } from './routes/docs/$slug'
+import { Route as McpIndexRouteImport } from './routes/mcp/index'
 import { Route as McpSseRouteImport } from './routes/mcp/sse'
 import { Route as V1SplatRouteImport } from './routes/v1/$'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -73,6 +74,11 @@ const DocsSlugRoute = DocsSlugRouteImport.update({
   path: '/$slug',
   getParentRoute: () => DocsRoute,
 } as any)
+const McpIndexRoute = McpIndexRouteImport.update({
+  id: '/mcp/',
+  path: '/mcp/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const McpSseRoute = McpSseRouteImport.update({
   id: '/mcp/sse',
   path: '/mcp/sse',
@@ -102,6 +108,7 @@ export interface FileRoutesByFullPath {
   '/mcp/sse': typeof McpSseRoute
   '/v1/$': typeof V1SplatRoute
   '/docs/': typeof DocsIndexRoute
+  '/mcp/': typeof McpIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesByTo {
@@ -116,6 +123,7 @@ export interface FileRoutesByTo {
   '/mcp/sse': typeof McpSseRoute
   '/v1/$': typeof V1SplatRoute
   '/docs': typeof DocsIndexRoute
+  '/mcp': typeof McpIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesById {
@@ -132,6 +140,7 @@ export interface FileRoutesById {
   '/mcp/sse': typeof McpSseRoute
   '/v1/$': typeof V1SplatRoute
   '/docs/': typeof DocsIndexRoute
+  '/mcp/': typeof McpIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRouteTypes {
@@ -149,6 +158,7 @@ export interface FileRouteTypes {
     | '/mcp/sse'
     | '/v1/$'
     | '/docs/'
+    | '/mcp/'
     | '/api/auth/$'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -163,6 +173,7 @@ export interface FileRouteTypes {
     | '/mcp/sse'
     | '/v1/$'
     | '/docs'
+    | '/mcp'
     | '/api/auth/$'
   id:
     | '__root__'
@@ -178,6 +189,7 @@ export interface FileRouteTypes {
     | '/mcp/sse'
     | '/v1/$'
     | '/docs/'
+    | '/mcp/'
     | '/api/auth/$'
   fileRoutesById: FileRoutesById
 }
@@ -192,6 +204,7 @@ export interface RootRouteChildren {
   ReleasesRoute: typeof ReleasesRoute
   McpSseRoute: typeof McpSseRoute
   V1SplatRoute: typeof V1SplatRoute
+  McpIndexRoute: typeof McpIndexRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
 
@@ -267,6 +280,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DocsSlugRouteImport
       parentRoute: typeof DocsRoute
     }
+    '/mcp/': {
+      id: '/mcp/'
+      path: '/mcp'
+      fullPath: '/mcp/'
+      preLoaderRoute: typeof McpIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/mcp/sse': {
       id: '/mcp/sse'
       path: '/mcp/sse'
@@ -314,6 +334,7 @@ const rootRouteChildren: RootRouteChildren = {
   ReleasesRoute: ReleasesRoute,
   McpSseRoute: McpSseRoute,
   V1SplatRoute: V1SplatRoute,
+  McpIndexRoute: McpIndexRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
 }
 export const routeTree = rootRouteImport

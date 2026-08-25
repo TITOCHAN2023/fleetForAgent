@@ -29,7 +29,7 @@ export function shQuote(value) {
 }
 
 export const MCP_INSTRUCTIONS =
-  "Fleet: remote Windows/Linux/macOS machines via a cloud hub. list_computers, then set_computer (or pass device_id). run waits up to 30s; if the text is still running, call wait — do not run again. Hub tokens are flt_1 values minted in website Settings. Stdio uses Fleet-OAEP; direct /mcp/sse uses Bearer only to open a server-side session.";
+  "Fleet: remote Windows/Linux/macOS machines via a cloud hub. list_computers, then set_computer (or pass device_id). run waits up to 30s; if the text is still running, call wait — do not run again. Hub tokens are flt_1 values minted in website Settings. Stdio uses Fleet-OAEP; remote /mcp uses Streamable HTTP and /mcp/sse keeps classic SSE compatibility.";
 
 export function buildPrompts() {
   return [
@@ -81,7 +81,8 @@ export function getPrompt(name) {
               "- payload JSON, signed RSA-PSS-SHA256: v, aud, kid, pub, iat, sec",
               "- aud is HUB_ORIGIN (https://fleet.ginfo.cc), never the HTTP Host header",
               "- Agents and stdio MCP GET /v1/challenge?kid=… then send Authorization: Fleet-OAEP <kid>.<oaep({sec,nonce})>",
-              "- Direct remote /mcp/sse sends Authorization: Bearer <token> once to open a server-side session; its random message URL contains no token",
+              "- Remote /mcp uses Streamable HTTP with Authorization: Bearer <token> and an opaque Mcp-Session-Id response header",
+              "- Classic /mcp/sse sends Bearer once to open a server-side session; its random message URL contains no token",
               "- Reset mints a new keypair; the old kid will not complete the handshake",
             ].join("\n"),
           },
@@ -555,13 +556,14 @@ function hopStatus(row) {
 export function createOperator({
   rpc,
   env = {},
+  state = {},
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   now = () => Date.now(),
 } = {}) {
   if (typeof rpc !== "function") throw new Error("rpc required");
 
-  let lastUsed = null;
-  let lastCwd = null;
+  let lastUsed = trimId(state.lastUsed) || null;
+  let lastCwd = trimId(state.lastCwd) || null;
   const envDefault = trimId(env.FLEET_DEVICE_ID) || null;
   const fleetDev = isFleetDev(env);
   const tools = buildTools();

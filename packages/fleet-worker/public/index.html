@@ -90,9 +90,10 @@
       .muted { color: var(--muted); font-size: 14px; }
       .subtle { color: var(--subtle); font-size: 12px; }
       .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px; box-shadow: var(--shadow); }
-      .grid-2 { display: grid; gap: 12px; }
+      .grid-2, .grid-3 { display: grid; gap: 12px; }
       .grid-4 { display: grid; gap: 12px; }
       @media (min-width: 700px) { .grid-2 { grid-template-columns: 1fr 1fr; } .grid-4 { grid-template-columns: repeat(4, 1fr); } }
+      @media (min-width: 1050px) { .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
       .fan { display: grid; gap: 12px; }
       @media (max-width: 639px) {
         .hero { padding-top: 8px; }
@@ -236,9 +237,10 @@
           promptCancel: "取消", promptContinue: "重置", promptClose: "完成",
           toolHint: "FLEET_URL 用本站，FLEET_TOKEN 用这把钥匙。",
           mcpTitle: "把 Fleet 接入 AI 客户端",
-          mcpBody: "可以选择现有 npx 工具提供的本地 stdio，或直接使用远程 SSE。两份配置同级，都会把 AI 端接入同一个 Fleet 中枢。",
+          mcpBody: "三种配置同级：本地 stdio、推荐的远程 Streamable HTTP，以及兼容旧客户端的经典 SSE。它们都会接入同一个 Fleet 中枢。",
           mcpStdioConfig: "本地 stdio · npx（Cursor / Claude Desktop）",
-          mcpSseConfig: "远程 SSE MCP",
+          mcpHttpConfig: "远程 Streamable HTTP MCP（推荐 / Grok）",
+          mcpSseConfig: "远程经典 SSE MCP（兼容）",
           setupNeedsToken: "当前页面拿不到 Token 明文，所以配置和安装命令仍会显示，但会省略 Token。生成或重置后会自动补全；无 Token 的安装命令只安装，不启动 Fleet。",
           quickTitle: "安装 Fleet 命令行 Agent",
           quickBody: "一条命令会自动选择当前系统和 CPU 的正式 Release，校验 SHA-256，并安装到用户目录。有 Token 时会以“需确认”权限立即启动；没有 Token 时安装后停止。",
@@ -303,9 +305,10 @@
           promptCancel: "Cancel", promptContinue: "Reset", promptClose: "Done",
           toolHint: "FLEET_URL is this origin. FLEET_TOKEN is this key.",
           mcpTitle: "Connect Fleet to your AI client",
-          mcpBody: "Choose either local stdio through the existing npx tool or direct remote SSE. Both configurations connect the AI side to the same Fleet hub.",
+          mcpBody: "Three peer options connect to the same Fleet hub: local stdio, recommended remote Streamable HTTP, and classic SSE for legacy clients.",
           mcpStdioConfig: "Local stdio · npx (Cursor / Claude Desktop)",
-          mcpSseConfig: "Remote SSE MCP",
+          mcpHttpConfig: "Remote Streamable HTTP MCP (recommended / Grok)",
+          mcpSseConfig: "Remote classic SSE MCP (compatibility)",
           setupNeedsToken: "The token plaintext is not available in this page load, so these configurations and commands stay visible but omit it. Generate or reset to fill it in automatically; a tokenless install command installs without starting Fleet.",
           quickTitle: "Install the Fleet CLI Agent",
           quickBody: "One command downloads the published GitHub Release for this OS and CPU, verifies SHA-256, and installs it in your user directory. With a token it starts immediately with Ask permission; without one it stops after installation.",
@@ -642,6 +645,8 @@
         const base = String(origin || "").replace(/\/+$/, "");
         const stdioEnv = { FLEET_URL: base };
         if (token) stdioEnv.FLEET_TOKEN = token;
+        const httpServer = { type: "http", url: base + "/mcp" };
+        if (token) httpServer.headers = { Authorization: "Bearer " + token };
         const sseServer = { type: "sse", url: base + "/mcp/sse" };
         if (token) sseServer.headers = { Authorization: "Bearer " + token };
         const mcpStdio = JSON.stringify({
@@ -656,6 +661,9 @@
         const mcpSse = JSON.stringify({
           mcpServers: { fleet: sseServer },
         }, null, 2);
+        const mcpHttp = JSON.stringify({
+          mcpServers: { fleet: httpServer },
+        }, null, 2);
         const posixToken = token ? ` --token '${token}'` : "";
         const windowsToken = token ? ` -Token '${token}'` : "";
         const posix = `curl -fsSL '${base}/install.sh' | sh -s -- --hub '${base}'${posixToken} --permit ask`;
@@ -664,7 +672,7 @@
           ${token ? "" : `<p class="warn" style="margin:0">${t("setupNeedsToken")}</p>`}
           <section class="setup-section">
             <div><h3>${t("mcpTitle")}</h3><p class="muted" style="margin:6px 0 0">${t("mcpBody")}</p></div>
-            <div class="grid-2">${copyBlock(t("mcpStdioConfig"), mcpStdio)}${copyBlock(t("mcpSseConfig"), mcpSse)}</div>
+            <div class="grid-3">${copyBlock(t("mcpStdioConfig"), mcpStdio)}${copyBlock(t("mcpHttpConfig"), mcpHttp)}${copyBlock(t("mcpSseConfig"), mcpSse)}</div>
           </section>
           <section class="setup-section">
             <div><h3>${t("quickTitle")}</h3><p class="muted" style="margin:6px 0 0">${t("quickBody")}</p></div>

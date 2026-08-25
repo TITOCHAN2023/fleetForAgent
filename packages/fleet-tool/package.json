@@ -7,6 +7,6 @@
     "fleet-tool": "./index.mjs"
   },
   "scripts": {
-    "test": "node --test operator.test.mjs"
+    "test": "node --test operator.test.mjs mcp-protocol.test.mjs"
   }
 }

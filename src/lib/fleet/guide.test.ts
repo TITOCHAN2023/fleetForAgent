@@ -101,6 +101,9 @@ test("Settings always shows peer MCP configs and device installers, adding token
   assert.match(settings, /https:\/\/fleet\.ginfo\.cc\/fleet-tool\.tgz/);
   assert.match(settings, /const stdioEnv = \{ FLEET_URL: base \}/);
   assert.match(settings, /if \(token\) stdioEnv\.FLEET_TOKEN = token/);
+  assert.match(settings, /type: "http"/);
+  assert.match(settings, /url: `\$\{base\}\/mcp`/);
+  assert.match(settings, /if \(token\) httpServer\.headers = \{ Authorization: `Bearer \$\{token\}` \}/);
   assert.match(settings, /type: "sse"/);
   assert.match(settings, /\/mcp\/sse/);
   assert.match(settings, /if \(token\) sseServer\.headers = \{ Authorization: `Bearer \$\{token\}` \}/);
@@ -117,6 +120,10 @@ test("Settings always shows peer MCP configs and device installers, adding token
   assert.ok(
     settings.indexOf('t("hub.mcpStdioConfig")') < settings.indexOf('t("hub.quickTitle")'),
     "AI-side MCP configs must render above device installers",
+  );
+  assert.ok(
+    settings.indexOf('t("hub.mcpHttpConfig")') < settings.indexOf('t("hub.mcpSseConfig")'),
+    "Streamable HTTP and classic SSE must be separate peer blocks",
   );
   assert.match(server, /highSecAuthorization/);
   assert.match(server, /handleHubHttp/);

@@ -57,6 +57,10 @@ test("hub site explains multi-os fleet and ships a Help page", () => {
   assert.match(html, /if \(token\) stdioEnv\.FLEET_TOKEN = token/);
   assert.match(html, /if \(token\) httpServer\.headers =/);
   assert.match(html, /if \(token\) sseServer\.headers =/);
+  assert.match(html, /\.setup-copy-head \{/);
+  assert.match(html, /grid-template-columns: minmax\(0, 1fr\) auto/);
+  assert.match(html, /white-space: pre; overflow-wrap: normal; word-break: normal/);
+  assert.match(html, /class="setup-copy-head"/);
   assert.match(html, /readySetup\(origin, state\.secret\)/);
   assert.doesNotMatch(html, /state\.secret \? readySetup/);
   assert.ok(

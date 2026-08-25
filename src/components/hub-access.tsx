@@ -24,17 +24,14 @@ function powershellQuote(value: string) {
 function CopyBlock({ label, text }: { label: string; text: string }) {
   const { t } = useI18n();
   return (
-    <div>
-      <p className="mb-2 text-xs text-subtle">{label}</p>
-      <div className="relative">
-        <pre className="max-h-72 overflow-auto rounded-md border border-border bg-elevated p-4 pr-20 font-mono text-xs leading-relaxed text-muted">
-          {text}
-        </pre>
+    <div className="flex h-full min-w-0 flex-col gap-2">
+      <div className="grid h-10 grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
+        <p className="pt-1 text-xs leading-4 text-subtle">{label}</p>
         <Button
           type="button"
           variant="secondary"
           size="sm"
-          className="absolute top-2 right-2"
+          className="shrink-0"
           onClick={() => {
             void copy(text).then(() => toast.message(t("hub.copied")));
           }}
@@ -42,6 +39,9 @@ function CopyBlock({ label, text }: { label: string; text: string }) {
           {t("hub.copy")}
         </Button>
       </div>
+      <pre className="max-h-72 min-h-0 flex-1 overflow-auto whitespace-pre rounded-md border border-border bg-elevated p-4 font-mono text-xs leading-relaxed text-muted">
+        {text}
+      </pre>
     </div>
   );
 }

@@ -127,8 +127,10 @@
       .setup { display: grid; gap: 24px; }
       .setup-section { display: grid; gap: 12px; }
       .setup-section + .setup-section { border-top: 1px solid var(--border); padding-top: 24px; }
-      .setup-copy { min-width: 0; }
-      .setup-copy pre { margin: 8px 0 0; max-height: 19rem; }
+      .setup-copy { min-width: 0; display: flex; flex-direction: column; }
+      .setup-copy-head { min-width: 0; height: 40px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px; }
+      .setup-copy-head .subtle { min-width: 0; padding-top: 6px; line-height: 16px; }
+      .setup-copy pre { flex: 1; margin: 8px 0 0; max-height: 19rem; white-space: pre; overflow-wrap: normal; word-break: normal; }
       .setup-copy .btn { height: 32px; padding: 0 12px; font-size: 12px; }
       .kv { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; font-family: var(--mono); }
       .kv span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; text-align: right; }
@@ -637,7 +639,7 @@
       }
       function copyBlock(label, text) {
         return `<div class="setup-copy">
-          <div class="row" style="justify-content:space-between"><span class="subtle">${esc(label)}</span><button class="btn" type="button" data-copy="${esc(text)}">${t("copy")}</button></div>
+          <div class="setup-copy-head"><span class="subtle">${esc(label)}</span><button class="btn" type="button" data-copy="${esc(text)}">${t("copy")}</button></div>
           <pre>${esc(text)}</pre>
         </div>`;
       }

@@ -125,6 +125,9 @@ test("Settings always shows peer MCP configs and device installers, adding token
     settings.indexOf('t("hub.mcpHttpConfig")') < settings.indexOf('t("hub.mcpSseConfig")'),
     "Streamable HTTP and classic SSE must be separate peer blocks",
   );
+  assert.match(settings, /grid h-10 grid-cols-\[minmax\(0,1fr\)_auto\]/);
+  assert.match(settings, /flex h-full min-w-0 flex-col gap-2/);
+  assert.match(settings, /overflow-auto whitespace-pre/);
   assert.match(server, /highSecAuthorization/);
   assert.match(server, /handleHubHttp/);
   assert.match(server, /createSessionCorrTracker/);

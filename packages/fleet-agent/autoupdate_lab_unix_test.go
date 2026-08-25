@@ -4,6 +4,7 @@ package main
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -35,13 +36,13 @@ func TestIntranetAutoUpdateLab(t *testing.T) {
 	oldBin := buildAgentVersion(t, "0.3.0")
 	newBin := buildAgentVersion(t, "0.3.2")
 	assetName := releaseAssetNames(runtime.GOOS, runtime.GOARCH)[0]
-	archive, sum := packLinuxAgentAs(t, newBin, assetName)
+	archive, sum := packAgentAs(t, newBin, assetName)
 
 	t.Run("1_on_idle_fresh_updates_and_reconnects", func(t *testing.T) {
 		lab := newAutoUpdateLab(t, oldBin, archive, assetName, sum)
-		lab.hub.setAdvert("0.3.2", lab.baseURL)
 		pid0 := lab.startAgent(true, "allow")
 		lab.waitOnline("0.3.0")
+		lab.hub.setAdvert("0.3.2", lab.baseURL)
 		newPID := waitReplacedDaemon(t, lab.addr, pid0)
 		if newPID == pid0 {
 			t.Fatal("expected process replace")
@@ -132,9 +133,9 @@ func TestIntranetAutoUpdateLab(t *testing.T) {
 
 	t.Run("5_reconnect_same_id_and_permit", func(t *testing.T) {
 		lab := newAutoUpdateLab(t, oldBin, archive, assetName, sum)
-		lab.hub.setAdvert("0.3.2", lab.baseURL)
 		pid0 := lab.startAgent(true, "ask")
 		lab.waitOnline("0.3.0")
+		lab.hub.setAdvert("0.3.2", lab.baseURL)
 		waitReplacedDaemon(t, lab.addr, pid0)
 		st := getState(t, lab.addr)
 		if st.DeviceID != lab.deviceID {
@@ -267,11 +268,17 @@ func buildAgentVersion(t *testing.T, ver string) string {
 	return bin
 }
 
-func packLinuxAgentAs(t *testing.T, bin, assetName string) (string, string) {
+func packAgentAs(t *testing.T, bin, assetName string) (string, string) {
 	t.Helper()
 	body := mustRead(t, bin)
 	path := filepath.Join(t.TempDir(), assetName)
-	if err := writeBinaryTarGz(path, map[string][]byte{"fleet-agent": body}); err != nil {
+	var err error
+	if filepath.Ext(assetName) == ".zip" {
+		err = writeBinaryZip(path, body)
+	} else {
+		err = writeBinaryTarGz(path, map[string][]byte{"fleet-agent": body})
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	sum, err := fileSHA256(path)
@@ -279,6 +286,29 @@ func packLinuxAgentAs(t *testing.T, bin, assetName string) (string, string) {
 		t.Fatal(err)
 	}
 	return path, sum
+}
+
+func writeBinaryZip(path string, body []byte) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	zw := zip.NewWriter(f)
+	h := &zip.FileHeader{Name: "Fleet Agent.app/Contents/MacOS/FleetAgent", Method: zip.Deflate}
+	h.SetMode(0o755)
+	w, err := zw.CreateHeader(h)
+	if err == nil {
+		_, err = w.Write(body)
+	}
+	closeZipErr := zw.Close()
+	closeFileErr := f.Close()
+	if err != nil {
+		return err
+	}
+	if closeZipErr != nil {
+		return closeZipErr
+	}
+	return closeFileErr
 }
 
 type labHub struct {

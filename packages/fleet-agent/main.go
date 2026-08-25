@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -27,7 +28,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
-var agentVersion = "0.3.3"
+var agentVersion = "0.4.0"
 
 //go:embed ui/index.html
 var uiHTML []byte
@@ -61,14 +62,15 @@ const (
 )
 
 type Pending struct {
-	Corr        string `json:"corr"`
-	Command     string `json:"command"`
-	Requested   int64  `json:"requestedAt"`
-	Kind        string `json:"kind,omitempty"`
-	Fingerprint string `json:"-"`
-	PaneID      string `json:"-"`
-	Keys        string `json:"-"`
-	Key         string `json:"-"`
+	Corr        string         `json:"corr"`
+	Command     string         `json:"command"`
+	Requested   int64          `json:"requestedAt"`
+	Kind        string         `json:"kind,omitempty"`
+	Fingerprint string         `json:"-"`
+	PaneID      string         `json:"-"`
+	Keys        string         `json:"-"`
+	Key         string         `json:"-"`
+	Plugin      *pluginRequest `json:"-"`
 }
 
 type Envelope struct {
@@ -506,7 +508,7 @@ func deviceName() string {
 }
 
 func agentCaps() []string {
-	caps := []string{"shell", "pane"}
+	caps := []string{"shell", "pane", "plugins"}
 	if runtime.GOOS != "windows" {
 		caps = append(caps, "live_shell")
 	}
@@ -572,6 +574,8 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 			go a.handleDesktopScreenshot(ctx, c, env)
 		case "desktop_action":
 			go a.handleDesktopAction(ctx, c, env)
+		case "plugin":
+			a.handlePlugin(ctx, c, env)
 		}
 	}
 }
@@ -804,7 +808,10 @@ func (a *Agent) approve() {
 	if p == nil || ws == nil {
 		return
 	}
-	if p.Kind == pendingKindType {
+	if p.Kind == pendingKindPlugin && p.Plugin != nil {
+		_ = wsjson.Write(context.Background(), ws, pluginAcceptedEnv(p.Corr, "running"))
+		go a.executePlugin(context.Background(), ws, p.Corr, *p.Plugin)
+	} else if p.Kind == pendingKindType {
 		go a.deliverType(context.Background(), ws, p.Corr, p.PaneID, p.Keys, p.Key, p.Fingerprint)
 	} else {
 		go a.spawnPane(context.Background(), ws, p.Corr, p.Command, p.Fingerprint)
@@ -833,7 +840,9 @@ func (a *Agent) deny() {
 	if p == nil || ws == nil {
 		return
 	}
-	if p.Kind == pendingKindType {
+	if p.Kind == pendingKindPlugin {
+		_ = wsjson.Write(context.Background(), ws, pluginResultEnv(p.Corr, nil, errors.New("fleet: denied at the machine")))
+	} else if p.Kind == pendingKindType {
 		_ = wsjson.Write(context.Background(), ws, typedEnv(p.Corr, false, "fleet: denied at the machine"))
 	} else {
 		_ = wsjson.Write(context.Background(), ws, resultEnv(p.Corr, false, 1, "", "fleet: denied at the machine"))

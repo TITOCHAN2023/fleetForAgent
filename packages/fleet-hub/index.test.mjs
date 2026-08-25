@@ -180,6 +180,45 @@ test("run on offline device is 409; type does not wait", async (t) => {
   assert.equal(downKey?.body?.key, "ctrl+c");
 });
 
+test("official plugin task injects the registry manifest and keeps corr polling", async (t) => {
+  const hub = createHub();
+  t.after(() => hub.close());
+  const { http, ws: wsUrl } = await listen(hub);
+  const dev = connectDevice(wsUrl, { id: "plugin-box" });
+  t.after(() => dev.ws.close());
+  await dev.opened;
+  await waitType(dev.inbox, "hello_ok");
+  dev.ws.send(JSON.stringify({ v: 1, type: "hello", id: "hp", t: Date.now(), body: { os: "linux", hostname: "plugin-box", agent_ver: "0.4.0", caps: ["shell", "pane", "plugins"] } }));
+  await new Promise((r) => setTimeout(r, 10));
+
+  const missing = await post(http, "/v1/plugin", { device_id: "plugin-box", operation: "install", plugin_id: "evil.plugin" });
+  assert.equal(missing.status, 404);
+
+  const started = await post(http, "/v1/plugin", {
+    device_id: "plugin-box", operation: "install", plugin_id: "fleet.acp",
+    manifest: { artifacts: [{ url: "https://evil.test/plugin" }] },
+  });
+  assert.equal(started.status, 200);
+  assert.equal(started.json.status, "pending");
+  const down = await waitType(dev.inbox, "plugin");
+  assert.equal(down.corr, started.json.corr);
+  assert.equal(down.body.manifest.id, "fleet.acp");
+  assert.equal(down.body.manifest.publisher, "Fleet Official");
+  assert.equal(down.body.manifest.artifacts.some((a) => a.url.includes("evil.test")), false);
+
+  dev.ws.send(JSON.stringify({ v: 1, type: "plugin_accepted", id: "pa", corr: down.corr, t: Date.now(), body: { status: "waiting_approval" } }));
+  await new Promise((r) => setTimeout(r, 10));
+  const waiting = await post(http, "/v1/plugin_result", { device_id: "plugin-box", corr: down.corr });
+  assert.equal(waiting.json.status, "waiting_approval");
+
+  dev.ws.send(JSON.stringify({ v: 1, type: "plugin_result", id: "pr", corr: down.corr, t: Date.now(), body: { ok: true, result: { id: "fleet.acp" } } }));
+  await new Promise((r) => setTimeout(r, 10));
+  const done = await post(http, "/v1/plugin_result", { device_id: "plugin-box", corr: down.corr });
+  assert.equal(done.json.status, "done");
+  assert.equal(done.json.ok, true);
+  assert.equal(done.json.result.id, "fleet.acp");
+});
+
 test("run wait_ms>0 returns the get_result payload when the device finishes", async (t) => {
   const hub = createHub();
   t.after(() => hub.close());

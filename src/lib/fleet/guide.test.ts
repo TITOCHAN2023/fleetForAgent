@@ -35,6 +35,14 @@ test("guide advertises only the MCP tools shipped on main", () => {
     "get_current_computer",
     "desktop_screenshot",
     "desktop_action",
+    "list_official_plugins",
+    "list_plugins",
+    "install_plugin",
+    "uninstall_plugin",
+    "invoke_plugin",
+    "get_plugin_task",
+    "configure_acp",
+    "delegate_to_acp",
   ]);
 
   const guide = src("src/components/guide-panel.tsx");

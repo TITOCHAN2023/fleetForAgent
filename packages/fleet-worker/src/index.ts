@@ -51,6 +51,7 @@ import {
   type JsonRpcMessage,
   type McpOperatorState,
 } from "../../fleet-tool/mcp-protocol.mjs";
+import { officialPlugin } from "../../fleet-tool/operator.mjs";
 import {
   MCP_SESSION_IDLE_MS,
   MCP_SESSION_MAX_AGE_MS,
@@ -371,6 +372,49 @@ async function handleAuthorizedOperatorRequest(
         body: JSON.stringify(desktopPlan(url.pathname, body)),
       }),
     );
+  }
+
+  if (url.pathname === "/v1/plugin" && request.method === "POST") {
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const deviceId = String(body.device_id ?? "");
+    const operation = String(body.operation ?? "");
+    const pluginId = String(body.plugin_id ?? "");
+    if (!deviceId || !operation) return json({ error: "device_id and operation required" }, 400);
+    if (!(await owns(fleet, actor, deviceId))) return json({ error: "not found" }, 404);
+    const catalog = await fleet.fetch(new Request(`https://fleet/device?id=${encodeURIComponent(deviceId)}`));
+    const row = (await catalog.json()) as DeviceRow;
+    if (!computerPublic(row)) return json({ error: "not found" }, 404);
+    if (!normalizeCaps(row.caps).includes("plugins")) {
+      return json({ error: "unsupported", code: "UNSUPPORTED_CAP", missing: "plugins", agentVer: row.agentVer ?? "", os: row.os ?? "" }, 409);
+    }
+    const plugin = pluginId ? officialPlugin(pluginId) : null;
+    if (operation !== "list" && !plugin) return json({ error: "official plugin not found" }, 404);
+    if (!["list", "install", "uninstall", "invoke"].includes(operation)) {
+      return json({ error: "invalid plugin operation" }, 400);
+    }
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(deviceId));
+    return stub.fetch(
+      new Request("https://device/plugin", {
+        method: "POST",
+        headers: operatorHeaders(request),
+        body: JSON.stringify({
+          operation,
+          plugin_id: pluginId,
+          action: body.action,
+          input: body.input,
+          timeout_seconds: body.timeout_seconds,
+          ...(operation === "install" ? { manifest: plugin } : {}),
+        }),
+      }),
+    );
+  }
+
+  if (url.pathname === "/v1/plugin_result" && request.method === "POST") {
+    const body = (await request.json().catch(() => ({}))) as { device_id?: string; corr?: string };
+    if (!body.device_id || !body.corr) return json({ error: "device_id and corr required" }, 400);
+    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+    return stub.fetch(new Request(`https://device/plugin-result?corr=${encodeURIComponent(body.corr)}`, { headers: operatorHeaders(request) }));
   }
 
   if (url.pathname === "/v1/select_computer" && request.method === "POST") {
@@ -1072,6 +1116,27 @@ export class DeviceDO implements DurableObject {
       return json(hubResultPayload(corr, row));
     }
 
+    if (url.pathname === "/plugin" && request.method === "POST") {
+      const sockets = this.ctx.getWebSockets();
+      if (sockets.length === 0) return json({ error: "offline" }, 409);
+      const body = (await request.json()) as Record<string, unknown>;
+      const fp = deviceFingerprint(request);
+      const corr = crypto.randomUUID();
+      await this.claimSession(fp, corr);
+      await this.ctx.storage.put(`res:${corr}`, { status: "pending" });
+      sockets[0]!.send(JSON.stringify(envelope("plugin", body, corr)));
+      return json({ corr, status: "pending" });
+    }
+
+    if (url.pathname === "/plugin-result") {
+      const corr = url.searchParams.get("corr") ?? "";
+      const fp = deviceFingerprint(request);
+      const resolved = await this.resolveSession(fp, corr);
+      if (resolved.drop || !resolved.corr) return json({ corr, status: "pending" });
+      const row = await this.ctx.storage.get<Record<string, unknown>>(`res:${resolved.corr}`);
+      return json(row ? { corr: resolved.corr, ...row } : { corr: resolved.corr, status: "pending" });
+    }
+
     if (url.pathname === "/type" && request.method === "POST") {
       const sockets = this.ctx.getWebSockets();
       if (sockets.length === 0) return json({ error: "offline" }, 409);
@@ -1254,6 +1319,23 @@ export class DeviceDO implements DurableObject {
         status: "running",
         pane_id: parsed.body.pane_id,
       });
+      return;
+    }
+
+    if (parsed.type === "plugin_accepted" && parsed.corr) {
+      await this.ctx.storage.put(`res:${parsed.corr}`, { status: parsed.body.status ?? "running" });
+      return;
+    }
+
+    if (parsed.type === "plugin_result" && parsed.corr) {
+      await this.ctx.storage.put(`res:${parsed.corr}`, {
+        status: "done",
+        ok: parsed.body.ok ?? false,
+        result: parsed.body.result,
+        error: parsed.body.error ?? "",
+        t: parsed.t,
+      });
+      await this.finishSession(parsed.corr);
       return;
     }
 

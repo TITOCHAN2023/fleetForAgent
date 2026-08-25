@@ -22,6 +22,14 @@ const MCP_TOOLS: { name: string; key: MessageKey }[] = [
   { name: "get_current_computer", key: "guide.tool.get_current_computer" },
   { name: "desktop_screenshot", key: "guide.tool.desktop_screenshot" },
   { name: "desktop_action", key: "guide.tool.desktop_action" },
+  { name: "list_official_plugins", key: "guide.tool.list_official_plugins" },
+  { name: "list_plugins", key: "guide.tool.list_plugins" },
+  { name: "install_plugin", key: "guide.tool.install_plugin" },
+  { name: "uninstall_plugin", key: "guide.tool.uninstall_plugin" },
+  { name: "invoke_plugin", key: "guide.tool.invoke_plugin" },
+  { name: "get_plugin_task", key: "guide.tool.get_plugin_task" },
+  { name: "configure_acp", key: "guide.tool.configure_acp" },
+  { name: "delegate_to_acp", key: "guide.tool.delegate_to_acp" },
 ];
 
 const MCP_ENV = `FLEET_URL=${HUB}

@@ -191,7 +191,7 @@
       function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\"/g,"&quot;"); }
       const T = {
         zh: {
-          help: "帮助", docs: "文档", downloads: "下载", signOut: "退出", settings: "设置", fleet: "机器", ops: "管理",
+          help: "帮助", docs: "文档", plugins: "插件", downloads: "下载", signOut: "退出", settings: "设置", fleet: "机器", ops: "管理",
           kicker: "fleet.ginfo.cc",
           hero: "一个工具连接所有电脑随时随地。",
           body: "用本站地址和 token 导入工具。Windows、Linux、macOS 上的 Agent 会通过 WebSocket 主动连出来。",
@@ -259,7 +259,7 @@
           themeL: "浅色", themeD: "深色", themeS: "系统",
         },
         en: {
-          help: "Help", docs: "Docs", downloads: "Downloads", signOut: "Sign out", settings: "Settings", fleet: "Machines", ops: "Ops",
+          help: "Help", docs: "Docs", plugins: "Plugins", downloads: "Downloads", signOut: "Sign out", settings: "Settings", fleet: "Machines", ops: "Ops",
           kicker: "fleet.ginfo.cc",
           hero: "One tool for every computer anywhere.",
           body: "Import the MCP tool with this URL and a token. Agents on Windows, Linux, and macOS dial out over WebSocket.",
@@ -475,6 +475,9 @@
         var p = pathNow();
         return p === "/docs" || p.indexOf("/docs/") === 0;
       }
+      function isPlugins() {
+        return pathNow() === "/plugins";
+      }
       async function loadBlog() {
         if (!isDocs()) return;
         var p = pathNow();
@@ -582,6 +585,7 @@
           <a class="brand" href="/" data-go="/"><img src="/logo.png" width="28" height="28" alt="" />Fleet</a>
           <a class="nav-link" href="/help" data-go="/help">${t("help")}</a>
           <a class="nav-link" href="/docs" data-go="/docs">${t("docs")}</a>
+          <a class="nav-link" href="/plugins" data-go="/plugins">${t("plugins")}</a>
           ${opsSwitch()}
           <span class="spacer"></span>
           ${extra || ""}
@@ -857,13 +861,40 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
           [t("macIntelZip"), "FleetAgent-macos-amd64.zip"],
           [t("linux"), "fleet-agent-linux-amd64.tar.gz"],
           [t("linuxArm"), "fleet-agent-linux-arm64.tar.gz"],
-          [t("checksums"), "checksums-0.2.10.txt"],
+          [t("checksums"), "checksums-0.4.0.txt"],
         ];
         return `<section class="card">
           <h3>${t("relTitle")}</h3>
           <p class="muted" style="margin-top:8px">${t("relBody")}</p>
         </section>
         <div class="dl">${items.map(([name, file]) => `<article class="card"><h3>${name}</h3><p class="subtle" style="margin-top:8px;font-family:var(--mono)">${file}</p><a class="btn" style="margin-top:12px" href="${GH}/${file}">Download</a></article>`).join("")}</div>`;
+      }
+      function pluginsView() {
+        const zh = state.locale === "zh";
+        const prompts = zh ? [
+          ["安装官方 ACP 插件", "使用 Fleet Tool：先 list_computers 并选择目标机器，然后 install_plugin，plugin_id 填 fleet.acp。拿到 corr 后持续调用 get_plugin_task，直到完成。不要改用 run 手工下载安装。"],
+          ["绑定本机 ACP Agent", "在当前 Fleet 机器上调用 configure_acp：profile 用 default，command 填这台机器上已安装的 ACP Agent 启动命令，args 按需填写。然后用 get_plugin_task 等待完成。"],
+          ["把任务交给远端 Agent", "调用 delegate_to_acp，把 cwd 设为远端机器上的绝对项目路径，prompt 设为要交给远端 Agent 的任务。默认拒绝嵌套权限；确实需要时才设 permission_mode=allow_once。用 get_plugin_task 读取结果。"],
+        ] : [
+          ["Install the official ACP plugin", "Use Fleet Tool: list_computers and select the target, then call install_plugin with plugin_id fleet.acp. Poll get_plugin_task with the returned corr until done. Do not replace this with a manual download through run."],
+          ["Bind a local ACP agent", "On the current Fleet machine call configure_acp: use profile default, set command to the ACP agent executable already installed there, and pass args if needed. Poll get_plugin_task until done."],
+          ["Delegate to the remote agent", "Call delegate_to_acp with cwd set to an absolute project path on the remote machine and prompt set to the delegated task. Nested permissions reject by default; use permission_mode=allow_once only when required. Read the result with get_plugin_task."],
+        ];
+        return `${chrome()}
+          <div class="wrap">
+            <section class="card" style="padding:28px">
+              <p class="kicker">Fleet plugins</p>
+              <h1 style="max-width:780px">${zh ? "把能力装到远端 Agent，不把脚本塞进 Hub。" : "Install capability on the remote Agent—not scripts in the Hub."}</h1>
+              <p class="lead" style="max-width:760px;font-size:18px">${zh ? "复制下面的指令给正在使用 Fleet Tool 的 AI。Tool 只提交官方插件 id；设备核对平台和 SHA-256，并在本机确认后安装。" : "Copy a prompt below to the AI using Fleet Tool. The Tool submits only an official id; the device verifies platform and SHA-256 before local approval."}</p>
+            </section>
+            <section class="card" style="margin-top:16px;padding:24px">
+              <div class="row" style="justify-content:space-between;align-items:flex-start;gap:20px">
+                <div style="max-width:760px"><p class="subtle" style="font-family:var(--mono)">fleet.acp · v0.1.0 · MIT · Fleet Official</p><h2 style="margin-top:12px">Fleet ACP</h2><p class="muted" style="margin-top:10px">${zh ? "通用 Agent Client Protocol v1 桥。远端机器自行安装 ACP 兼容 Agent；插件负责初始化、创建会话、下发任务并收集流式结果，不捆绑模型、账号或 API Key。" : "A generic Agent Client Protocol v1 bridge. The remote machine owns its ACP agent; the plugin initializes it, creates a session, delegates a task, and collects streamed output. No model, account, or API key is bundled."}</p></div>
+                <a class="btn" href="https://github.com/TITOCHAN2023/fleet-acp-plugin" target="_blank" rel="noreferrer">GitHub</a>
+              </div>
+            </section>
+            <div class="grid-3" style="margin-top:16px;align-items:stretch">${prompts.map(([title, prompt], i) => `<article class="card" style="display:flex;flex-direction:column;min-height:280px"><div class="row" style="justify-content:space-between"><div><p class="subtle" style="font-family:var(--mono)">0${i+1}</p><h3 style="margin-top:8px">${title}</h3></div><button class="btn" data-copy="${esc(prompt)}">${zh ? "复制" : "Copy"}</button></div><pre style="margin-top:18px;flex:1;white-space:pre-wrap">${esc(prompt)}</pre></article>`).join("")}</div>
+          </div>`;
       }
       function fleetView() {
         if (!state.computers.length) return `<section class="card"><h3>${t("fleet")}</h3><p class="muted" style="margin-top:8px">${t("empty")}</p></section>`;
@@ -880,6 +911,7 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
         var root = document.getElementById("app");
         if (isHelp()) root.innerHTML = helpView(signedIn());
         else if (isDocs()) root.innerHTML = docsView();
+        else if (isPlugins()) root.innerHTML = pluginsView();
         else if (signedIn()) root.innerHTML = appView();
         else root.innerHTML = homeView();
         root.insertAdjacentHTML("beforeend", promptView());

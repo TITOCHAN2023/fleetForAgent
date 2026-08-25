@@ -7,6 +7,7 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import { getSql } from "@/lib/db";
+import { officialPlugin } from "../../../packages/fleet-tool/operator.mjs";
 import { makeDeviceSlug } from "./cap";
 import {
   attachDevice,
@@ -285,6 +286,48 @@ export async function handleHubHttp(request: Request): Promise<Response> {
     return json(got);
   }
 
+  if (path === "/v1/plugin" && request.method === "POST") {
+    const deviceId = String(body.device_id ?? "");
+    const operation = String(body.operation ?? "");
+    const pluginId = String(body.plugin_id ?? "");
+    if (!deviceId || !operation) return json({ error: "device_id and operation required" }, 400);
+    if (!(await ownsDevice(userId, deviceId))) return json({ error: "not found" }, 404);
+    if (!isOnline(deviceId)) return json({ error: "offline" }, 409);
+    const catalog = (await listComputers(userId)).find((computer) => computer.id === deviceId);
+    if (!catalog) return json({ error: "not found" }, 404);
+    if (!normalizeCaps(catalog.caps).includes("plugins")) {
+      return json({ error: "unsupported", code: "UNSUPPORTED_CAP", missing: "plugins", agentVer: catalog.agentVer ?? "", os: catalog.os ?? "" }, 409);
+    }
+    const plugin = pluginId ? officialPlugin(pluginId) : null;
+    if (operation !== "list" && !plugin) return json({ error: "official plugin not found" }, 404);
+    if (!new Set(["list", "install", "uninstall", "invoke"]).has(operation)) {
+      return json({ error: "invalid plugin operation" }, 400);
+    }
+    const corr = randomUUID();
+    const payload: Record<string, unknown> = {
+      operation,
+      plugin_id: pluginId,
+      action: body.action,
+      input: body.input,
+      timeout_seconds: body.timeout_seconds,
+    };
+    if (operation === "install") payload.manifest = plugin;
+    putResult(deviceId, corr, { status: "pending" });
+    if (!sendToDevice(userId, deviceId, envelope("plugin", payload, corr))) {
+      return json({ error: "offline" }, 409);
+    }
+    return json({ corr, status: "pending" });
+  }
+
+  if (path === "/v1/plugin_result" && request.method === "POST") {
+    const deviceId = String(body.device_id ?? "");
+    const corr = String(body.corr ?? "");
+    if (!deviceId || !corr) return json({ error: "device_id and corr required" }, 400);
+    if (!(await ownsDevice(userId, deviceId))) return json({ error: "not found" }, 404);
+    const row = getResult(deviceId, corr);
+    return json(row ? { corr, ...row } : { corr, status: "pending" });
+  }
+
   if (path === "/v1/select_computer" && request.method === "POST") {
     const id = String(body.id ?? "");
     if (!id) return json({ error: "id required" }, 400);
@@ -469,6 +512,20 @@ async function onDeviceMessage(userId: string, deviceId: string, ws: WebSocket, 
   }
   if (parsed.type === "accepted" && parsed.corr) {
     putResult(deviceId, parsed.corr, { status: "running", pane_id: parsed.body.pane_id });
+    return;
+  }
+  if (parsed.type === "plugin_accepted" && parsed.corr) {
+    putResult(deviceId, parsed.corr, { status: parsed.body.status ?? "running" });
+    return;
+  }
+  if (parsed.type === "plugin_result" && parsed.corr) {
+    putResult(deviceId, parsed.corr, {
+      status: "done",
+      ok: parsed.body.ok ?? false,
+      result: parsed.body.result,
+      error: parsed.body.error ?? "",
+      t: parsed.t,
+    });
     return;
   }
   if (parsed.type === "result" && parsed.corr) {

@@ -36,7 +36,7 @@ test("hub site explains multi-os fleet and ships a Help page", () => {
   assert.match(html, /fleet-agent-linux-arm64/);
   assert.match(html, /FleetAgent-macos-arm64\.zip/);
   assert.match(html, /FleetAgent-macos-amd64\.zip/);
-  assert.match(html, /checksums-0\.2\.10\.txt/);
+  assert.match(html, /checksums-0\.4\.0\.txt/);
   assert.match(html, /resetConfirm/);
   assert.match(html, /anatomyRsa/);
   assert.match(html, /Fleet-OAEP/);
@@ -44,6 +44,11 @@ test("hub site explains multi-os fleet and ships a Help page", () => {
   assert.match(html, /\/logo\.png/);
   assert.match(html, /ops-switch/);
   assert.match(html, /href="\/ops"/);
+  assert.match(html, /href="\/plugins"/);
+  assert.match(html, /fleet\.acp/);
+  assert.match(html, /install_plugin/);
+  assert.match(html, /delegate_to_acp/);
+  assert.match(html, /TITOCHAN2023\/fleet-acp-plugin/);
   assert.match(html, /user\.ops/);
   assert.match(html, /command: "npx"/);
   assert.match(html, /type: "http"/);

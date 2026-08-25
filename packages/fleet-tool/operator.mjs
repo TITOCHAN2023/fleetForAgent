@@ -3,7 +3,42 @@
  * Do not write hub_sessions, ~/.fleet, or a workspace file.
  */
 
-export const FLEET_VERSION = "0.3.0";
+export const FLEET_VERSION = "0.4.0";
+
+const ACP_RELEASE = "https://github.com/TITOCHAN2023/fleet-acp-plugin/releases/download/v0.1.0";
+
+export const OFFICIAL_PLUGINS = Object.freeze([
+  Object.freeze({
+    schema_version: 1,
+    id: "fleet.acp",
+    name: "Fleet ACP",
+    version: "0.1.0",
+    publisher: "Fleet Official",
+    license: "MIT",
+    description: "Delegate a task to any Agent Client Protocol v1 coding agent installed on the remote machine.",
+    repository: "https://github.com/TITOCHAN2023/fleet-acp-plugin",
+    actions: ["configure", "profiles", "delegate"],
+    artifacts: [
+      { os: "darwin", arch: "amd64", url: `${ACP_RELEASE}/fleet-acp-plugin-darwin-amd64`, sha256: "f1ca6f8db552703dc86965bddccfcfe95f6a8fb60700cc58940668e26a641f48", entrypoint: "fleet-acp-plugin" },
+      { os: "darwin", arch: "arm64", url: `${ACP_RELEASE}/fleet-acp-plugin-darwin-arm64`, sha256: "3112a1f9cc23bcc0df33fb40b58ba3894099417f228284bc20046d3ef9f27cec", entrypoint: "fleet-acp-plugin" },
+      { os: "linux", arch: "amd64", url: `${ACP_RELEASE}/fleet-acp-plugin-linux-amd64`, sha256: "6f5a7a128f7b66ceb8acea1c6286b5242846a499431f80912e24e4d18503642a", entrypoint: "fleet-acp-plugin" },
+      { os: "linux", arch: "arm64", url: `${ACP_RELEASE}/fleet-acp-plugin-linux-arm64`, sha256: "b8e6f4db282b4751d36796d026fa2801fae0f25b063737b4d1d7d90a322bfc08", entrypoint: "fleet-acp-plugin" },
+      { os: "windows", arch: "amd64", url: `${ACP_RELEASE}/fleet-acp-plugin-windows-amd64.exe`, sha256: "35bfd07b5cb4fae8e7b913347fdc282748b0fcef840461b8b163402bbe5e38ee", entrypoint: "fleet-acp-plugin.exe" },
+      { os: "windows", arch: "arm64", url: `${ACP_RELEASE}/fleet-acp-plugin-windows-arm64.exe`, sha256: "ff1f17171bd367e3111f09cb8f6096f8484fd71e63f6c52277cf15e554a40b18", entrypoint: "fleet-acp-plugin.exe" },
+    ],
+  }),
+]);
+
+export function officialPlugin(id) {
+  return OFFICIAL_PLUGINS.find((plugin) => plugin.id === String(id || "").trim()) || null;
+}
+
+export function publicOfficialPlugins() {
+  return OFFICIAL_PLUGINS.map(({ artifacts, ...plugin }) => ({
+    ...plugin,
+    platforms: artifacts.map(({ os, arch }) => ({ os, arch })),
+  }));
+}
 
 /** MCP-process fingerprint. HTTP header only — never a tool argument. */
 export const FLEET_OPERATOR_HEADER = "X-Fleet-Operator";
@@ -29,7 +64,7 @@ export function shQuote(value) {
 }
 
 export const MCP_INSTRUCTIONS =
-  "Fleet: remote Windows/Linux/macOS machines via a cloud hub. list_computers, then set_computer (or pass device_id). run waits up to 30s; if the text is still running, call wait — do not run again. Hub tokens are flt_1 values minted in website Settings. Stdio uses Fleet-OAEP; remote /mcp uses Streamable HTTP and /mcp/sse keeps classic SSE compatibility.";
+  "Fleet: remote Windows/Linux/macOS machines via a cloud hub. list_computers, then set_computer (or pass device_id). run waits up to 30s; if the text is still running, call wait — do not run again. Official plugins are installed with install_plugin and always require approval at the device; poll get_plugin_task with its corr. delegate_to_acp uses the official fleet.acp bridge after configure_acp. Hub tokens are flt_1 values minted in website Settings. Stdio uses Fleet-OAEP; remote /mcp uses Streamable HTTP and /mcp/sse keeps classic SSE compatibility.";
 
 export function buildPrompts() {
   return [
@@ -513,6 +548,89 @@ export function buildTools() {
         required: ["action"],
       },
     },
+    {
+      name: "list_official_plugins",
+      description: "List the signed-by-registry official Fleet plugins available to install. This is local catalog data and does not contact a device.",
+      inputSchema: { type: "object", properties: {} },
+    },
+    {
+      name: "list_plugins",
+      description: "Ask a remote Fleet Agent for its installed plugins. Returns a corr ticket; call get_plugin_task with that corr.",
+      inputSchema: { type: "object", properties: { device_id: deviceId } },
+    },
+    {
+      name: "install_plugin",
+      description: "Install or upgrade one official plugin by registry id. The hub supplies the approved URL and SHA-256; arbitrary URLs are not accepted. Always requires confirmation on the device. Returns a corr ticket.",
+      inputSchema: {
+        type: "object",
+        required: ["plugin_id"],
+        properties: { device_id: deviceId, plugin_id: { type: "string", description: "Official id from list_official_plugins, for example fleet.acp." } },
+      },
+    },
+    {
+      name: "uninstall_plugin",
+      description: "Remove an installed official plugin and its private plugin data from the device. Always requires device confirmation. Returns a corr ticket.",
+      inputSchema: {
+        type: "object",
+        required: ["plugin_id"],
+        properties: { device_id: deviceId, plugin_id: { type: "string" } },
+      },
+    },
+    {
+      name: "invoke_plugin",
+      description: "Invoke an action exposed by an installed official plugin. Device permit rules apply. Returns a corr ticket; poll get_plugin_task.",
+      inputSchema: {
+        type: "object",
+        required: ["plugin_id", "action"],
+        properties: {
+          device_id: deviceId,
+          plugin_id: { type: "string" },
+          action: { type: "string" },
+          input: { type: "object", additionalProperties: true },
+          timeout_seconds: { type: "number", minimum: 1, maximum: 3600 },
+        },
+      },
+    },
+    {
+      name: "get_plugin_task",
+      description: "Read an install, uninstall, inventory, or plugin-action ticket. waiting_approval/running means poll this same corr; never submit the action again.",
+      inputSchema: {
+        type: "object",
+        required: ["corr"],
+        properties: { device_id: deviceId, corr: { type: "string" } },
+      },
+    },
+    {
+      name: "configure_acp",
+      description: "Configure a named local ACP-agent stdio command for the installed fleet.acp plugin. This does not install that third-party ACP agent. Device permit rules apply; returns a corr ticket.",
+      inputSchema: {
+        type: "object",
+        required: ["command"],
+        properties: {
+          device_id: deviceId,
+          profile: { type: "string", default: "default" },
+          command: { type: "string", description: "ACP-compatible executable already installed on the remote device." },
+          args: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+    {
+      name: "delegate_to_acp",
+      description: "Delegate one task to a configured ACP v1 agent on the remote machine. It runs initialize, session/new, and session/prompt and returns the streamed agent text through get_plugin_task. Nested ACP tool permissions reject by default; permission_mode=allow_once selects only an explicit allow_once option.",
+      inputSchema: {
+        type: "object",
+        required: ["cwd", "prompt"],
+        properties: {
+          device_id: deviceId,
+          profile: { type: "string", default: "default" },
+          cwd: { type: "string", description: "Absolute workspace path on the remote device." },
+          prompt: { type: "string" },
+          additional_directories: { type: "array", items: { type: "string" } },
+          permission_mode: { type: "string", enum: ["reject", "allow_once"], default: "reject" },
+          timeout_seconds: { type: "number", minimum: 1, maximum: 3600, default: 900 },
+        },
+      },
+    },
   ];
 }
 
@@ -801,6 +919,62 @@ export function createOperator({
         delete body.keys;
       }
       const row = await desktopCall(trace, "/v1/desktop_action", body, callRpc);
+      return withDev(withDevice(row, deviceId), trace);
+    }
+
+    if (name === "list_official_plugins") {
+      return { plugins: publicOfficialPlugins() };
+    }
+
+    if (name === "get_plugin_task") {
+      const deviceId = resolveDevice(args);
+      const corr = trimId(args.corr);
+      if (!corr) throw new Error("corr required");
+      const row = await callRpc(trace, "/v1/plugin_result", { device_id: deviceId, corr });
+      return withDev(withDevice(row, deviceId), trace);
+    }
+
+    if (["list_plugins", "install_plugin", "uninstall_plugin", "invoke_plugin", "configure_acp", "delegate_to_acp"].includes(name)) {
+      const deviceId = resolveDevice(args);
+      const body = { device_id: deviceId };
+      if (name === "list_plugins") body.operation = "list";
+      if (name === "install_plugin" || name === "uninstall_plugin") {
+        const pluginId = trimId(args.plugin_id);
+        if (!pluginId) throw new Error("plugin_id required");
+        body.operation = name === "install_plugin" ? "install" : "uninstall";
+        body.plugin_id = pluginId;
+      }
+      if (name === "invoke_plugin") {
+        const pluginId = trimId(args.plugin_id);
+        const action = trimId(args.action);
+        if (!pluginId || !action) throw new Error("plugin_id and action required");
+        Object.assign(body, { operation: "invoke", plugin_id: pluginId, action, input: args.input || {} });
+        if (args.timeout_seconds != null) body.timeout_seconds = args.timeout_seconds;
+      }
+      if (name === "configure_acp") {
+        const command = trimId(args.command);
+        if (!command) throw new Error("command required");
+        Object.assign(body, {
+          operation: "invoke", plugin_id: "fleet.acp", action: "configure",
+          input: { profile: trimId(args.profile) || "default", command, args: Array.isArray(args.args) ? args.args : [] },
+        });
+      }
+      if (name === "delegate_to_acp") {
+        const cwd = trimId(args.cwd);
+        const prompt = args.prompt == null ? "" : String(args.prompt).trim();
+        if (!cwd || !prompt) throw new Error("cwd and prompt required");
+        Object.assign(body, {
+          operation: "invoke", plugin_id: "fleet.acp", action: "delegate",
+          input: {
+            profile: trimId(args.profile) || "default", cwd, prompt,
+            additional_directories: Array.isArray(args.additional_directories) ? args.additional_directories : [],
+            permission_mode: args.permission_mode === "allow_once" ? "allow_once" : "reject",
+            timeout_seconds: args.timeout_seconds == null ? 900 : args.timeout_seconds,
+          },
+          timeout_seconds: args.timeout_seconds == null ? 900 : args.timeout_seconds,
+        });
+      }
+      const row = await callRpc(trace, "/v1/plugin", body);
       return withDev(withDevice(row, deviceId), trace);
     }
 

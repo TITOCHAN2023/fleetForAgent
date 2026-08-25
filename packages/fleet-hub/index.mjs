@@ -24,6 +24,7 @@ import {
   unsupportedCapBody,
 } from "../fleet-worker/src/presence.mjs";
 import { createSessionBook, fingerprintFromHeaders } from "../fleet-worker/src/session.mjs";
+import { officialPlugin } from "../fleet-tool/operator.mjs";
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -177,6 +178,21 @@ export function createHub({
         status: "running",
         pane_id: parsed.body?.pane_id,
       });
+      return;
+    }
+    if (parsed.type === "plugin_accepted" && parsed.corr) {
+      deviceResults(id).set(parsed.corr, { status: parsed.body?.status ?? "running" });
+      return;
+    }
+    if (parsed.type === "plugin_result" && parsed.corr) {
+      deviceResults(id).set(parsed.corr, {
+        status: "done",
+        ok: parsed.body?.ok ?? false,
+        result: parsed.body?.result,
+        error: parsed.body?.error ?? "",
+        t: parsed.t,
+      });
+      deviceSessions(id).finish(parsed.corr);
       return;
     }
     if (parsed.type === "result" && parsed.corr) {
@@ -496,6 +512,67 @@ export function createHub({
       }
       const row = await waitHubResult(body.device_id, corr, waitMs);
       write(res, 200, hubResultPayload(corr, row));
+      return;
+    }
+
+    if (url.pathname === "/v1/plugin" && req.method === "POST") {
+      if (!body.device_id || !body.operation) {
+        write(res, 400, { error: "device_id and operation required" });
+        return;
+      }
+      const row = fleet.get(body.device_id);
+      if (!row) {
+        write(res, 404, { error: "not found" });
+        return;
+      }
+      if (!normalizeCaps(row.caps).includes("plugins")) {
+        write(res, 409, { error: "unsupported", code: "UNSUPPORTED_CAP", missing: "plugins", agentVer: row.agentVer ?? "", os: row.os ?? "" });
+        return;
+      }
+      const operation = String(body.operation);
+      const pluginId = String(body.plugin_id ?? "");
+      const plugin = pluginId ? officialPlugin(pluginId) : null;
+      if (operation !== "list" && !plugin) {
+        write(res, 404, { error: "official plugin not found" });
+        return;
+      }
+      if (!["list", "install", "uninstall", "invoke"].includes(operation)) {
+        write(res, 400, { error: "invalid plugin operation" });
+        return;
+      }
+      const fp = fingerprintFromHeaders(req.headers);
+      const corr = randomUUID();
+      deviceSessions(body.device_id).claim(fp, corr);
+      deviceResults(body.device_id).set(corr, { status: "pending" });
+      const ok = sendTo(body.device_id, envelope("plugin", {
+        operation,
+        plugin_id: pluginId,
+        action: body.action,
+        input: body.input,
+        timeout_seconds: body.timeout_seconds,
+        ...(operation === "install" ? { manifest: plugin } : {}),
+      }, corr));
+      if (!ok) {
+        write(res, 409, { error: "offline" });
+        return;
+      }
+      write(res, 200, { corr, status: "pending" });
+      return;
+    }
+
+    if (url.pathname === "/v1/plugin_result" && req.method === "POST") {
+      if (!body.device_id || !body.corr) {
+        write(res, 400, { error: "device_id and corr required" });
+        return;
+      }
+      const fp = fingerprintFromHeaders(req.headers);
+      const resolved = deviceSessions(body.device_id).resolve(fp, body.corr);
+      if (resolved.drop || !resolved.corr) {
+        write(res, 200, { corr: body.corr, status: "pending" });
+        return;
+      }
+      const row = deviceResults(body.device_id).get(resolved.corr);
+      write(res, 200, row ? { corr: resolved.corr, ...row } : { corr: resolved.corr, status: "pending" });
       return;
     }
 

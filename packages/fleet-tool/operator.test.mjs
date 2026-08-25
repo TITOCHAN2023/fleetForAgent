@@ -21,6 +21,8 @@ import {
   applyCliDevFlag,
   isFleetDev,
   newOperatorFingerprint,
+  officialPlugin,
+  publicOfficialPlugins,
   isFinishedResult,
   measureHubFetch,
   parseOptionalMs,
@@ -832,8 +834,34 @@ test("applyCliDevFlag sets FLEET_DEV and strips --dev", () => {
   assert.equal(isFleetDev({}), false);
 });
 
-test("MCP version is 0.3.0", () => {
-  assert.equal(FLEET_VERSION, "0.3.0");
+test("MCP version is 0.4.0", () => {
+  assert.equal(FLEET_VERSION, "0.4.0");
+});
+
+test("official plugin registry pins every platform artifact to SHA-256", () => {
+  const acp = officialPlugin("fleet.acp");
+  assert.equal(acp.publisher, "Fleet Official");
+  assert.equal(acp.artifacts.length, 6);
+  for (const artifact of acp.artifacts) {
+    assert.match(artifact.url, /^https:\/\/github\.com\/TITOCHAN2023\/fleet-acp-plugin\/releases\/download\//);
+    assert.match(artifact.sha256, /^[0-9a-f]{64}$/);
+  }
+  assert.equal(publicOfficialPlugins()[0].artifacts, undefined);
+});
+
+test("plugin tools send ids and actions but never client-supplied artifact URLs", async () => {
+  const { rpc, calls } = mockRpc({
+    "/v1/plugin": (body) => ({ corr: "p1", status: "pending", body }),
+    "/v1/plugin_result": () => ({ corr: "p1", status: "done", ok: true }),
+  });
+  const op = createOperator({ rpc });
+  await op.callTool("install_plugin", { device_id: "mac-1", plugin_id: "fleet.acp", url: "https://evil.test/x" });
+  assert.deepEqual(calls[0], {
+    path: "/v1/plugin",
+    body: { device_id: "mac-1", operation: "install", plugin_id: "fleet.acp" },
+  });
+  await op.callTool("get_plugin_task", { corr: "p1" });
+  assert.deepEqual(calls[1], { path: "/v1/plugin_result", body: { device_id: "mac-1", corr: "p1" } });
 });
 
 test("desktop_screenshot success keeps image_b64; formatMcpText strips it", async () => {

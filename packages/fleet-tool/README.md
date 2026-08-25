@@ -75,6 +75,12 @@ Existing tools stay. `device_id` is still on every mutating/read schema; it is o
 | `read_screen` / `type` | Same optional `device_id` fill. POSIX live PTY: `read_screen` is the current VT grid (not a raw byte dump; `__FLEET_PROMPT__` rows are stripped). After a corr finishes the grid is reset so the next command does not paint on leftover TUI chrome. `type` still takes `keys`; optional `key` is a named press (`enter`, `ctrl+c`). Enter is CR; a single `keys` write of `text\\r` flushes the text then CR (ssh_send). `ctrl+c` is 0x03 plus SIGINT to the fg process group. |
 | `set_computer` | Remember a device for later calls **in this MCP process only**. |
 | `get_current_computer` | Show last-used, last `cwd`, and the `FLEET_DEVICE_ID` start default. |
+| `list_official_plugins` / `list_plugins` | Read the fixed official catalog or ask the selected device for its installed inventory. |
+| `install_plugin` / `uninstall_plugin` | Submit an asynchronous software-change ticket. The Tool accepts an official id, never a URL; the device always asks locally. |
+| `invoke_plugin` / `get_plugin_task` | Invoke an installed plugin and poll the same `corr` until `done`. |
+| `configure_acp` / `delegate_to_acp` | Bind an ACP v1 stdio command on the device, then delegate one prompt through the official `fleet.acp` bridge. |
+
+Official plugin downloads are selected by the Hub registry. The Agent accepts only Fleet Official GitHub Release artifacts, selects its own OS/architecture, caps the download, verifies the pinned SHA-256, and atomically replaces the old binary. `fleet.acp` is an MIT client bridge; it does not bundle a model, API key, or third-party coding agent. Nested ACP permissions reject by default and can only opt into the protocol's one-shot `allow_once` option.
 
 MCP **prompts**: `hub_token` (generate / reset in Settings) and `hub_token_anatomy` (`flt_1.<payload>.<sig>`, RSA-2048). Stdio uses Fleet-OAEP. Recommended remote clients use Streamable HTTP at `/mcp`; the initialize response carries an opaque `Mcp-Session-Id`. Classic SSE remains at `/mcp/sse`: Bearer is used only on the initial GET, then the server announces a random token-free message URL. The initialize payload includes short `instructions`. `run` / `wait` emit `notifications/progress` where the transport supports it and honor `notifications/cancelled` (cancel stops waiting; it does not kill the remote command).
 

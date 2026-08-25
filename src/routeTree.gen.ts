@@ -16,6 +16,7 @@ import { Route as GuideRouteImport } from './routes/guide'
 import { Route as HelpRouteImport } from './routes/help'
 import { Route as LabRouteImport } from './routes/lab'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as PluginsRouteImport } from './routes/plugins'
 import { Route as ReleasesRouteImport } from './routes/releases'
 import { Route as DocsIndexRouteImport } from './routes/docs/index'
 import { Route as DocsSlugRouteImport } from './routes/docs/$slug'
@@ -57,6 +58,11 @@ const LabRoute = LabRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PluginsRoute = PluginsRouteImport.update({
+  id: '/plugins',
+  path: '/plugins',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ReleasesRoute = ReleasesRouteImport.update({
@@ -103,6 +109,7 @@ export interface FileRoutesByFullPath {
   '/help': typeof HelpRoute
   '/lab': typeof LabRoute
   '/login': typeof LoginRoute
+  '/plugins': typeof PluginsRoute
   '/releases': typeof ReleasesRoute
   '/docs/$slug': typeof DocsSlugRoute
   '/mcp/sse': typeof McpSseRoute
@@ -118,6 +125,7 @@ export interface FileRoutesByTo {
   '/help': typeof HelpRoute
   '/lab': typeof LabRoute
   '/login': typeof LoginRoute
+  '/plugins': typeof PluginsRoute
   '/releases': typeof ReleasesRoute
   '/docs/$slug': typeof DocsSlugRoute
   '/mcp/sse': typeof McpSseRoute
@@ -135,6 +143,7 @@ export interface FileRoutesById {
   '/help': typeof HelpRoute
   '/lab': typeof LabRoute
   '/login': typeof LoginRoute
+  '/plugins': typeof PluginsRoute
   '/releases': typeof ReleasesRoute
   '/docs/$slug': typeof DocsSlugRoute
   '/mcp/sse': typeof McpSseRoute
@@ -153,6 +162,7 @@ export interface FileRouteTypes {
     | '/help'
     | '/lab'
     | '/login'
+    | '/plugins'
     | '/releases'
     | '/docs/$slug'
     | '/mcp/sse'
@@ -168,6 +178,7 @@ export interface FileRouteTypes {
     | '/help'
     | '/lab'
     | '/login'
+    | '/plugins'
     | '/releases'
     | '/docs/$slug'
     | '/mcp/sse'
@@ -184,6 +195,7 @@ export interface FileRouteTypes {
     | '/help'
     | '/lab'
     | '/login'
+    | '/plugins'
     | '/releases'
     | '/docs/$slug'
     | '/mcp/sse'
@@ -201,6 +213,7 @@ export interface RootRouteChildren {
   HelpRoute: typeof HelpRoute
   LabRoute: typeof LabRoute
   LoginRoute: typeof LoginRoute
+  PluginsRoute: typeof PluginsRoute
   ReleasesRoute: typeof ReleasesRoute
   McpSseRoute: typeof McpSseRoute
   V1SplatRoute: typeof V1SplatRoute
@@ -257,6 +270,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/plugins': {
+      id: '/plugins'
+      path: '/plugins'
+      fullPath: '/plugins'
+      preLoaderRoute: typeof PluginsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/releases': {
@@ -331,6 +351,7 @@ const rootRouteChildren: RootRouteChildren = {
   HelpRoute: HelpRoute,
   LabRoute: LabRoute,
   LoginRoute: LoginRoute,
+  PluginsRoute: PluginsRoute,
   ReleasesRoute: ReleasesRoute,
   McpSseRoute: McpSseRoute,
   V1SplatRoute: V1SplatRoute,

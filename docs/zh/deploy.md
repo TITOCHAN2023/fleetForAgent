@@ -87,6 +87,44 @@ npx wrangler dev --port 8787
 
 Agent 填 `http://127.0.0.1:8787`（会转成 `ws://…/v1/device`）。
 
+### 可选的点对点数据通道和自建 STUN
+
+Agent 0.5.0 与本地 `fleet-tool` 0.5.0 会先保留原来的 WSS 控制连接，再尝试建立 WebRTC DataChannel。直连成功后，`run`、pane、桌面和插件仍传同一份 `{ v, type, id, corr, t, body }`；打洞失败、超时、旧客户端没有 `rtc_v1`，都会回到原来的 Worker → WSS 路径。远程 `/mcp` 和 `/mcp/sse` 运行在 Worker 内，没有 UDP socket，继续走中枢。
+
+```mermaid
+flowchart LR
+  T["本地 fleet-tool"] -->|"HTTPS 鉴权和信令"| H["Worker"]
+  A["Fleet Agent"] -->|"WSS 控制和撤销"| H
+  T <-->|"DataChannel 业务 Envelope"| A
+  T -. "直连失败" .-> H
+  H -. "现有 WSS 兜底" .-> A
+```
+
+STUN 只告诉双方各自的公网映射，不转发命令内容。第一版不配 TURN，避免又造一条中心数据面。可以在有固定公网 IP 的小 VPS 上装 coturn，只开放 UDP 3478：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y coturn
+sudo tee /etc/turnserver.conf >/dev/null <<'EOF'
+stun-only
+listening-port=3478
+listening-ip=203.0.113.10
+external-ip=203.0.113.10
+no-cli
+no-tls
+no-dtls
+EOF
+sudo systemctl enable --now coturn
+```
+
+把示例 IP 换成服务器真实公网 IP，给它加一个只做 DNS 解析的域名，并在 Worker 的 `[vars]` 中加入：
+
+```toml
+RTC_STUN_URLS = "stun:stun.example.com:3478"
+```
+
+UDP 3478 必须在 VPS 防火墙和云安全组同时放行。STUN 宕机不会让 Fleet 失联，只会让这次直连失败并回到 WSS。不要在域名还没提供 STUN 服务时提前填写这个变量。
+
 ### B. 普通部署（VPS / 本机 Node）
 
 不需要 Cloudflare。一台 Node 18+ 机器：
@@ -264,6 +302,8 @@ npm run build
 - 设备只出站。家用路由不用做端口映射。
 - Token 走 `Authorization` 头，不要写进 URL。
 - 本机三级权限在设备上执行，中枢改不了。`off` / `ask` 同时管 run 和 type。
+- 危险命令拦截只在设备 Agent 执行。Worker、RTC 和 WSS 都只是传递同一份 Envelope，插件审批也不会被另一条传输绕开。
+- 重置 Token 会先写撤销墓碑并下发签名的 `auth_revoked`，随后断开 WSS。Agent 把它当最高优先级事件，立即关闭全部 DataChannel，旧 Token 不再自动重连。
 - Worker 的 `HUB_TOKEN` 是可选超级操作员。Node 中枢绑公网时必须设 `HUB_TOKEN`（空 token 只能 loopback）。
 - 机器之间互相 ping 不通是正常的：没有内网 overlay。
 

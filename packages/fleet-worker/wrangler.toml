@@ -22,6 +22,10 @@ workers_dev = false
 # aud inside every flt_1 token. Never taken from the Host header.
 [vars]
 HUB_ORIGIN = "https://fleet.ginfo.cc"
+# Optional, public configuration rather than a secret. Comma-separate up to
+# four STUN URLs. Leave unset until the hostname really serves UDP 3478;
+# direct ICE failure automatically keeps the existing WSS relay path.
+# RTC_STUN_URLS = "stun:stun.example.com:3478"
 
 [[routes]]
 pattern = "fleet.ginfo.cc"

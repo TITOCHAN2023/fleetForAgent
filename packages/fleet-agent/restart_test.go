@@ -139,6 +139,12 @@ func TestWantsReconnect(t *testing.T) {
 	if a.wantsReconnectLocked() {
 		t.Fatal("no hub: do not reconnect")
 	}
+	a.hubInput = "https://hub.example"
+	a.conn = "offline"
+	a.authRevoked = true
+	if a.wantsReconnectLocked() {
+		t.Fatal("revoked token must be a terminal state until replaced")
+	}
 }
 
 func TestHelpListsRestartUpdateRollback(t *testing.T) {

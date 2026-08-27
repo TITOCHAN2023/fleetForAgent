@@ -17,8 +17,10 @@ import {
   nextChallengeList,
   parseAuthorization,
   signChallenge,
+  signFleetStatement,
   unwrapAuth,
   verifyChallenge,
+  verifyFleetStatement,
   verifyTokenV1,
   wrapAuth,
 } from "./src/tokenv1.mjs";
@@ -149,6 +151,24 @@ test("reset keypair cannot unwrap a wrap for the old token", async () => {
   );
   const claims = await verifyTokenV1(oldTok.raw);
   assert.notEqual(claims.kid, next.kid);
+});
+
+test("control statements verify exact signed bytes and reject tampering", async () => {
+  const minted = await mintTokenV1({ aud: AUD });
+  const statement = { v: 1, kind: "auth_revoked", kid: minted.kid, at: 123, reason: "token_reset" };
+  const signed = await signFleetStatement({ privatePkcs8B64: minted.priv, statement });
+  assert.deepEqual(
+    await verifyFleetStatement({ publicSpkiB64: minted.pub, ...signed }),
+    statement,
+  );
+  assert.equal(
+    await verifyFleetStatement({
+      publicSpkiB64: minted.pub,
+      payload: signed.payload.slice(0, -1) + (signed.payload.endsWith("A") ? "B" : "A"),
+      sig: signed.sig,
+    }),
+    null,
+  );
 });
 
 test("highSecAuthorization challenges then returns Fleet-OAEP", async () => {

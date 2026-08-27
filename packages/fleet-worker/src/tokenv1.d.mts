@@ -92,6 +92,15 @@ export function verifyChallenge(opts: {
   nonce: string;
   sig: string;
 }): Promise<boolean>;
+export function signFleetStatement(opts: {
+  privatePkcs8B64: string;
+  statement: Record<string, unknown>;
+}): Promise<{ payload: string; sig: string }>;
+export function verifyFleetStatement(opts: {
+  publicSpkiB64: string;
+  payload: string;
+  sig: string;
+}): Promise<Record<string, unknown> | null>;
 export function wrapAuth(opts: {
   publicSpkiB64: string;
   sec: string;

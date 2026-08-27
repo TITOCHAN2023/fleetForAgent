@@ -321,6 +321,31 @@ export async function verifyChallenge({ publicSpkiB64, aud, kid, nonce, sig }) {
   }
 }
 
+/**
+ * Sign a compact Fleet control statement. The encoded payload is the signed
+ * bytes, so verifiers never have to reproduce JavaScript object key order.
+ * Callers still validate the decoded statement schema and purpose.
+ */
+export async function signFleetStatement({ privatePkcs8B64, statement }) {
+  const bytes = new TextEncoder().encode(JSON.stringify(statement));
+  return {
+    payload: b64url(bytes),
+    sig: b64url(await pssSign(privatePkcs8B64, bytes)),
+  };
+}
+
+export async function verifyFleetStatement({ publicSpkiB64, payload, sig }) {
+  if (!publicSpkiB64 || !payload || !sig) return null;
+  try {
+    const bytes = b64urlDecode(payload);
+    if (!(await pssVerify(publicSpkiB64, bytes, b64urlDecode(sig)))) return null;
+    const statement = JSON.parse(new TextDecoder().decode(bytes));
+    return statement && typeof statement === "object" ? statement : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function wrapAuth({ publicSpkiB64, sec, nonce }) {
   const key = await importOaep(b64urlDecode(publicSpkiB64), "spki", ["encrypt"]);
   const pt = new TextEncoder().encode(JSON.stringify({ sec, nonce }));

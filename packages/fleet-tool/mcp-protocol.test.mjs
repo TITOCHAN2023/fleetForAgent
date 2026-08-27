@@ -7,6 +7,7 @@ import {
   isMcpActivity,
   negotiateStreamableProtocolVersion,
 } from "./mcp-protocol.mjs";
+import { wrapTransportRpc } from "./operator.mjs";
 
 const initialize = {
   jsonrpc: "2.0",
@@ -39,6 +40,26 @@ test("the shared protocol returns Fleet tools as direct JSON-RPC", async () => {
   const response = await session.dispatch({ jsonrpc: "2.0", id: "tools", method: "tools/list" });
   assert.equal(response.id, "tools");
   assert.equal(response.result.tools[0].name, "list_computers");
+});
+
+test("shared MCP protocol exposes per-result transport only in _meta", async () => {
+  const session = new McpRpcSession({
+    rpc: async (path) => {
+      assert.equal(path, "/v1/run");
+      return wrapTransportRpc({ corr: "c-rtc", status: "running" }, "rtc");
+    },
+  });
+  const response = await session.dispatch({
+    jsonrpc: "2.0",
+    id: "run",
+    method: "tools/call",
+    params: {
+      name: "run",
+      arguments: { device_id: "box-a", command: "pwd", wait_ms: 0 },
+    },
+  });
+  assert.deepEqual(response.result._meta, { fleet_transport: "rtc" });
+  assert.equal(response.result.content[0].text, "still running");
 });
 
 test("Streamable HTTP can restore process-local device selection after DO eviction", async () => {

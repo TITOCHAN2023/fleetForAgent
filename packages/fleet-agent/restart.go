@@ -243,7 +243,7 @@ func endHandoff() {
 }
 
 func (a *Agent) wantsReconnectLocked() bool {
-	return a.enabled && !a.restarting && strings.TrimSpace(a.hubInput) != "" && a.ws == nil && a.conn != "connecting"
+	return a.enabled && !a.authRevoked && !a.restarting && strings.TrimSpace(a.hubInput) != "" && a.ws == nil && a.conn != "connecting" && a.conn != "auth_failed"
 }
 
 func (a *Agent) beginRestartLocked() {

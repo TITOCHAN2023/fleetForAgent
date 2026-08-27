@@ -5,7 +5,7 @@ import { OFFICIAL_PLUGIN_CATALOG as GENERATED_PLUGIN_CATALOG, PLUGIN_REGISTRY_SO
  * Do not write hub_sessions, ~/.fleet, or a workspace file.
  */
 
-export const FLEET_VERSION = "0.4.1";
+export const FLEET_VERSION = "0.5.0";
 
 export { PLUGIN_REGISTRY_SOURCE };
 export const OFFICIAL_PLUGIN_CATALOG = GENERATED_PLUGIN_CATALOG;
@@ -109,7 +109,7 @@ export function getPrompt(name) {
               "- Sign in with Google or X (cookie session).",
               "- Settings → Generate token (first time) or Reset token (replaces the key).",
               "- Plaintext is shown once. Copy FLEET_TOKEN now. FLEET_URL is the site origin.",
-              "- Reset deletes the old RSA key immediately and closes every live device WebSocket (1008 token reset). Re-paste the new token on every Agent and MCP client.",
+              "- Reset revokes the old key first, sends a signed notice, then closes every live device WebSocket and direct RTC session. Re-paste the new token on every Agent and MCP client.",
               "- Do not put the token in git or wrangler [vars].",
             ].join("\n"),
           },
@@ -344,11 +344,83 @@ export async function measureHubFetch(url, init = {}, clocks = {}) {
   };
 }
 
-export function unwrapTimedRpc(raw) {
+const RESULT_TRANSPORT = Symbol("fleet.result.transport");
+const DEVICE_TRANSPORT_PATHS = new Set([
+  "/v1/heartbeat",
+  "/v1/run",
+  "/v1/get_result",
+  "/v1/read_screen",
+  "/v1/type",
+  "/v1/desktop_screenshot",
+  "/v1/desktop_action",
+  "/v1/plugin",
+  "/v1/plugin_result",
+]);
+
+function normalizeTransport(value) {
+  return value === "rtc" || value === "ws" ? value : null;
+}
+
+export function isDeviceTransportPath(path) {
+  return DEVICE_TRANSPORT_PATHS.has(path);
+}
+
+/** Internal RPC wrapper. Transport provenance never enters the Fleet v1 envelope. */
+export function wrapTransportRpc(raw, transport) {
+  const normalized = normalizeTransport(transport);
+  if (!normalized) return raw;
   if (raw && typeof raw === "object" && raw.__fleetTimed) {
-    return { json: raw.json, hop: raw.hop };
+    return {
+      __fleetTransportRpc: true,
+      json: raw.json,
+      hop: raw.hop,
+      transport: normalized,
+    };
   }
-  return { json: raw, hop: null };
+  return {
+    __fleetTransportRpc: true,
+    json: raw,
+    hop: null,
+    transport: normalized,
+  };
+}
+
+export function unwrapTimedRpc(raw) {
+  if (raw && typeof raw === "object" && raw.__fleetTransportRpc) {
+    return {
+      json: raw.json,
+      hop: raw.hop ?? null,
+      transport: normalizeTransport(raw.transport),
+    };
+  }
+  if (raw && typeof raw === "object" && raw.__fleetTimed) {
+    return { json: raw.json, hop: raw.hop, transport: null };
+  }
+  return { json: raw, hop: null, transport: null };
+}
+
+function markResultTransport(out, transport) {
+  const normalized = normalizeTransport(transport);
+  if (normalized && out && (typeof out === "object" || typeof out === "function")) {
+    Object.defineProperty(out, RESULT_TRANSPORT, {
+      value: normalized,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
+  }
+  return out;
+}
+
+/** Per-result lookup avoids a process-global "last transport" race between MCP calls. */
+export function resultTransport(out) {
+  if (!out || (typeof out !== "object" && typeof out !== "function")) return null;
+  return normalizeTransport(out[RESULT_TRANSPORT]);
+}
+
+export function fleetResultMeta(out) {
+  const transport = resultTransport(out);
+  return transport ? { fleet_transport: transport } : null;
 }
 
 /** MCP content text. Shell tools (run / get_result / wait) are human output, not JSON.stringify of the envelope. */
@@ -702,19 +774,17 @@ export function createOperator({
   const tools = buildTools();
 
   function newTrace() {
-    return { hops: [], started: now(), sleep_ms: 0, startedRow: null };
+    return { hops: [], started: now(), sleep_ms: 0, startedRow: null, transport: null };
   }
 
   async function callRpc(trace, path, body) {
     const payload = fleetDev && body && typeof body === "object" ? { ...body, dev: true } : body;
-    if (!trace) {
-      const raw = await rpc(path, payload);
-      return unwrapTimedRpc(raw).json;
-    }
     const t_out = now();
     const raw = await rpc(path, payload);
     const t_in = now();
-    const { json: row, hop: measured } = unwrapTimedRpc(raw);
+    const { json: row, hop: measured, transport } = unwrapTimedRpc(raw);
+    if (trace && transport) trace.transport = transport;
+    if (!trace) return row;
     const hop = finalizeHop(
       measured || {
         t_out,
@@ -735,32 +805,35 @@ export function createOperator({
   }
 
   function withDev(out, trace) {
-    if (!fleetDev || !trace) return out;
-    const hops = trace.hops.slice();
-    const runHop = hops.find((h) => h.path === "/v1/run");
-    const getHops = hops.filter((h) => h.path === "/v1/get_result");
-    const startT = rowTime(trace.startedRow);
-    const doneT = rowTime(out);
-    const run_ms = startT != null && doneT != null ? doneT - startT : null;
-    const client_run_gap_ms = runHop && getHops[0] ? getHops[0].t_in - runHop.t_out : null;
-    return {
-      ...out,
-      dev: {
-        hops,
-        poll_count: getHops.length,
-        sleep_ms: trace.sleep_ms || 0,
-        total_ms: Math.max(0, now() - trace.started),
-        run_ms,
-        client_run_gap_ms,
-        ...emptyDevStamps(),
-        hub_recv_t: stampOrNull(out, "hub_recv_t"),
-        hub_reply_t: stampOrNull(out, "hub_reply_t"),
-        hub_ms: stampOrNull(out, "hub_ms"),
-        device_enqueue_t: startT,
-        device_done_t: doneT,
-        device_run_ms: run_ms,
-      },
-    };
+    let result = out;
+    if (fleetDev && trace) {
+      const hops = trace.hops.slice();
+      const runHop = hops.find((h) => h.path === "/v1/run");
+      const getHops = hops.filter((h) => h.path === "/v1/get_result");
+      const startT = rowTime(trace.startedRow);
+      const doneT = rowTime(out);
+      const run_ms = startT != null && doneT != null ? doneT - startT : null;
+      const client_run_gap_ms = runHop && getHops[0] ? getHops[0].t_in - runHop.t_out : null;
+      result = {
+        ...out,
+        dev: {
+          hops,
+          poll_count: getHops.length,
+          sleep_ms: trace.sleep_ms || 0,
+          total_ms: Math.max(0, now() - trace.started),
+          run_ms,
+          client_run_gap_ms,
+          ...emptyDevStamps(),
+          hub_recv_t: stampOrNull(out, "hub_recv_t"),
+          hub_reply_t: stampOrNull(out, "hub_reply_t"),
+          hub_ms: stampOrNull(out, "hub_ms"),
+          device_enqueue_t: startT,
+          device_done_t: doneT,
+          device_run_ms: run_ms,
+        },
+      };
+    }
+    return markResultTransport(result, trace?.transport);
   }
 
   function currentDevice() {
@@ -838,7 +911,7 @@ export function createOperator({
 
   async function callTool(name, rawArgs, hooks = {}) {
     const args = rawArgs && typeof rawArgs === "object" ? rawArgs : {};
-    const trace = fleetDev ? newTrace() : null;
+    const trace = newTrace();
 
     if (name === "list_computers") {
       const row = await callRpc(trace, "/v1/list_computers", {});

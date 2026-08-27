@@ -17,9 +17,6 @@ import (
 	"runtime"
 	"strings"
 	"time"
-
-	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
 )
 
 const (
@@ -123,7 +120,9 @@ func pluginConsentText(req pluginRequest) string {
 		}
 		if req.Action == "delegate" {
 			nested := "nested permissions rejected"
-			if input.PermissionMode == "allow_once" { nested = "nested permissions allow once" }
+			if input.PermissionMode == "allow_once" {
+				nested = "nested permissions allow once"
+			}
 			return fmt.Sprintf("plugin %s delegate in %s (%s): %s", req.PluginID, clip(input.CWD, 60), nested, clip(input.Prompt, 100))
 		}
 		return fmt.Sprintf("plugin %s: %s", req.PluginID, req.Action)
@@ -151,15 +150,15 @@ func pluginResultEnv(corr string, result any, err error) Envelope {
 	return Envelope{V: 1, Type: "plugin_result", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: body}
 }
 
-func (a *Agent) handlePlugin(ctx context.Context, c *websocket.Conn, env Envelope) {
+func (a *Agent) handlePlugin(ctx context.Context, sink EnvelopeSink, env Envelope) {
 	req, err := decodePluginRequest(env.Body)
 	if err != nil {
-		_ = wsjson.Write(ctx, c, pluginResultEnv(env.Corr, nil, fmt.Errorf("invalid plugin request: %w", err)))
+		_ = sink(ctx, pluginResultEnv(env.Corr, nil, fmt.Errorf("invalid plugin request: %w", err)))
 		return
 	}
 	if req.Operation == "list" {
-		_ = wsjson.Write(ctx, c, pluginAcceptedEnv(env.Corr, "running"))
-		go a.executePlugin(context.Background(), c, env.Corr, req)
+		_ = sink(ctx, pluginAcceptedEnv(env.Corr, "running"))
+		go a.executePlugin(context.Background(), sink, env.Corr, req)
 		return
 	}
 	a.mu.Lock()
@@ -174,25 +173,25 @@ func (a *Agent) handlePlugin(ctx context.Context, c *websocket.Conn, env Envelop
 	}
 	if v == permitRefuse {
 		a.mu.Unlock()
-		_ = wsjson.Write(ctx, c, pluginResultEnv(env.Corr, nil, errors.New(msg)))
+		_ = sink(ctx, pluginResultEnv(env.Corr, nil, errors.New(msg)))
 		return
 	}
 	if v == permitAsk {
 		label := pluginConsentText(req)
-		a.pending = &Pending{Kind: pendingKindPlugin, Corr: env.Corr, Command: label, Requested: time.Now().UnixMilli(), Plugin: &req}
+		a.pending = &Pending{Kind: pendingKindPlugin, Corr: env.Corr, Command: label, Requested: time.Now().UnixMilli(), Plugin: &req, Sink: sink}
 		a.log("warn", "waiting consent: "+label)
 		a.mu.Unlock()
-		_ = wsjson.Write(ctx, c, pluginAcceptedEnv(env.Corr, "waiting_approval"))
+		_ = sink(ctx, pluginAcceptedEnv(env.Corr, "waiting_approval"))
 		notifyConsent(label)
 		a.pushUI()
 		return
 	}
 	a.mu.Unlock()
-	_ = wsjson.Write(ctx, c, pluginAcceptedEnv(env.Corr, "running"))
-	go a.executePlugin(context.Background(), c, env.Corr, req)
+	_ = sink(ctx, pluginAcceptedEnv(env.Corr, "running"))
+	go a.executePlugin(context.Background(), sink, env.Corr, req)
 }
 
-func (a *Agent) executePlugin(ctx context.Context, c *websocket.Conn, corr string, req pluginRequest) {
+func (a *Agent) executePlugin(ctx context.Context, sink EnvelopeSink, corr string, req pluginRequest) {
 	var result any
 	var err error
 	switch req.Operation {
@@ -211,7 +210,7 @@ func (a *Agent) executePlugin(ctx context.Context, c *websocket.Conn, corr strin
 	default:
 		err = fmt.Errorf("unknown plugin operation %q", req.Operation)
 	}
-	_ = wsjson.Write(ctx, c, pluginResultEnv(corr, result, err))
+	_ = sink(ctx, pluginResultEnv(corr, result, err))
 	a.mu.Lock()
 	if err != nil {
 		a.log("error", "plugin "+req.Operation+": "+err.Error())

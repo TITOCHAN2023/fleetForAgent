@@ -78,6 +78,7 @@ type Pane struct {
 	id, corr, command string
 	fingerprint       string
 	mu                sync.Mutex
+	ioMu              sync.Mutex
 	lines             []string
 	stdout            *streamBuf
 	stderr            *streamBuf
@@ -283,7 +284,7 @@ func (s *Supervisor) spawnOneshotFor(fingerprint, corr, command string) (*Pane, 
 		p.exitCode = code
 		p.dirty = true
 		p.mu.Unlock()
-		_ = stdin.Close()
+		p.closeStdin(stdin)
 	}()
 	return p, nil
 }
@@ -404,10 +405,15 @@ func (p *Pane) TypeInput(keys, named string) error {
 		p.typed = true
 	}
 	p.mu.Unlock()
-	if w == nil {
+	if w == nil || !alive {
 		return io.ErrClosedPipe
 	}
-	if pipeOneshot && !alive {
+	p.ioMu.Lock()
+	defer p.ioMu.Unlock()
+	p.mu.Lock()
+	alive = p.running && p.stdin == w
+	p.mu.Unlock()
+	if !alive {
 		return io.ErrClosedPipe
 	}
 	if pipeOneshot {
@@ -433,6 +439,20 @@ func (p *Pane) TypeInput(keys, named string) error {
 	}
 	signalForeground(w, stroke.sigint, stroke.sigquit)
 	return nil
+}
+
+func (p *Pane) closeStdin(w io.WriteCloser) {
+	if p == nil || w == nil {
+		return
+	}
+	p.ioMu.Lock()
+	defer p.ioMu.Unlock()
+	p.mu.Lock()
+	if p.stdin == w {
+		p.stdin = nil
+	}
+	p.mu.Unlock()
+	_ = w.Close()
 }
 
 func (s *Supervisor) get(id string) *Pane {

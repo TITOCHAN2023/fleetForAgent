@@ -2,39 +2,139 @@ package policy
 
 import (
 	"path"
-	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 )
 
-// Always-blocked destructive verbs. rm -rf is handled separately so a
-// precise absolute cleanup path is not blanket-banned.
-var destructiveAlways = regexp.MustCompile(`(?i)(?:^|[\s;|&])(?:del\s+/f|format\s+c:|shutdown\b|reboot\b|mkfs\b|diskpart\b)`)
-
 func Blocked(command string) bool {
-	if destructiveAlways.MatchString(command) {
-		return true
-	}
-	return rmRfBlocked(command)
+	return blocked(command, 0)
 }
 
-func rmRfBlocked(command string) bool {
+func blocked(command string, depth int) bool {
+	if depth > 3 {
+		return true
+	}
 	for _, seg := range splitCommandSegments(command) {
-		args := fieldsRespectingSimple(seg)
-		args = stripSudoPrefix(args)
-		if len(args) == 0 || args[0] != "rm" {
+		args := normalizeCommand(fieldsRespectingSimple(seg))
+		if len(args) == 0 {
+			continue
+		}
+		if body, ok := nestedShellBody(args); ok {
+			if blocked(body, depth+1) {
+				return true
+			}
+			continue
+		}
+		if destructiveVerbBlocked(args) {
+			return true
+		}
+		if commandBase(args[0]) != "rm" {
 			continue
 		}
 		rf, paths := parseRmRf(args)
-		if !rf {
-			continue
-		}
-		if rmRfPathsDangerous(paths) {
+		if rf && rmRfPathsDangerous(paths) {
 			return true
 		}
 	}
 	return false
+}
+
+func nestedShellBody(args []string) (string, bool) {
+	if len(args) < 3 {
+		return "", false
+	}
+	switch commandBase(args[0]) {
+	case "sh", "bash", "dash", "zsh", "ksh":
+		for i := 1; i < len(args)-1; i++ {
+			arg := strings.ToLower(args[i])
+			if arg == "-c" || (strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.Contains(arg[1:], "c")) {
+				return strings.Join(args[i+1:], " "), true
+			}
+			if !strings.HasPrefix(arg, "-") {
+				break
+			}
+			if shellOptionTakesValue(arg) {
+				i++
+			}
+		}
+	case "cmd":
+		for i := 1; i < len(args)-1; i++ {
+			if strings.EqualFold(args[i], "/c") || strings.EqualFold(args[i], "/k") {
+				return strings.Join(args[i+1:], " "), true
+			}
+		}
+	case "powershell", "pwsh":
+		for i := 1; i < len(args)-1; i++ {
+			if strings.EqualFold(args[i], "-command") || strings.EqualFold(args[i], "-c") {
+				return strings.Join(args[i+1:], " "), true
+			}
+		}
+	}
+	return "", false
+}
+
+func shellOptionTakesValue(option string) bool {
+	switch option {
+	case "-o", "-O", "--rcfile", "--init-file":
+		return true
+	}
+	return false
+}
+
+func destructiveVerbBlocked(args []string) bool {
+	base := commandBase(args[0])
+	if base == "powershell" || base == "pwsh" {
+		for _, arg := range args[1:] {
+			if strings.EqualFold(arg, "-encodedcommand") || strings.EqualFold(arg, "-enc") {
+				return true
+			}
+		}
+	}
+	switch base {
+	case "shutdown", "reboot", "halt", "poweroff", "diskpart":
+		return true
+	case "format":
+		return len(args) > 1 && strings.HasSuffix(strings.ToLower(strings.TrimSpace(args[1])), ":")
+	case "del":
+		for _, arg := range args[1:] {
+			if strings.Contains(strings.ToLower(arg), "/f") {
+				return true
+			}
+		}
+	case "rd", "rmdir", "remove-item":
+		recursive, force, paths := destructiveRemoveArgs(args[1:])
+		return recursive && force && rmRfPathsDangerous(paths)
+	}
+	return base == "mkfs" || strings.HasPrefix(base, "mkfs.")
+}
+
+func destructiveRemoveArgs(args []string) (recursive bool, force bool, paths []string) {
+	for _, arg := range args {
+		switch strings.ToLower(arg) {
+		case "/s", "-r", "-recurse", "-recursive":
+			recursive = true
+		case "/q", "-f", "-force":
+			force = true
+		default:
+			if (!strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "/")) || isAbsPath(arg) {
+				paths = append(paths, arg)
+			}
+		}
+	}
+	return recursive, force, paths
+}
+
+func isAbsPath(value string) bool {
+	return strings.HasPrefix(value, "/") || winAbsPath(value)
+}
+
+func winAbsPath(value string) bool {
+	if len(value) < 3 {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(value)
+	return unicode.IsLetter(r) && value[1] == ':' && (value[2] == '\\' || value[2] == '/')
 }
 
 func splitCommandSegments(s string) []string {
@@ -116,22 +216,100 @@ func stripSudoPrefix(args []string) []string {
 	if len(args) == 0 {
 		return args
 	}
-	if args[0] != "sudo" && args[0] != "doas" {
+	if commandBase(args[0]) != "sudo" && commandBase(args[0]) != "doas" {
 		return args
 	}
 	i := 1
-	for i < len(args) && strings.HasPrefix(args[i], "-") {
-		if args[i] == "--" {
+	for i < len(args) {
+		option := args[i]
+		if option == "--" {
 			i++
 			break
 		}
+		if !strings.HasPrefix(option, "-") {
+			break
+		}
 		i++
+		if sudoOptionTakesValue(option) && i < len(args) {
+			i++
+		}
 	}
 	return args[i:]
 }
 
+func sudoOptionTakesValue(option string) bool {
+	if strings.Contains(option, "=") || (len(option) > 2 && !strings.HasPrefix(option, "--")) {
+		return false
+	}
+	switch option {
+	case "-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "--user", "--group", "--host", "--prompt", "--chdir", "--close-from":
+		return true
+	}
+	return false
+}
+
+func normalizeCommand(args []string) []string {
+	args = stripSudoPrefix(args)
+	for len(args) > 0 {
+		switch commandBase(args[0]) {
+		case "command":
+			args = args[1:]
+			for len(args) > 0 && strings.HasPrefix(args[0], "-") {
+				args = args[1:]
+			}
+		case "env":
+			args = stripEnvPrefix(args)
+		case "busybox":
+			args = args[1:]
+			for len(args) > 0 && strings.HasPrefix(args[0], "-") {
+				args = args[1:]
+			}
+		default:
+			return args
+		}
+	}
+	return args
+}
+
+func stripEnvPrefix(args []string) []string {
+	args = args[1:]
+	for len(args) > 0 {
+		arg := args[0]
+		if arg == "--" {
+			return args[1:]
+		}
+		if strings.Contains(arg, "=") && !strings.HasPrefix(arg, "-") {
+			args = args[1:]
+			continue
+		}
+		if !strings.HasPrefix(arg, "-") {
+			return args
+		}
+		args = args[1:]
+		if envOptionTakesValue(arg) && !strings.Contains(arg, "=") && len(args) > 0 {
+			args = args[1:]
+		}
+	}
+	return args
+}
+
+func envOptionTakesValue(option string) bool {
+	switch option {
+	case "-u", "--unset", "-C", "--chdir", "-S", "--split-string":
+		return true
+	}
+	return false
+}
+
+func commandBase(s string) string {
+	s = strings.ReplaceAll(strings.TrimSpace(s), `\`, "/")
+	base := strings.ToLower(path.Base(s))
+	base = strings.TrimSuffix(base, ".exe")
+	return strings.TrimSuffix(base, ".com")
+}
+
 func parseRmRf(args []string) (is bool, paths []string) {
-	if len(args) == 0 || args[0] != "rm" {
+	if len(args) == 0 || commandBase(args[0]) != "rm" {
 		return false, nil
 	}
 	recursive, force := false, false
@@ -145,11 +323,11 @@ func parseRmRf(args []string) (is bool, paths []string) {
 			dashdash = true
 			continue
 		}
-		if a == "--recursive" {
+		if a == "--recursive" || strings.EqualFold(a, "-recurse") || strings.EqualFold(a, "-recursive") {
 			recursive = true
 			continue
 		}
-		if a == "--force" {
+		if a == "--force" || strings.EqualFold(a, "-force") {
 			force = true
 			continue
 		}
@@ -217,9 +395,11 @@ func winAbsTwoComponents(p string) bool {
 	if p[2] != '\\' && p[2] != '/' {
 		return false
 	}
-	rest := strings.TrimLeft(p[2:], `/\`)
-	if rest == "" || strings.ContainsAny(rest, "*?") {
+	normalized := strings.ReplaceAll(p[2:], `\`, "/")
+	cleaned := path.Clean("/" + strings.TrimLeft(normalized, "/"))
+	if cleaned == "/" || strings.ContainsAny(cleaned, "*?[") {
 		return false
 	}
-	return strings.ContainsAny(rest, `/\`)
+	rest := strings.TrimPrefix(cleaned, "/")
+	return rest != "" && strings.Contains(rest, "/")
 }

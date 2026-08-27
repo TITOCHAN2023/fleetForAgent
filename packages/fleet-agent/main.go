@@ -28,7 +28,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
-var agentVersion = "0.4.0"
+var agentVersion = "0.5.0"
 
 //go:embed ui/index.html
 var uiHTML []byte
@@ -71,6 +71,7 @@ type Pending struct {
 	Keys        string         `json:"-"`
 	Key         string         `json:"-"`
 	Plugin      *pluginRequest `json:"-"`
+	Sink        EnvelopeSink   `json:"-"`
 }
 
 type Envelope struct {
@@ -80,6 +81,33 @@ type Envelope struct {
 	Corr string         `json:"corr,omitempty"`
 	T    int64          `json:"t"`
 	Body map[string]any `json:"body"`
+}
+
+// EnvelopeSink is the only business-response transport boundary. WSS and RTC
+// both carry the exact same Envelope; handlers must not know which one won.
+type EnvelopeSink func(context.Context, Envelope) error
+
+func wsEnvelopeSink(c *websocket.Conn) EnvelopeSink {
+	return func(ctx context.Context, env Envelope) error {
+		return wsjson.Write(ctx, c, env)
+	}
+}
+
+// relayEnvelopeSink returns the currently authenticated control transport.
+// relaySink is test-only injection; production always uses the live WSS.
+func (a *Agent) relayEnvelopeSink() EnvelopeSink {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.authRevoked {
+		return nil
+	}
+	if a.relaySink != nil {
+		return a.relaySink
+	}
+	if a.ws == nil {
+		return nil
+	}
+	return wsEnvelopeSink(a.ws)
 }
 
 type State struct {
@@ -104,6 +132,8 @@ type Agent struct {
 	permit              Permit
 	hubInput            string
 	hubToken            string
+	authKid             string
+	authRevoked         bool
 	deviceID            string
 	wss                 string
 	conn                string
@@ -125,10 +155,15 @@ type Agent struct {
 	cancel              context.CancelFunc
 	cfgPath             string
 	panes               *pane.Supervisor
+	paneSinks           map[string]EnvelopeSink
+	rtcSessions         map[string]*rtcAgentSession
+	rtcPending          map[string]*rtcPendingOffer
 	hb                  time.Duration
 	restarting          bool
 	autoUpdate          bool
 	updateSig           versionSignal
+	policyBlocked       func(string) bool
+	relaySink           EnvelopeSink
 }
 
 func (a *Agent) log(level, msg string) {
@@ -183,6 +218,13 @@ func (a *Agent) inputVerdict() (permitVerdict, string) {
 		return permitRefuse, "fleet: another command is waiting for consent"
 	}
 	return permitAsk, ""
+}
+
+func (a *Agent) commandBlocked(command string) bool {
+	if a.policyBlocked != nil {
+		return a.policyBlocked(command)
+	}
+	return policy.Blocked(command)
 }
 
 func (a *Agent) save() {
@@ -343,6 +385,10 @@ func (a *Agent) disconnectLocked(reason string) {
 		a.ws = nil
 	}
 	a.pending = nil
+	sessions := a.takeRTCSessionsLocked()
+	if len(sessions) > 0 {
+		go closeRTCSessions(sessions)
+	}
 	a.clearDesktopSessionLocked()
 	a.conn = "offline"
 	a.log("warn", reason)
@@ -361,6 +407,10 @@ func (a *Agent) connect(hub string) error {
 	if !a.enabled {
 		a.mu.Unlock()
 		return fmt.Errorf("Turn on this computer first")
+	}
+	if a.authRevoked {
+		a.mu.Unlock()
+		return fmt.Errorf("Hub token was reset or revoked. Paste the new token to reconnect.")
 	}
 	wss, err := normalizeHub(hub)
 	if err != nil {
@@ -389,6 +439,7 @@ func (a *Agent) connect(hub string) error {
 	}
 	deviceID := a.deviceID
 	a.mu.Unlock()
+	claims, _ := verifyTokenV1(tok)
 
 	headers := map[string][]string{
 		"X-Fleet-Proto": {"1"},
@@ -399,7 +450,11 @@ func (a *Agent) connect(hub string) error {
 	auth, err := highSecAuthorization(ctx, wss, tok)
 	if err != nil {
 		a.mu.Lock()
-		a.conn = "error"
+		if strings.Contains(err.Error(), "HIGH_SEC:") {
+			a.conn = "auth_failed"
+		} else {
+			a.conn = "error"
+		}
 		a.err = err.Error()
 		a.log("error", a.err)
 		a.save()
@@ -422,7 +477,14 @@ func (a *Agent) connect(hub string) error {
 		a.pushUI()
 		return err
 	}
+	c.SetReadLimit(256 << 10)
 	a.ws = c
+	if claims != nil {
+		a.authKid = claims.Kid
+	} else {
+		a.authKid = ""
+	}
+	a.authRevoked = false
 	a.conn = "online"
 	a.log("info", "online id="+deviceID)
 	a.save()
@@ -508,7 +570,7 @@ func deviceName() string {
 }
 
 func agentCaps() []string {
-	caps := []string{"shell", "pane", "plugins"}
+	caps := []string{"shell", "pane", "plugins", "rtc_v1"}
 	if runtime.GOOS != "windows" {
 		caps = append(caps, "live_shell")
 	}
@@ -520,14 +582,21 @@ func agentCaps() []string {
 
 func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 	defer func() {
+		var sessions []*rtcAgentSession
 		a.mu.Lock()
 		if a.ws == c {
 			a.ws = nil
-			a.conn = "offline"
+			if a.conn != "auth_failed" {
+				a.conn = "offline"
+			}
+			a.paneSinks = nil
+			a.pending = nil
+			sessions = a.takeRTCSessionsLocked()
 			a.clearDesktopSessionLocked()
 			a.log("warn", "socket closed")
 		}
 		a.mu.Unlock()
+		closeRTCSessions(sessions)
 		a.pushUI()
 	}()
 	for {
@@ -548,35 +617,109 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 		case "ping":
 			a.noteHubUpdate(env.Body)
 			_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "pong", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: env.ID, T: time.Now().UnixMilli(), Body: map[string]any{}})
-		case "run":
-			cmd, _ := env.Body["command"].(string)
-			go a.handleRun(ctx, c, env.Corr, cmd, envelopeFingerprint(env.Body))
-		case "type":
-			keys, _ := env.Body["keys"].(string)
-			key, _ := env.Body["key"].(string)
-			id, _ := env.Body["pane_id"].(string)
-			if id == "" {
-				id, _ = env.Body["corr"].(string)
+		case "auth_revoked":
+			if a.handleAuthRevoked(c, env) {
+				return
 			}
-			go a.handleType(ctx, c, env.Corr, id, keys, key, envelopeFingerprint(env.Body))
-		case "read_screen":
-			id, _ := env.Body["pane_id"].(string)
-			if id == "" {
-				id, _ = env.Body["corr"].(string)
-			}
-			a.handleScreen(ctx, c, env.Corr, id, envelopeFingerprint(env.Body))
-		case "list_panes":
-			a.mu.Lock()
-			list := a.panes.List()
-			a.mu.Unlock()
-			_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "panes", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: env.Corr, T: time.Now().UnixMilli(), Body: map[string]any{"panes": list}})
-		case "desktop_screenshot":
-			go a.handleDesktopScreenshot(ctx, c, env)
-		case "desktop_action":
-			go a.handleDesktopAction(ctx, c, env)
-		case "plugin":
-			a.handlePlugin(ctx, c, env)
+		case "rtc_offer":
+			a.handleRTCOffer(ctx, c, env)
+		case "rtc_ticket":
+			a.handleRTCTicket(env)
+		case "rtc_cancel":
+			sid, _ := env.Body["sid"].(string)
+			a.cancelRTCSession(sid)
+		default:
+			a.dispatchEnvelope(ctx, wsEnvelopeSink(c), env)
 		}
+	}
+}
+
+func (a *Agent) handleAuthRevoked(c *websocket.Conn, env Envelope) bool {
+	kid, _ := env.Body["kid"].(string)
+	rawStatement, ok := env.Body["statement"]
+	if !ok || strings.TrimSpace(kid) == "" {
+		return false
+	}
+	b, err := json.Marshal(rawStatement)
+	if err != nil {
+		return false
+	}
+	var signed signedFleetStatement
+	if json.Unmarshal(b, &signed) != nil {
+		return false
+	}
+	a.mu.Lock()
+	token := a.hubToken
+	currentKid := a.authKid
+	a.mu.Unlock()
+	var statement authRevokedStatement
+	if verifyFleetStatement(token, signed, &statement) != nil ||
+		statement.V != 1 || statement.Kind != "auth_revoked" || statement.Kid != kid ||
+		statement.Kid != currentKid || statement.At <= 0 || statement.Reason != "token_reset" {
+		return false
+	}
+	a.mu.Lock()
+	if a.hubToken != token || a.authKid != currentKid {
+		a.mu.Unlock()
+		return false
+	}
+	a.authRevoked = true
+	a.pending = nil
+	a.paneSinks = nil
+	sessions := a.takeRTCSessionsLocked()
+	a.clearDesktopSessionLocked()
+	a.conn = "auth_failed"
+	a.err = "Hub token was reset or revoked. Paste the new token to reconnect."
+	a.log("error", a.err)
+	if a.cancel != nil {
+		a.cancel()
+		a.cancel = nil
+	}
+	if a.ws == c {
+		a.ws = nil
+	}
+	a.save()
+	a.mu.Unlock()
+	closeRTCSessions(sessions)
+	if c != nil {
+		_ = c.Close(websocket.StatusPolicyViolation, "token reset")
+	}
+	a.pushUI()
+	return true
+}
+
+// dispatchEnvelope is shared by every data transport. Keep business message
+// handling here so adding RTC cannot fork shell, pane, desktop, or plugin rules.
+func (a *Agent) dispatchEnvelope(ctx context.Context, sink EnvelopeSink, env Envelope) {
+	switch env.Type {
+	case "run":
+		cmd, _ := env.Body["command"].(string)
+		go a.handleRun(ctx, sink, env.Corr, cmd, envelopeFingerprint(env.Body))
+	case "type":
+		keys, _ := env.Body["keys"].(string)
+		key, _ := env.Body["key"].(string)
+		id, _ := env.Body["pane_id"].(string)
+		if id == "" {
+			id, _ = env.Body["corr"].(string)
+		}
+		go a.handleType(ctx, sink, env.Corr, id, keys, key, envelopeFingerprint(env.Body))
+	case "read_screen":
+		id, _ := env.Body["pane_id"].(string)
+		if id == "" {
+			id, _ = env.Body["corr"].(string)
+		}
+		a.handleScreen(ctx, sink, env.Corr, id, envelopeFingerprint(env.Body))
+	case "list_panes":
+		a.mu.Lock()
+		list := a.panes.List()
+		a.mu.Unlock()
+		_ = sink(ctx, Envelope{V: 1, Type: "panes", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: env.Corr, T: time.Now().UnixMilli(), Body: map[string]any{"panes": list}})
+	case "desktop_screenshot":
+		go a.handleDesktopScreenshot(ctx, sink, env)
+	case "desktop_action":
+		go a.handleDesktopAction(ctx, sink, env)
+	case "plugin":
+		a.handlePlugin(ctx, sink, env)
 	}
 }
 
@@ -588,7 +731,7 @@ func envelopeFingerprint(body map[string]any) string {
 	return strings.TrimSpace(s)
 }
 
-func (a *Agent) handleRun(ctx context.Context, c *websocket.Conn, corr, cmd, fingerprint string) {
+func (a *Agent) handleRun(ctx context.Context, sink EnvelopeSink, corr, cmd, fingerprint string) {
 	a.mu.Lock()
 	v, msg := a.inputVerdict()
 	if v == permitRefuse {
@@ -598,17 +741,17 @@ func (a *Agent) handleRun(ctx context.Context, c *websocket.Conn, corr, cmd, fin
 			code = 1
 		}
 		a.mu.Unlock()
-		_ = wsjson.Write(ctx, c, resultEnv(corr, false, code, "", msg))
+		_ = sink(ctx, resultEnv(corr, false, code, "", msg))
 		return
 	}
-	if policy.Blocked(cmd) {
+	if a.commandBlocked(cmd) {
 		a.log("error", "blocked destructive: "+cmd)
 		a.mu.Unlock()
-		_ = wsjson.Write(ctx, c, resultEnv(corr, false, 126, "", "fleet: refused by device policy"))
+		_ = sink(ctx, resultEnv(corr, false, 126, "", "fleet: refused by device policy"))
 		return
 	}
 	if v == permitAsk {
-		a.pending = &Pending{Kind: pendingKindRun, Corr: corr, Command: cmd, Requested: time.Now().UnixMilli(), Fingerprint: fingerprint}
+		a.pending = &Pending{Kind: pendingKindRun, Corr: corr, Command: cmd, Requested: time.Now().UnixMilli(), Fingerprint: fingerprint, Sink: sink}
 		a.log("warn", "waiting consent: "+cmd)
 		a.mu.Unlock()
 		notifyConsent(cmd)
@@ -616,10 +759,10 @@ func (a *Agent) handleRun(ctx context.Context, c *websocket.Conn, corr, cmd, fin
 		return
 	}
 	a.mu.Unlock()
-	a.spawnPane(ctx, c, corr, cmd, fingerprint)
+	a.spawnPane(ctx, sink, corr, cmd, fingerprint)
 }
 
-func (a *Agent) spawnPane(ctx context.Context, c *websocket.Conn, corr, cmd, fingerprint string) {
+func (a *Agent) spawnPane(ctx context.Context, sink EnvelopeSink, corr, cmd, fingerprint string) {
 	a.mu.Lock()
 	if a.panes == nil {
 		a.panes = pane.NewSupervisor()
@@ -628,19 +771,28 @@ func (a *Agent) spawnPane(ctx context.Context, c *websocket.Conn, corr, cmd, fin
 	a.mu.Unlock()
 	p, err := sup.SpawnFor(fingerprint, corr, cmd)
 	if err != nil {
-		_ = wsjson.Write(ctx, c, resultEnv(corr, false, 1, "", err.Error()))
+		_ = sink(ctx, resultEnv(corr, false, 1, "", err.Error()))
 		return
 	}
-	_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "accepted", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"pane_id": p.ID(), "status": "running"}})
 	a.mu.Lock()
+	if a.paneSinks == nil {
+		a.paneSinks = make(map[string]EnvelopeSink)
+	}
+	a.paneSinks[corr] = sink
 	a.log("info", "pane accepted "+p.ID())
 	a.mu.Unlock()
+	_ = sink(ctx, Envelope{V: 1, Type: "accepted", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"pane_id": p.ID(), "status": "running"}})
 	go func() {
+		defer func() {
+			a.mu.Lock()
+			delete(a.paneSinks, corr)
+			a.mu.Unlock()
+		}()
 		for {
 			done, code := p.Finished()
 			if done {
 				stdout, stderr := p.ResultText()
-				_ = wsjson.Write(ctx, c, resultEnv(corr, code == 0, code, stdout, stderr))
+				_ = sink(ctx, resultEnv(corr, code == 0, code, stdout, stderr))
 				a.mu.Lock()
 				a.log("info", fmt.Sprintf("result %d: %s", code, cmd))
 				a.mu.Unlock()
@@ -668,20 +820,20 @@ func typedEnv(corr string, ok bool, errMsg string) Envelope {
 	return Envelope{V: 1, Type: "typed", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"ok": ok, "error": errMsg}}
 }
 
-func (a *Agent) handleType(ctx context.Context, c *websocket.Conn, corr, id, keys, key, fingerprint string) {
+func (a *Agent) handleType(ctx context.Context, sink EnvelopeSink, corr, id, keys, key, fingerprint string) {
 	a.mu.Lock()
 	v, msg := a.inputVerdict()
 	if v == permitRefuse {
 		a.log("warn", "refused type")
 		a.mu.Unlock()
-		_ = wsjson.Write(ctx, c, typedEnv(corr, false, msg))
+		_ = sink(ctx, typedEnv(corr, false, msg))
 		return
 	}
 	if v == permitAsk {
 		label := typeConsentText(keys, key)
 		a.pending = &Pending{
 			Kind: pendingKindType, Corr: corr, Command: label, Requested: time.Now().UnixMilli(),
-			Fingerprint: fingerprint, PaneID: id, Keys: keys, Key: key,
+			Fingerprint: fingerprint, PaneID: id, Keys: keys, Key: key, Sink: sink,
 		}
 		a.log("warn", "waiting consent: "+label)
 		a.mu.Unlock()
@@ -690,20 +842,20 @@ func (a *Agent) handleType(ctx context.Context, c *websocket.Conn, corr, id, key
 		return
 	}
 	a.mu.Unlock()
-	a.deliverType(ctx, c, corr, id, keys, key, fingerprint)
+	a.deliverType(ctx, sink, corr, id, keys, key, fingerprint)
 }
 
-func (a *Agent) deliverType(ctx context.Context, c *websocket.Conn, corr, id, keys, key, fingerprint string) {
+func (a *Agent) deliverType(ctx context.Context, sink EnvelopeSink, corr, id, keys, key, fingerprint string) {
 	a.mu.Lock()
 	sup := a.panes
 	a.mu.Unlock()
 	if sup == nil {
-		_ = wsjson.Write(ctx, c, typedEnv(corr, false, "no pane"))
+		_ = sink(ctx, typedEnv(corr, false, "no pane"))
 		return
 	}
 	p := sup.GetFor(fingerprint, id)
 	if p == nil {
-		_ = wsjson.Write(ctx, c, typedEnv(corr, false, "pane gone"))
+		_ = sink(ctx, typedEnv(corr, false, "pane gone"))
 		return
 	}
 	err := p.TypeInput(keys, key)
@@ -712,30 +864,31 @@ func (a *Agent) deliverType(ctx context.Context, c *websocket.Conn, corr, id, ke
 	if err != nil {
 		msg = err.Error()
 	}
-	_ = wsjson.Write(ctx, c, typedEnv(corr, ok, msg))
+	_ = sink(ctx, typedEnv(corr, ok, msg))
 }
 
-func (a *Agent) handleScreen(ctx context.Context, c *websocket.Conn, corr, id string, fingerprint string) {
+func (a *Agent) handleScreen(ctx context.Context, sink EnvelopeSink, corr, id string, fingerprint string) {
 	a.mu.Lock()
 	sup := a.panes
 	a.mu.Unlock()
 	if sup == nil {
-		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"text": "", "running": false}})
+		_ = sink(ctx, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"text": "", "running": false}})
 		return
 	}
 	p := sup.GetFor(fingerprint, id)
 	if p == nil {
-		_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"text": "", "running": false}})
+		_ = sink(ctx, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"text": "", "running": false}})
 		return
 	}
 	text, running, code, seq, row, col := sup.PaneSnapshot(p)
-	_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{
+	_ = sink(ctx, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{
 		"pane_id": p.ID(), "text": text, "running": running, "exit_code": code, "seq": seq,
 		"cursor_row": row, "cursor_col": col,
 	}})
 }
 
 func (a *Agent) coalesceLoop(ctx context.Context, c *websocket.Conn) {
+	defaultSink := wsEnvelopeSink(c)
 	tick := time.NewTicker(pane.ScreenInterval)
 	defer tick.Stop()
 	for {
@@ -754,7 +907,13 @@ func (a *Agent) coalesceLoop(ctx context.Context, c *websocket.Conn) {
 				continue
 			}
 			text, running, code, seq, row, col := sup.PaneSnapshot(p)
-			_ = wsjson.Write(ctx, c, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: p.Corr(), T: time.Now().UnixMilli(), Body: map[string]any{
+			a.mu.Lock()
+			sink := a.paneSinks[p.Corr()]
+			a.mu.Unlock()
+			if sink == nil {
+				sink = defaultSink
+			}
+			_ = sink(ctx, Envelope{V: 1, Type: "screen", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: p.Corr(), T: time.Now().UnixMilli(), Body: map[string]any{
 				"pane_id": p.ID(), "text": text, "running": running, "exit_code": code, "seq": seq,
 				"cursor_row": row, "cursor_col": col,
 			}})
@@ -802,19 +961,18 @@ func (a *Agent) approve() {
 		return
 	}
 	p := a.pending
-	ws := a.ws
 	a.pending = nil
 	a.mu.Unlock()
-	if p == nil || ws == nil {
+	if p == nil || p.Sink == nil {
 		return
 	}
 	if p.Kind == pendingKindPlugin && p.Plugin != nil {
-		_ = wsjson.Write(context.Background(), ws, pluginAcceptedEnv(p.Corr, "running"))
-		go a.executePlugin(context.Background(), ws, p.Corr, *p.Plugin)
+		_ = p.Sink(context.Background(), pluginAcceptedEnv(p.Corr, "running"))
+		go a.executePlugin(context.Background(), p.Sink, p.Corr, *p.Plugin)
 	} else if p.Kind == pendingKindType {
-		go a.deliverType(context.Background(), ws, p.Corr, p.PaneID, p.Keys, p.Key, p.Fingerprint)
+		go a.deliverType(context.Background(), p.Sink, p.Corr, p.PaneID, p.Keys, p.Key, p.Fingerprint)
 	} else {
-		go a.spawnPane(context.Background(), ws, p.Corr, p.Command, p.Fingerprint)
+		go a.spawnPane(context.Background(), p.Sink, p.Corr, p.Command, p.Fingerprint)
 	}
 	a.mu.Lock()
 	a.log("info", "approved: "+p.Command)
@@ -834,18 +992,17 @@ func (a *Agent) deny() {
 		return
 	}
 	p := a.pending
-	ws := a.ws
 	a.pending = nil
 	a.mu.Unlock()
-	if p == nil || ws == nil {
+	if p == nil || p.Sink == nil {
 		return
 	}
 	if p.Kind == pendingKindPlugin {
-		_ = wsjson.Write(context.Background(), ws, pluginResultEnv(p.Corr, nil, errors.New("fleet: denied at the machine")))
+		_ = p.Sink(context.Background(), pluginResultEnv(p.Corr, nil, errors.New("fleet: denied at the machine")))
 	} else if p.Kind == pendingKindType {
-		_ = wsjson.Write(context.Background(), ws, typedEnv(p.Corr, false, "fleet: denied at the machine"))
+		_ = p.Sink(context.Background(), typedEnv(p.Corr, false, "fleet: denied at the machine"))
 	} else {
-		_ = wsjson.Write(context.Background(), ws, resultEnv(p.Corr, false, 1, "", "fleet: denied at the machine"))
+		_ = p.Sink(context.Background(), resultEnv(p.Corr, false, 1, "", "fleet: denied at the machine"))
 	}
 	a.mu.Lock()
 	a.log("warn", "denied: "+p.Command)
@@ -925,7 +1082,16 @@ func main() {
 		_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
 		agent.mu.Lock()
 		if body.Token != "" && body.Token != hubTokenPublic(agent.hubToken) && body.Token != "set" {
+			changed := strings.TrimSpace(body.Token) != strings.TrimSpace(agent.hubToken)
 			agent.hubToken = body.Token
+			if changed {
+				agent.authRevoked = false
+				agent.authKid = ""
+				agent.err = ""
+				if agent.conn == "auth_failed" {
+					agent.conn = "offline"
+				}
+			}
 		}
 		hub := body.Hub
 		if strings.TrimSpace(hub) == "" {

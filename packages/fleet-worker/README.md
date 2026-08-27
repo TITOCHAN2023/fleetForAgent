@@ -6,6 +6,8 @@ Same protocol as `packages/fleet-hub` (plain Node). Pick one backend.
 
 Jobs do **not** run on the Worker. The device keeps a pane buffer (tmux-style snapshot). The wire is latest-wins at ~4 Hz. `POST /v1/run` returns `accepted` immediately.
 
+Agent/tool 0.5.0 may negotiate a direct WebRTC DataChannel through this Worker. WSS remains connected for control, signed token revocation, and automatic fallback. The DataChannel carries the unchanged v1 Envelope, so shell, desktop, and plugin semantics do not fork. Optional `RTC_STUN_URLS` is a comma-separated public `[vars]` value, never a secret. There is no TURN relay in this version.
+
 Full steps: [English](../../docs/en/deploy.md) · [中文](../../docs/zh/deploy.md)
 
 Hub tokens are `flt_1` (RSA-2048, bound to `HUB_ORIGIN` in `wrangler.toml`). Agents and stdio MCP authenticate with `Fleet-OAEP`. Remote Streamable HTTP uses `POST /mcp`, returns an opaque `Mcp-Session-Id`, and persists only the session identity plus operator selection inside its isolated `McpDO`. Classic SSE remains at `/mcp/sse`: Bearer is sent on the initial GET, then the server announces a random token-free message URL. Both transports revalidate the current key id on every JSON-RPC message. After deploy, users must issue a new token and run agent 0.2.9+.

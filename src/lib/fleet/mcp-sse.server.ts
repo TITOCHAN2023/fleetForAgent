@@ -2,8 +2,11 @@ import { randomUUID } from "node:crypto";
 import {
   createOperator,
   FLEET_VERSION,
+  fleetResultMeta,
   formatMcpText,
+  isDeviceTransportPath,
   MCP_INSTRUCTIONS,
+  wrapTransportRpc,
 } from "../../../packages/fleet-tool/operator.mjs";
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";
@@ -141,6 +144,8 @@ function toolResult(name: string, out: unknown) {
   content.push({ type: "text", text: formatMcpText(name, out, {}) });
   const payload: Record<string, unknown> = { content };
   if (row && (row.isError === true || row.ok === false)) payload.isError = true;
+  const meta = fleetResultMeta(out);
+  if (meta) payload._meta = meta;
   return payload;
 }
 
@@ -374,7 +379,7 @@ export async function authenticateHubOperator(request: Request): Promise<Operato
     const value = (await response.json()) as Record<string, unknown>;
     if (!response.ok) throw new HubRpcError(response.status, value);
     corrTracker.remember(path, payload, value);
-    return value;
+    return wrapTransportRpc(value, isDeviceTransportPath(path) ? "ws" : null);
   };
 
   await rpc("/v1/list_computers", {});

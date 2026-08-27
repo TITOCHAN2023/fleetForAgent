@@ -48,6 +48,19 @@ type challengeBody struct {
 	Error string `json:"error"`
 }
 
+type signedFleetStatement struct {
+	Payload string `json:"payload"`
+	Sig     string `json:"sig"`
+}
+
+type authRevokedStatement struct {
+	V      int    `json:"v"`
+	Kind   string `json:"kind"`
+	Kid    string `json:"kid"`
+	At     int64  `json:"at"`
+	Reason string `json:"reason"`
+}
+
 func isTokenV1(raw string) bool {
 	t := strings.TrimSpace(raw)
 	if !strings.HasPrefix(t, tokenV1Prefix) {
@@ -168,6 +181,29 @@ func verifyTokenV1(raw string) (*tokenV1Claims, error) {
 	}
 	claims.Aud = hubOrigin(claims.Aud)
 	return &claims, nil
+}
+
+func verifyFleetStatement(rawToken string, signed signedFleetStatement, out any) error {
+	claims, err := verifyTokenV1(rawToken)
+	if err != nil {
+		return err
+	}
+	pub, err := parseSPKI(claims.Pub)
+	if err != nil {
+		return err
+	}
+	payload, err := b64urlDecode(signed.Payload)
+	if err != nil {
+		return err
+	}
+	sig, err := b64urlDecode(signed.Sig)
+	if err != nil {
+		return err
+	}
+	if err := verifyPSS(pub, payload, sig); err != nil {
+		return err
+	}
+	return json.Unmarshal(payload, out)
 }
 
 func wrapAuth(pub *rsa.PublicKey, sec, nonce string) (string, error) {

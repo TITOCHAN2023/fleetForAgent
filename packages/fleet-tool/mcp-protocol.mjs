@@ -1,6 +1,7 @@
 import {
   createOperator,
   FLEET_VERSION,
+  fleetResultMeta,
   formatMcpText,
   MCP_INSTRUCTIONS,
 } from "./operator.mjs";
@@ -41,6 +42,8 @@ function toolResult(name, out) {
   content.push({ type: "text", text: formatMcpText(name, out, {}) });
   const payload = { content };
   if (row && (row.isError === true || row.ok === false)) payload.isError = true;
+  const meta = fleetResultMeta(out);
+  if (meta) payload._meta = meta;
   return payload;
 }
 

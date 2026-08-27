@@ -10,7 +10,7 @@ mkdir -p "$OUT" "$SRC/dist"
 cd "$SRC"
 go mod tidy
 LDFLAGS="-s -w"
-VERSION="${VERSION:-0.4.0}"
+VERSION="${VERSION:-0.5.0}"
 
 build() {
   local os="$1" arch="$2" ext="$3"
@@ -140,6 +140,7 @@ tar -C dist/linuxpack-arm64 -czf "$OUT/fleet-agent-linux-arm64.tar.gz" fleet-age
       fleet-agent-linux-amd64.tar.gz fleet-agent-linux-arm64.tar.gz > checksums.txt
   fi
 )
+cp "$OUT/checksums.txt" "$OUT/checksums-${VERSION}.txt"
 
 echo "releases:"
 ls -lh "$OUT"

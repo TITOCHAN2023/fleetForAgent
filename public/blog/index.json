@@ -1,6 +1,19 @@
 {
   "posts": [
     {
+      "slug": "rtc-with-a-brake",
+      "date": "2026-08-27",
+      "langs": [
+        "zh"
+      ],
+      "title": {
+        "zh": "给 WebRTC 留一脚刹车"
+      },
+      "summary": {
+        "zh": "Fleet 加了点对点数据通道，但控制连接、撤销能力和旧版兜底仍然留在中枢。"
+      }
+    },
+    {
       "slug": "one-machine-was-not-enough",
       "date": "2026-08-24",
       "langs": [

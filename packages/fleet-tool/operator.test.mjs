@@ -17,6 +17,7 @@ import {
   MCP_INSTRUCTIONS,
   FLEET_OPERATOR_HEADER,
   fleetHubHeaders,
+  fleetResultMeta,
   formatMcpText,
   applyCliDevFlag,
   isFleetDev,
@@ -26,8 +27,11 @@ import {
   isFinishedResult,
   measureHubFetch,
   parseOptionalMs,
+  resultTransport,
   shQuote,
   stripSessionMeta,
+  unwrapTimedRpc,
+  wrapTransportRpc,
   wrapSessionCommand,
 } from "./operator.mjs";
 
@@ -139,7 +143,8 @@ test("MCP prompts cover generate/reset and token anatomy", () => {
   assert.deepEqual(names, ["hub_token", "hub_token_anatomy"]);
   const mint = getPrompt("hub_token");
   assert.match(mint.messages[0].content.text, /Reset token/);
-  assert.match(mint.messages[0].content.text, /1008 token reset/);
+  assert.match(mint.messages[0].content.text, /signed notice/);
+  assert.match(mint.messages[0].content.text, /RTC session/);
   const anatomy = getPrompt("hub_token_anatomy");
   assert.match(anatomy.messages[0].content.text, /flt_1\.<payload>\.<sig>/);
   assert.match(anatomy.messages[0].content.text, /Fleet-OAEP/);
@@ -826,6 +831,75 @@ test("timed rpc hop keeps the headers split", async () => {
   });
 });
 
+test("transport wrappers preserve timed hops without leaking into business JSON", () => {
+  const business = { corr: "c-transport", status: "running" };
+  const wrapped = wrapTransportRpc({
+    __fleetTimed: true,
+    json: business,
+    hop: { total_ms: 12, split: "headers" },
+  }, "rtc");
+  assert.deepEqual(unwrapTimedRpc(wrapped), {
+    json: business,
+    hop: { total_ms: 12, split: "headers" },
+    transport: "rtc",
+  });
+  assert.deepEqual(business, { corr: "c-transport", status: "running" });
+});
+
+test("MCP result transport is per invocation and absent from default text", async () => {
+  const rpc = async (path, body) => {
+    assert.equal(path, "/v1/run");
+    if (body.device_id === "slow-rtc") {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return wrapTransportRpc({ corr: "rtc-corr", status: "running" }, "rtc");
+    }
+    return wrapTransportRpc({ corr: "ws-corr", status: "running" }, "ws");
+  };
+  const op = createOperator({ rpc });
+  const [rtc, ws] = await Promise.all([
+    op.callTool("run", { device_id: "slow-rtc", command: "pwd", wait_ms: 0 }),
+    op.callTool("run", { device_id: "fast-ws", command: "pwd", wait_ms: 0 }),
+  ]);
+
+  assert.equal(resultTransport(rtc), "rtc");
+  assert.equal(resultTransport(ws), "ws");
+  assert.deepEqual(fleetResultMeta(rtc), { fleet_transport: "rtc" });
+  assert.deepEqual(fleetResultMeta(ws), { fleet_transport: "ws" });
+  assert.equal(formatMcpText("run", rtc), "still running");
+  assert.equal(JSON.stringify(rtc).includes("fleet_transport"), false);
+});
+
+test("the final device reply decides transport after RTC falls back to WSS", async () => {
+  const { rpc } = mockRpc({
+    "/v1/run": () => wrapTransportRpc({ corr: "c-fallback", status: "running" }, "rtc"),
+    "/v1/get_result": () => wrapTransportRpc({
+      corr: "c-fallback",
+      status: "done",
+      ok: true,
+      exit_code: 0,
+      stdout: "done\n",
+    }, "ws"),
+  });
+  const out = await createOperator({ rpc }).callTool("run", {
+    device_id: "mac-1",
+    command: "pwd",
+  });
+  assert.deepEqual(fleetResultMeta(out), { fleet_transport: "ws" });
+  assert.equal(formatMcpText("run", out), "done\n");
+});
+
+test("catalog calls have no device transport, heartbeat remains WSS", async () => {
+  const { rpc } = mockRpc({
+    "/v1/list_computers": () => ({ computers: [] }),
+    "/v1/heartbeat": () => wrapTransportRpc({ ok: true, online: true }, "ws"),
+  });
+  const op = createOperator({ rpc });
+  const list = await op.callTool("list_computers", {});
+  const heartbeat = await op.callTool("heartbeat", { device_id: "mac-1" });
+  assert.equal(fleetResultMeta(list), null);
+  assert.deepEqual(fleetResultMeta(heartbeat), { fleet_transport: "ws" });
+});
+
 test("applyCliDevFlag sets FLEET_DEV and strips --dev", () => {
   const env = {};
   assert.deepEqual(applyCliDevFlag(["--dev", "list"], env), ["list"]);
@@ -834,8 +908,8 @@ test("applyCliDevFlag sets FLEET_DEV and strips --dev", () => {
   assert.equal(isFleetDev({}), false);
 });
 
-test("MCP version is 0.4.1", () => {
-  assert.equal(FLEET_VERSION, "0.4.1");
+test("MCP version is 0.5.0", () => {
+  assert.equal(FLEET_VERSION, "0.5.0");
 });
 
 test("official plugin registry pins every platform artifact to SHA-256", () => {

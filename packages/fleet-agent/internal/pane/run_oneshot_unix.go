@@ -60,11 +60,16 @@ func (s *Supervisor) spawnOneshotPTY(fingerprint, corr, command string) (*Pane, 
 				code = ee.ExitCode()
 			}
 		}
-		_ = ptmx.Close()
 		select {
 		case <-drained:
 		case <-time.After(500 * time.Millisecond):
+			p.closeStdin(ptmx)
+			select {
+			case <-drained:
+			case <-time.After(50 * time.Millisecond):
+			}
 		}
+		p.closeStdin(ptmx)
 		p.finishOneshot(code)
 	}()
 	return p, nil

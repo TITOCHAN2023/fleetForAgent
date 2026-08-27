@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  AgentRuntime,
-  normalizeHub,
-} from "./runtime";
+import { AgentRuntime, normalizeHub } from "./runtime";
 import type { ShellResult } from "../fleet/shell";
 
 test("normalizeHub fills wss path from a bare domain", () => {
@@ -132,6 +129,26 @@ test("destructive command is blocked even on allow", async () => {
   const out = r.incomingRun("rm -rf /");
   assert.equal(out.status, "refused");
   assert.equal(out.exitCode, 126);
+
+  for (const command of [
+    "/bin/rm -rf /",
+    "command rm -rf /",
+    "env LC_ALL=C rm -rf /",
+    "busybox rm -rf /",
+    "sudo -u root rm -rf /",
+    "/usr/bin/sudo -u root rm -rf /",
+    "command -- rm -rf /",
+    "env -u HOME rm -rf /",
+    "sh -c 'rm -rf /'",
+    "bash --noprofile -c 'rm -rf /'",
+    String.raw`rm -rf C:\tmp\..`,
+    String.raw`cmd.exe /c "rd /s /q C:\"`,
+    String.raw`powershell.exe -NoProfile -Command "Remove-Item C:\ -Recurse -Force"`,
+  ]) {
+    const wrapped = r.incomingRun(command);
+    assert.equal(wrapped.status, "refused", command);
+    assert.equal(wrapped.exitCode, 126, command);
+  }
 });
 
 test("rm -rf of a specific absolute path is not blanket-banned", async () => {

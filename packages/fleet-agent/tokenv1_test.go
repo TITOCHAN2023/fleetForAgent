@@ -106,6 +106,41 @@ func TestVerifyTokenV1AndWrap(t *testing.T) {
 	if verifyChallenge(&priv.PublicKey, "https://evil.example", claims.Kid, "nonce", b64urlEncode(chSig)) {
 		t.Fatal("wrong aud must fail")
 	}
+
+	statement := authRevokedStatement{V: 1, Kind: "auth_revoked", Kid: claims.Kid, At: 123, Reason: "token_reset"}
+	statementPayload, err := json.Marshal(statement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statementSum := sha256.Sum256(statementPayload)
+	statementSig, err := rsa.SignPSS(rand.Reader, priv, crypto.SHA256, statementSum[:], &rsa.PSSOptions{SaltLength: pssSaltLen})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed := signedFleetStatement{Payload: b64urlEncode(statementPayload), Sig: b64urlEncode(statementSig)}
+	var verified authRevokedStatement
+	if err := verifyFleetStatement(raw, signed, &verified); err != nil {
+		t.Fatal(err)
+	}
+	if verified != statement {
+		t.Fatalf("statement %+v", verified)
+	}
+	agent := &Agent{
+		enabled: true, hubInput: claims.Aud, hubToken: raw, authKid: claims.Kid,
+		conn: "online", cfgPath: t.TempDir() + "/config.json",
+	}
+	if !agent.handleAuthRevoked(nil, Envelope{V: 1, Type: "auth_revoked", Body: map[string]any{
+		"kid": claims.Kid, "statement": signed,
+	}}) {
+		t.Fatal("valid signed reset must revoke the agent")
+	}
+	if !agent.authRevoked || agent.conn != "auth_failed" || agent.wantsReconnectLocked() {
+		t.Fatalf("revocation state revoked=%v conn=%q", agent.authRevoked, agent.conn)
+	}
+	signed.Payload = b64urlEncode(append(statementPayload, ' '))
+	if err := verifyFleetStatement(raw, signed, &verified); err == nil {
+		t.Fatal("tampered signed statement must fail")
+	}
 }
 
 func TestLegacyTokenMessage(t *testing.T) {

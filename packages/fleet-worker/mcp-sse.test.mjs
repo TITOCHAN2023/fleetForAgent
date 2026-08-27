@@ -6,6 +6,7 @@ import {
   isJsonRpcMessage,
   isMcpSessionExpired,
 } from "./src/mcp-sse.mjs";
+import { wrapTransportRpc } from "../fleet-tool/operator.mjs";
 
 async function readEvent(reader) {
   const chunk = await reader.read();
@@ -51,6 +52,31 @@ test("Worker MCP SSE lists shared tools and checks session authorization", async
   const payload = JSON.parse(event.match(/data: (.+)\n\n$/)[1]);
   assert.equal(payload.result.tools[0].name, "list_computers");
   assert.equal(authChecks, 1);
+  await reader.cancel();
+});
+
+test("Worker MCP SSE exposes WSS provenance in result metadata", async () => {
+  const session = new McpSseSession({
+    rpc: async (path) => {
+      assert.equal(path, "/v1/run");
+      return wrapTransportRpc({ corr: "c-ws", status: "running" }, "ws");
+    },
+  });
+  const reader = session.open("transport").body.getReader();
+  await readEvent(reader);
+  await session.dispatch({
+    jsonrpc: "2.0",
+    id: "run",
+    method: "tools/call",
+    params: {
+      name: "run",
+      arguments: { device_id: "box-a", command: "pwd", wait_ms: 0 },
+    },
+  });
+  const event = await readEvent(reader);
+  const payload = JSON.parse(event.match(/data: (.+)\n\n$/)[1]);
+  assert.deepEqual(payload.result._meta, { fleet_transport: "ws" });
+  assert.equal(payload.result.content[0].text, "still running");
   await reader.cancel();
 });
 

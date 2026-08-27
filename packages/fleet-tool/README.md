@@ -18,6 +18,8 @@ node index.mjs --dev list
 
 Cursor / MCP: run `npx -y https://fleet.ginfo.cc/fleet-tool.tgz` with those two env vars, no extra args. `--dev` sets `FLEET_DEV=1` (same as the env) and still starts MCP if there are no other args.
 
+Version 0.5.0 can negotiate a direct WebRTC DataChannel with Agent 0.5.0. It keeps using HTTPS for authentication/signaling and the Agent keeps its WSS control connection. The Tool verifies the hub ticket and waits for the Agent's `rtc_ready` before sending the unchanged v1 Envelope for run, pane, desktop, and plugin calls. Any setup failure or a missing `rtc_v1` capability falls back to the old hub path. Device-backed MCP results expose the actual path as `_meta.fleet_transport` (`rtc` or `ws`); it is tracked per invocation and is not inserted into command text or the v1 Envelope. Heartbeat and keepalive remain on WSS. Remote `/mcp` and `/mcp/sse` run inside the Worker, remain on the hub path, and therefore report `ws`.
+
 `~/.fleet/mcp.env` is already loaded (does not override env vars that are already set):
 
 ```

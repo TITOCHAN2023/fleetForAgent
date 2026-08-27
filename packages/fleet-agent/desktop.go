@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/TITOCHAN2023/fleetForAgent/internal/desktop"
-	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
 )
 
 const (
@@ -91,19 +89,19 @@ func (a *Agent) desktopVerdict(kind desktopKind) (permitVerdict, string) {
 	return permitAsk, ""
 }
 
-func (a *Agent) sendDesktop(ctx context.Context, c *websocket.Conn, corr string, body map[string]any) {
-	_ = wsjson.Write(ctx, c, Envelope{
+func (a *Agent) sendDesktop(ctx context.Context, sink EnvelopeSink, corr string, body map[string]any) {
+	_ = sink(ctx, Envelope{
 		V: 1, Type: "desktop", ID: fmt.Sprintf("%d", time.Now().UnixNano()),
 		Corr: corr, T: time.Now().UnixMilli(), Body: body,
 	})
 }
 
-func (a *Agent) handleDesktopScreenshot(ctx context.Context, c *websocket.Conn, env Envelope) {
-	a.sendDesktop(ctx, c, env.Corr, a.desktopScreenshotBody(env.Corr, env.Body))
+func (a *Agent) handleDesktopScreenshot(ctx context.Context, sink EnvelopeSink, env Envelope) {
+	a.sendDesktop(ctx, sink, env.Corr, a.desktopScreenshotBody(env.Corr, env.Body))
 }
 
-func (a *Agent) handleDesktopAction(ctx context.Context, c *websocket.Conn, env Envelope) {
-	a.sendDesktop(ctx, c, env.Corr, a.desktopActionBody(env.Body))
+func (a *Agent) handleDesktopAction(ctx context.Context, sink EnvelopeSink, env Envelope) {
+	a.sendDesktop(ctx, sink, env.Corr, a.desktopActionBody(env.Body))
 }
 
 func (a *Agent) desktopScreenshotBody(corr string, body map[string]any) map[string]any {

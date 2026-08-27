@@ -25,10 +25,22 @@ test("Streamable HTTP reuses McpDO without a new migration and persists eviction
   assert.match(worker, /this\.httpStored\.operatorState = this\.httpSession\.getState\(\)/);
   assert.match(worker, /isMcpSessionExpired/);
   assert.match(worker, /validate-mcp/);
+  assert.match(worker, /wrapTransportRpc\(value, isDeviceTransportPath\(path\) \? "ws" : null\)/);
 });
 
 test("classic SSE remains a separate endpoint", () => {
   assert.match(worker, /if \(path === "\/mcp\/sse"\)/);
   assert.match(worker, /dispatchMcpSse/);
   assert.match(worker, /sessionId = url\.searchParams\.get\("sessionId"\)/);
+});
+
+test("RTC fallback keeps correlation ownership and token reset is fail-closed", () => {
+  assert.match(worker, /parsed\.type === "rtc_claim"/);
+  assert.match(worker, /this\.claimSession\(operatorId, parsed\.corr\)/);
+  assert.match(worker, /rememberRtcDesktopResult/);
+  assert.match(worker, /rtcDesktopResults = new Map/);
+  assert.doesNotMatch(worker, /rtcres:\$\{parsed\.corr\}:desktop/);
+  const reset = worker.slice(worker.indexOf("const revocation = await this.beginTokenRevocation"));
+  assert.ok(reset.indexOf("kickUserDevices") < reset.indexOf("revokeToken"));
+  assert.doesNotMatch(reset.slice(0, reset.indexOf("return json({ token:")), /Promise\.allSettled/);
 });

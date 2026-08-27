@@ -15,14 +15,24 @@ import {
   applyCliDevFlag,
   createOperator,
   FLEET_VERSION,
+  fleetResultMeta,
   fleetHubHeaders,
   formatMcpText,
   isFleetDev,
+  isDeviceTransportPath,
   MCP_INSTRUCTIONS,
   measureHubFetch,
   newOperatorFingerprint,
+  officialPlugin,
+  unwrapTimedRpc,
+  wrapTransportRpc,
 } from "./operator.mjs";
-import { highSecAuthorization } from "../fleet-worker/src/tokenv1.mjs";
+import { createRtcManager } from "./rtc.mjs";
+import {
+  highSecAuthorization,
+  verifyFleetStatement,
+  verifyTokenV1,
+} from "../fleet-worker/src/tokenv1.mjs";
 
 const operatorFingerprint = newOperatorFingerprint();
 
@@ -67,7 +77,7 @@ async function hubHeaders() {
   return fleetHubHeaders({ authorization, fingerprint: operatorFingerprint });
 }
 
-async function hubRpc(path, body, { timed = false } = {}) {
+async function rawHubRpc(path, body, { timed = false } = {}) {
   if (!url || !token) {
     throw new Error("Need FLEET_URL and FLEET_TOKEN (env or ~/.fleet/mcp.env)");
   }
@@ -97,8 +107,26 @@ async function hubRpc(path, body, { timed = false } = {}) {
   return json;
 }
 
+const rtcManager = createRtcManager({
+  hubPost: (path, body) => rawHubRpc(path, body, { timed: false }),
+  token,
+  operatorId: operatorFingerprint,
+  verifyTokenV1,
+  verifyFleetStatement,
+  officialPlugin,
+});
+
+async function hubRpc(path, body, { timed = false } = {}) {
+  const direct = await rtcManager.tryRpc(path, body);
+  if (direct.handled) {
+    return wrapTransportRpc(direct.value, isDeviceTransportPath(path) ? direct.transport || "rtc" : null);
+  }
+  const relayed = await rawHubRpc(path, body, { timed });
+  return wrapTransportRpc(relayed, isDeviceTransportPath(path) ? "ws" : null);
+}
+
 async function rpc(path, body) {
-  return hubRpc(path, body, { timed: false });
+  return unwrapTimedRpc(await hubRpc(path, body, { timed: false })).json;
 }
 
 async function cli(args) {
@@ -208,9 +236,11 @@ function mcp() {
               if (out && typeof out === "object" && (out.isError === true || out.ok === false)) {
                 payload.isError = true;
               }
+              const meta = fleetResultMeta(out) || {};
               if (out && typeof out === "object" && out.dev && Number.isFinite(out.dev.total_ms)) {
-                payload._meta = { duration_ms: out.dev.total_ms, fleet_dev: out.dev };
+                Object.assign(meta, { duration_ms: out.dev.total_ms, fleet_dev: out.dev });
               }
+              if (Object.keys(meta).length > 0) payload._meta = meta;
               reply(id, payload);
             } catch (err) {
               cancelled.delete(reqId);

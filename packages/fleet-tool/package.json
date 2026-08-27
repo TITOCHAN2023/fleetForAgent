@@ -6,7 +6,10 @@
   "bin": {
     "fleet-tool": "./index.mjs"
   },
+  "dependencies": {
+    "werift": "0.24.4"
+  },
   "scripts": {
-    "test": "node --test operator.test.mjs mcp-protocol.test.mjs"
+    "test": "node --test operator.test.mjs mcp-protocol.test.mjs rtc.test.mjs"
   }
 }

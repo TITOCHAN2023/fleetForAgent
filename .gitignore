@@ -5,6 +5,7 @@ dist
 .vinxi
 .tanstack
 .vite
+.vercel
 coverage
 *.log
 .DS_Store

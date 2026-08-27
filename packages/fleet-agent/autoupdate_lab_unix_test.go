@@ -436,7 +436,7 @@ func (h *labHub) handleList(w http.ResponseWriter, r *http.Request) {
 	h.mu.Lock()
 	var comps []map[string]any
 	for _, d := range h.devices {
-		comps = append(comps, d)
+		comps = append(comps, cloneLabRow(d))
 	}
 	h.mu.Unlock()
 	writeJSON(w, map[string]any{"computers": comps})
@@ -483,7 +483,7 @@ func (h *labHub) waitComputer(t *testing.T, id, ver string, online bool, timeout
 	var last map[string]any
 	for time.Now().Before(deadline) {
 		h.mu.Lock()
-		row := h.devices[id]
+		row := cloneLabRow(h.devices[id])
 		h.mu.Unlock()
 		if row != nil {
 			last = row
@@ -497,6 +497,17 @@ func (h *labHub) waitComputer(t *testing.T, id, ver string, online bool, timeout
 	}
 	t.Fatalf("hub catalog never reached id=%s ver=%s online=%v last=%v", id, ver, online, last)
 	return nil
+}
+
+func cloneLabRow(row map[string]any) map[string]any {
+	if row == nil {
+		return nil
+	}
+	out := make(map[string]any, len(row))
+	for key, value := range row {
+		out[key] = value
+	}
+	return out
 }
 
 func startAssetServer(t *testing.T, archive, name, sum string) string {

@@ -4,12 +4,15 @@
       "slug": "rtc-with-a-brake",
       "date": "2026-08-27",
       "langs": [
+        "en",
         "zh"
       ],
       "title": {
+        "en": "WebRTC Needs a Brake",
         "zh": "给 WebRTC 留一脚刹车"
       },
       "summary": {
+        "en": "Fleet added a peer-to-peer data channel while keeping control, revocation, and support for older clients at the hub.",
         "zh": "Fleet 加了点对点数据通道，但控制连接、撤销能力和旧版兜底仍然留在中枢。"
       }
     },

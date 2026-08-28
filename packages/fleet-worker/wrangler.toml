@@ -24,7 +24,8 @@ workers_dev = false
 HUB_ORIGIN = "https://fleet.ginfo.cc"
 # Optional, public configuration rather than a secret. Comma-separate up to
 # four STUN URLs. Leave unset until the hostname really serves UDP 3478;
-# direct ICE failure automatically keeps the existing WSS relay path.
+# bounded task/shell calls may keep their existing Hub/WSS path when direct ICE
+# is unavailable. Generic peer sessions remain direct-only and fail closed.
 # RTC_STUN_URLS = "stun:stun.example.com:3478"
 
 [[routes]]
@@ -51,8 +52,8 @@ name = "MCP"
 class_name = "McpDO"
 
 [[durable_objects.bindings]]
-name = "TRANSFER"
-class_name = "TransferDO"
+name = "PEER_SESSION"
+class_name = "PeerSessionDO"
 
 [[migrations]]
 tag = "v1"
@@ -65,3 +66,8 @@ new_sqlite_classes = ["McpDO"]
 [[migrations]]
 tag = "v3"
 new_sqlite_classes = ["TransferDO"]
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["PeerSessionDO"]
+deleted_classes = ["TransferDO"]

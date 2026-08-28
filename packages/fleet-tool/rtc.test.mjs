@@ -58,6 +58,94 @@ test("heartbeat stays on the existing hub path and never opens RTC", async () =>
   assert.deepEqual(calls, []);
 });
 
+test("RTC establishment and reply waits stop on the tools/call signal", async () => {
+  const controller = new AbortController();
+  let seenSignal;
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const manager = createRtcManager({
+    hubPost: async (path, _body, options) => {
+      assert.equal(path, "/v1/rtc/config");
+      seenSignal = options?.signal;
+      markStarted();
+      return new Promise((resolve, reject) => {
+        seenSignal.addEventListener(
+          "abort",
+          () => reject(seenSignal.reason || new Error("cancelled")),
+          { once: true },
+        );
+      });
+    },
+    token: "unused",
+    operatorId: "operator-1",
+    verifyTokenV1: async () => { throw new Error("not called"); },
+    verifyFleetStatement: async () => null,
+    officialPlugin: () => null,
+  });
+  const pending = manager.tryRpc(
+    "/v1/run",
+    { device_id: "device-1", command: "true" },
+    { signal: controller.signal },
+  );
+  await started;
+  controller.abort(new Error("stdio closed"));
+  await assert.rejects(() => pending, /stdio closed/);
+  assert.equal(seenSignal, controller.signal);
+
+  const dc = {};
+  const pc = { connectionStateChange: { subscribe() {} } };
+  const session = new _test.DirectSession({
+    sid: "11111111-2222-4333-8444-555555555555",
+    deviceId: "device-1",
+    operatorId: "operator-1",
+    pc,
+    dc,
+  });
+  const waitController = new AbortController();
+  const waiting = session.waitFor(() => false, 60_000, waitController.signal);
+  waitController.abort(new Error("wait cancelled"));
+  await assert.rejects(() => waiting, /wait cancelled/);
+  assert.equal(session.waiters.size, 0, "aborted wait retained a live timer/waiter");
+});
+
+test("an aborted RTC reply wait never enters the ordinary Hub fallback", async () => {
+  const hubCalls = [];
+  const manager = createRtcManager({
+    hubPost: async (...args) => {
+      hubCalls.push(args);
+      throw new Error("unexpected fallback");
+    },
+    token: "unused",
+    operatorId: "operator-1",
+    verifyTokenV1: async () => null,
+    verifyFleetStatement: async () => null,
+    officialPlugin: () => null,
+  });
+  const session = {
+    open: true,
+    directReady: true,
+    closed: false,
+    lastCorr: "corr-1",
+    rows: new Map(),
+    send() {},
+    waitFor(_check, _timeout, signal) {
+      return new Promise((resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    },
+  };
+  manager.sessions.set("device-1", session);
+  const controller = new AbortController();
+  const pending = manager.tryRpc(
+    "/v1/read_screen",
+    { device_id: "device-1", corr: "corr-1" },
+    { signal: controller.signal },
+  );
+  controller.abort(new Error("request cancelled"));
+  await assert.rejects(() => pending, /request cancelled/);
+  assert.deepEqual(hubCalls, []);
+});
+
 test("Tool sends no business data before Agent confirms its ticket with rtc_ready", async () => {
   const sent = [];
   const dc = { send: (raw) => sent.push(JSON.parse(raw)) };
@@ -173,4 +261,61 @@ test("desktop response recovered from the relay reports ws provenance", async ()
   });
   assert.deepEqual(out, { handled: true, value: { ok: true }, transport: "ws" });
   assert.equal(polls, 1);
+});
+
+test("bounded plugin tasks prefer RTC and fall back to the Hub unchanged", async () => {
+  const sent = [];
+  const manifest = { id: "example.task", version: "1.0.0", actions: ["run"] };
+  const manager = createRtcManager({
+    hubPost: async () => {
+      throw new Error("an established RTC session must not signal again");
+    },
+    token: "unused",
+    operatorId: "operator-1",
+    verifyTokenV1: async () => {
+      throw new Error("not called");
+    },
+    verifyFleetStatement: async () => null,
+    officialPlugin: (id) => (id === manifest.id ? manifest : null),
+  });
+  const session = {
+    open: true,
+    directReady: true,
+    closed: false,
+    lastCorr: "",
+    rows: new Map(),
+    send(value) {
+      sent.push(value);
+    },
+    async close() {},
+  };
+  manager.sessions.set("device-1", session);
+
+  const request = {
+    device_id: "device-1",
+    operation: "install",
+    plugin_id: manifest.id,
+  };
+  const direct = await manager.tryRpc("/v1/plugin", request);
+  assert.equal(direct.handled, true);
+  assert.equal(direct.transport, "rtc");
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].type, "plugin");
+  assert.deepEqual(sent[0].body, {
+    operation: "install",
+    plugin_id: manifest.id,
+    manifest,
+  });
+  assert.equal("device_id" in sent[0].body, false);
+
+  session.send = () => {
+    throw new Error("RTC closed");
+  };
+  manager.sessions.set("device-1", session);
+  assert.deepEqual(await manager.tryRpc("/v1/plugin", request), { handled: false });
+  assert.deepEqual(request, {
+    device_id: "device-1",
+    operation: "install",
+    plugin_id: manifest.id,
+  });
 });

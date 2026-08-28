@@ -1,4 +1,5 @@
 import { OFFICIAL_PLUGIN_CATALOG as GENERATED_PLUGIN_CATALOG, PLUGIN_REGISTRY_SOURCE } from "./official-plugins.generated.mjs";
+import { createFileTransferPeerConfig } from "./file-transfer-contract.mjs";
 
 /**
  * MCP operator surface. Last-used lives in this process only.
@@ -10,8 +11,16 @@ export const FLEET_VERSION = "0.6.0";
 export { PLUGIN_REGISTRY_SOURCE };
 export const OFFICIAL_PLUGIN_CATALOG = GENERATED_PLUGIN_CATALOG;
 
-function installManifest(plugin) {
-  return Object.freeze({
+function immutableCopy(value) {
+  if (Array.isArray(value)) return Object.freeze(value.map(immutableCopy));
+  if (value && typeof value === "object") {
+    return Object.freeze(Object.fromEntries(Object.entries(value).map(([key, child]) => [key, immutableCopy(child)])));
+  }
+  return value;
+}
+
+export function installManifest(plugin) {
+  return immutableCopy({
     schema_version: plugin.schema_version,
     id: plugin.id,
     name: plugin.name,
@@ -22,6 +31,9 @@ function installManifest(plugin) {
     repository: plugin.repository,
     actions: plugin.actions,
     approval_actions: plugin.approval_actions,
+    runtime: plugin.runtime || "task",
+    action_specs: plugin.action_specs || {},
+    peer_protocols: plugin.peer_protocols || [],
     artifacts: plugin.artifacts,
   });
 }
@@ -37,7 +49,7 @@ export function officialPlugin(id) {
 }
 
 export function publicOfficialPlugins() {
-  return OFFICIAL_PLUGIN_CATALOG.map((plugin) => ({
+  return immutableCopy(OFFICIAL_PLUGIN_CATALOG.map((plugin) => ({
     schema_version: plugin.schema_version,
     id: plugin.id,
     order: plugin.order,
@@ -53,8 +65,11 @@ export function publicOfficialPlugins() {
     installable: plugin.installable,
     actions: plugin.actions,
     approval_actions: plugin.approval_actions,
+    runtime: plugin.runtime || "task",
+    action_specs: plugin.action_specs || {},
+    peer_protocols: plugin.peer_protocols || [],
     platforms: plugin.artifacts.map(({ os, arch }) => ({ os, arch })),
-  }));
+  })));
 }
 
 /** MCP-process fingerprint. HTTP header only — never a tool argument. */
@@ -778,9 +793,9 @@ export function desktopMcpRow(row) {
   return out;
 }
 
-async function desktopCall(trace, path, body, callRpc) {
+async function desktopCall(trace, path, body, callRpc, signal) {
   try {
-    const row = await callRpc(trace, path, body);
+    const row = await callRpc(trace, path, body, { signal });
     return desktopMcpRow(row);
   } catch (err) {
     if (err && typeof err === "object" && err.json) {
@@ -798,6 +813,23 @@ async function desktopCall(trace, path, body, callRpc) {
     }
     throw err;
   }
+}
+
+function waitWithSignal(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason || new Error("tool call cancelled"));
+  return new Promise((resolve, reject) => {
+    const done = (callback, value) => {
+      signal.removeEventListener("abort", onAbort);
+      callback(value);
+    };
+    const onAbort = () => done(reject, signal.reason || new Error("tool call cancelled"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve(promise).then(
+      (value) => done(resolve, value),
+      (error) => done(reject, error),
+    );
+  });
 }
 
 function hopStatus(row) {
@@ -835,10 +867,10 @@ export function createOperator({
     return { hops: [], started: now(), sleep_ms: 0, startedRow: null, transport: null };
   }
 
-  async function callRpc(trace, path, body) {
+  async function callRpc(trace, path, body, { signal } = {}) {
     const payload = fleetDev && body && typeof body === "object" ? { ...body, dev: true } : body;
     const t_out = now();
-    const raw = await rpc(path, payload);
+    const raw = await rpc(path, payload, { signal });
     const t_in = now();
     const { json: row, hop: measured, transport } = unwrapTimedRpc(raw);
     if (trace && transport) trace.transport = transport;
@@ -932,12 +964,12 @@ export function createOperator({
     return corrByDevice.get(deviceId) || "";
   }
 
-  async function peekResult(deviceId, trace, waitMs = 0, corr = "") {
+  async function peekResult(deviceId, trace, waitMs = 0, corr = "", signal) {
     const body = { device_id: deviceId };
     const ticket = corr || currentCorr(deviceId);
     if (ticket) body.corr = ticket;
     if (waitMs > 0) body.wait_ms = waitMs;
-    const row = await callRpc(trace, "/v1/get_result", body);
+    const row = await callRpc(trace, "/v1/get_result", body, { signal });
     rememberCorr(deviceId, row?.corr);
     return decorateResult(row, deviceId);
   }
@@ -947,7 +979,7 @@ export function createOperator({
     const startedAt = now();
     const deadline = startedAt + budget;
     let ticket = rememberCorr(deviceId, corr) || currentCorr(deviceId);
-    let snapshot = await peekResult(deviceId, trace, 0, ticket);
+    let snapshot = await peekResult(deviceId, trace, 0, ticket, hooks?.signal);
     ticket = rememberCorr(deviceId, snapshot?.corr) || ticket;
     if (isFinishedResult(snapshot) || budget <= 0) {
       return isFinishedResult(snapshot) ? snapshot : runningSnapshot(snapshot, ticket, deviceId);
@@ -960,8 +992,8 @@ export function createOperator({
       hooks?.onProgress?.({ progress: budget - left, total: budget });
       const sl = Math.min(WAIT_POLL_MS, left);
       if (trace) trace.sleep_ms += sl;
-      await sleep(sl);
-      snapshot = await peekResult(deviceId, trace, 0, ticket);
+      await waitWithSignal(sleep(sl), hooks?.signal);
+      snapshot = await peekResult(deviceId, trace, 0, ticket, hooks?.signal);
       ticket = rememberCorr(deviceId, snapshot?.corr) || ticket;
     }
     if (isFinishedResult(snapshot)) return snapshot;
@@ -971,7 +1003,7 @@ export function createOperator({
   async function execOnDevice(deviceId, command, waitMs, trace, hooks) {
     const body = { device_id: deviceId, command };
     const t0 = now();
-    const started = await callRpc(trace, "/v1/run", body);
+    const started = await callRpc(trace, "/v1/run", body, { signal: hooks?.signal });
     const corr = rememberCorr(deviceId, started?.corr);
     if (waitMs <= 0) {
       return withDevice({ ...started, corr, status: started?.status ?? "running" }, deviceId);
@@ -986,21 +1018,22 @@ export function createOperator({
   async function callTool(name, rawArgs, hooks = {}) {
     const args = rawArgs && typeof rawArgs === "object" ? rawArgs : {};
     const trace = newTrace();
+    if (hooks.signal?.aborted || hooks.isCancelled?.()) throw new Error("tool call cancelled");
 
     if (name === "list_computers") {
-      const row = await callRpc(trace, "/v1/list_computers", {});
+      const row = await callRpc(trace, "/v1/list_computers", {}, { signal: hooks.signal });
       return withDev(row, trace);
     }
 
     if (name === "get_computer") {
       const deviceId = resolveDevice(args);
-      const row = await callRpc(trace, "/v1/get_computer", { device_id: deviceId });
+      const row = await callRpc(trace, "/v1/get_computer", { device_id: deviceId }, { signal: hooks.signal });
       return withDev(withDevice(row, deviceId), trace);
     }
 
     if (name === "heartbeat") {
       const deviceId = resolveDevice(args);
-      const row = await callRpc(trace, "/v1/heartbeat", { device_id: deviceId });
+      const row = await callRpc(trace, "/v1/heartbeat", { device_id: deviceId }, { signal: hooks.signal });
       return withDev(withDevice(row, deviceId), trace);
     }
 
@@ -1033,7 +1066,7 @@ export function createOperator({
     if (name === "get_result") {
       const deviceId = resolveDevice(args);
       const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? WAIT_DEFAULT_MS);
-      if (waitMs <= 0) return withDev(await peekResult(deviceId, trace), trace);
+      if (waitMs <= 0) return withDev(await peekResult(deviceId, trace, 0, "", hooks.signal), trace);
       return withDev(await waitForResult(deviceId, waitMs, trace, undefined, hooks), trace);
     }
 
@@ -1048,7 +1081,7 @@ export function createOperator({
       const body = { device_id: deviceId };
       const corr = currentCorr(deviceId);
       if (corr) body.corr = corr;
-      const row = await callRpc(trace, "/v1/read_screen", body);
+      const row = await callRpc(trace, "/v1/read_screen", body, { signal: hooks.signal });
       return withDev(withDevice(row, deviceId), trace);
     }
 
@@ -1061,7 +1094,7 @@ export function createOperator({
       if (body.keys == null && body.key) body.keys = body.key;
       const corr = currentCorr(deviceId);
       if (corr) body.corr = corr;
-      const row = await callRpc(trace, "/v1/type", body);
+      const row = await callRpc(trace, "/v1/type", body, { signal: hooks.signal });
       return withDev(withDevice(row, deviceId), trace);
     }
 
@@ -1070,7 +1103,7 @@ export function createOperator({
       const body = { device_id: deviceId };
       if (args.max_width != null) body.max_width = args.max_width;
       if (args.max_height != null) body.max_height = args.max_height;
-      const row = await desktopCall(trace, "/v1/desktop_screenshot", body, callRpc);
+      const row = await desktopCall(trace, "/v1/desktop_screenshot", body, callRpc, hooks.signal);
       return withDev(withDevice(row, deviceId), trace);
     }
 
@@ -1084,7 +1117,7 @@ export function createOperator({
         // key wins when both are set
         delete body.keys;
       }
-      const row = await desktopCall(trace, "/v1/desktop_action", body, callRpc);
+      const row = await desktopCall(trace, "/v1/desktop_action", body, callRpc, hooks.signal);
       return withDev(withDevice(row, deviceId), trace);
     }
 
@@ -1096,7 +1129,7 @@ export function createOperator({
       const deviceId = resolveDevice(args);
       const corr = trimId(args.corr);
       if (!corr) throw new Error("corr required");
-      const row = await callRpc(trace, "/v1/plugin_result", { device_id: deviceId, corr });
+      const row = await callRpc(trace, "/v1/plugin_result", { device_id: deviceId, corr }, { signal: hooks.signal });
       return withDev(withDevice(row, deviceId), trace);
     }
 
@@ -1104,7 +1137,10 @@ export function createOperator({
       const source = args.source && typeof args.source === "object" ? args.source : null;
       const target = args.target && typeof args.target === "object" ? args.target : null;
       if (!source || !target) throw new Error("source and target required");
-      if (fileTransfer?.start) return fileTransfer.start({ source, target });
+      if (fileTransfer?.start) {
+        if (hooks.signal?.aborted || hooks.isCancelled?.()) throw new Error("tool call cancelled");
+        return fileTransfer.start({ source, target }, { signal: hooks.signal });
+      }
       if (source.kind === "tool" || target.kind === "tool") {
         throw new Error("Tool file endpoints require the local Fleet Tool stdio/CLI process");
       }
@@ -1115,29 +1151,49 @@ export function createOperator({
       if (!sourceId || !targetId || !sourcePath || !targetPath) {
         throw new Error("device source/target require device_id and absolute path/directory");
       }
-      const row = await callRpc(trace, "/v1/transfer/create", {
-        source: { kind: "device", id: sourceId },
-        target: { kind: "device", id: targetId },
-        source_path: sourcePath,
-        target_path: targetPath,
-      });
-      return withDev(row.transfer ?? row, trace);
+      const plugin = officialPlugin("fleet.transfer");
+      const protocol = plugin?.peer_protocols?.find((value) => value.id === "fleet.transfer.v2");
+      if (!plugin || !protocol) throw new Error("fleet.transfer.v2 is unavailable in the pinned official plugin catalog");
+      const sessionId = crypto.randomUUID();
+      const config = await createFileTransferPeerConfig({
+        source: { kind: "device", device_id: sourceId, path: sourcePath },
+        target: { kind: "device", device_id: targetId, directory: targetPath, name: target.name },
+      }, { plugin, sessionId });
+      if (hooks.signal?.aborted || hooks.isCancelled?.()) throw new Error("tool call cancelled");
+      const row = await callRpc(trace, "/v1/plugin-peer-session/create", {
+        session_id: config.session_id,
+        protocol_id: config.protocol.id,
+        initiator: config.initiator,
+        source: config.source,
+        target: config.target,
+      }, { signal: hooks.signal });
+      const session = row.session ?? row;
+      return withDev({ ...session, transfer_id: session.session_id || sessionId }, trace);
     }
 
     if (name === "get_file_transfer") {
       const transferId = trimId(args.transfer_id);
       if (!transferId) throw new Error("transfer_id required");
-      if (fileTransfer?.status) return fileTransfer.status(transferId);
-      const row = await callRpc(trace, "/v1/transfer/status", { transfer_id: transferId });
-      return withDev(row.transfer ?? row, trace);
+      if (fileTransfer?.status) return fileTransfer.status(transferId, { signal: hooks.signal });
+      const row = await callRpc(trace, "/v1/plugin-peer-session/status", { session_id: transferId }, { signal: hooks.signal });
+      const session = row.session ?? row;
+      return withDev({ ...session, transfer_id: session.session_id || transferId }, trace);
     }
 
     if (name === "cancel_file_transfer") {
       const transferId = trimId(args.transfer_id);
       if (!transferId) throw new Error("transfer_id required");
-      if (fileTransfer?.cancel) return fileTransfer.cancel(transferId);
-      const row = await callRpc(trace, "/v1/transfer/event", { transfer_id: transferId, event: "cancel" });
-      return withDev(row.transfer ?? row, trace);
+      if (fileTransfer?.cancel) return fileTransfer.cancel(transferId, { signal: hooks.signal });
+      const current = await callRpc(trace, "/v1/plugin-peer-session/status", { session_id: transferId }, { signal: hooks.signal });
+      const roundId = (current.session ?? current)?.round?.id;
+      if (!roundId) throw new Error("plugin peer session has no current round");
+      const row = await callRpc(trace, "/v1/plugin-peer-session/event", {
+        session_id: transferId,
+        round_id: roundId,
+        event: "cancel",
+      }, { signal: hooks.signal });
+      const session = row.session ?? row;
+      return withDev({ ...session, transfer_id: session.session_id || transferId }, trace);
     }
 
     if (["list_plugins", "install_plugin", "uninstall_plugin", "invoke_plugin", "configure_acp", "delegate_to_acp"].includes(name)) {
@@ -1180,7 +1236,7 @@ export function createOperator({
           timeout_seconds: args.timeout_seconds == null ? 900 : args.timeout_seconds,
         });
       }
-      const row = await callRpc(trace, "/v1/plugin", body);
+      const row = await callRpc(trace, "/v1/plugin", body, { signal: hooks.signal });
       return withDev(withDevice(row, deviceId), trace);
     }
 

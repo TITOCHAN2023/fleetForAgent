@@ -2,7 +2,7 @@
   "schema_version": 1,
   "source": {
     "repository": "https://github.com/TITOCHAN2023/fleet-plugins",
-    "commit": "9702ace16455bf790b2c5b26378b13faa2c77233"
+    "commit": "e20560c97dfa1d439614e7e95ca63758c0b3325d"
   },
   "plugins": [
     {
@@ -10,7 +10,7 @@
       "id": "fleet.acp",
       "order": 10,
       "name": "Fleet ACP",
-      "version": "0.1.0",
+      "version": "0.1.2",
       "publisher": "Fleet Official",
       "license": "MIT",
       "repository": "https://github.com/TITOCHAN2023/fleet-acp-plugin",
@@ -25,14 +25,27 @@
         "zh": "把任务交给远端机器上已经安装的任意 Agent Client Protocol v1 编码 Agent。"
       },
       "installable": true,
+      "runtime": "task",
       "actions": [
         "configure",
         "profiles",
         "delegate"
       ],
       "approval_actions": [],
+      "action_specs": {
+        "configure": {
+          "runtime": "task"
+        },
+        "profiles": {
+          "runtime": "task"
+        },
+        "delegate": {
+          "runtime": "task"
+        }
+      },
+      "peer_protocols": [],
       "source_file": "plugins/fleet-acp.md",
-      "body": "# Fleet ACP\n\nFleet ACP is an MIT-licensed bridge between Fleet and Agent Client Protocol v1.\nThe remote machine owns its ACP-compatible agent, account, model, and API keys.\nThe plugin only initializes that local process, creates a session, delegates a\nprompt, and returns streamed output through the existing Fleet task ticket.\n\nInstall it by asking an AI connected to Fleet Tool to call `install_plugin` with\n`plugin_id` set to `fleet.acp`. Software changes always require confirmation on\nthe target device.",
+      "body": "# Fleet ACP\n\nFleet ACP is an MIT-licensed bridge between Fleet and Agent Client Protocol v1.\nThe remote machine owns its ACP-compatible agent, account, model, and API keys.\nThe plugin only initializes that local process, creates a session, delegates a\nprompt, and returns streamed output through the existing Fleet task ticket.\nVersion 0.1.2 keeps this one-shot task ABI while enforcing hard request,\nconfiguration, ACP frame, update-count, and collected-output limits. It drains\nstderr without unbounded retention and propagates shutdown into nested ACP\nprocess groups before forcefully cleaning up the delegated process tree.\n\nInstall it by asking an AI connected to Fleet Tool to call `install_plugin` with\n`plugin_id` set to `fleet.acp`. Software changes always require confirmation on\nthe target device.",
       "platforms": [
         {
           "os": "darwin",
@@ -65,7 +78,7 @@
       "id": "fleet.transfer",
       "order": 20,
       "name": "Fleet Transfer",
-      "version": "0.1.0",
+      "version": "0.2.1",
       "publisher": "Fleet Official",
       "license": "MIT",
       "repository": "https://github.com/TITOCHAN2023/fleet-transfer-plugin",
@@ -80,6 +93,7 @@
         "zh": "在两个已确认的 Fleet 端点之间直接传输单个文件，文件字节不经过 Hub 中转。"
       },
       "installable": true,
+      "runtime": "peer",
       "actions": [
         "prepare_source",
         "prepare_target"
@@ -88,8 +102,30 @@
         "prepare_source",
         "prepare_target"
       ],
+      "action_specs": {
+        "prepare_source": {
+          "runtime": "peer",
+          "role": "source"
+        },
+        "prepare_target": {
+          "runtime": "peer",
+          "role": "target"
+        }
+      },
+      "peer_protocols": [
+        {
+          "id": "fleet.transfer.v2",
+          "abi": "fleet.plugin.peer.v1",
+          "transport": "direct_ordered",
+          "approval": "both_once",
+          "roles": {
+            "source": "prepare_source",
+            "target": "prepare_target"
+          }
+        }
+      ],
       "source_file": "plugins/fleet-transfer.md",
-      "body": "# Fleet Transfer\n\n`fleet.transfer` is the official file-system adapter for Fleet's direct-only\nfile transfer path. Fleet core authenticates the account and endpoints, signs a\nshort-lived WebRTC ticket, and requires explicit approval on both devices. The\nplugin then reads or writes one regular file through a bounded streaming ABI.\n\nFile bytes use a dedicated reliable WebRTC DataChannel. The Worker and Durable\nObject carry only authentication, signaling, status, and short-lived tickets.\nIf a direct connection cannot be established, the transfer fails instead of\nfalling back to WebSocket, Worker, R2, TURN, or another relay.\n\nVersion 0.1.0 supports one file, SHA-256 integrity, verified resume checkpoints,\nsafe cancellation, and no-clobber publication. Directories, symbolic links,\nspecial files, overwrite, and cross-account transfer are deliberately excluded.",
+      "body": "# Fleet Transfer\n\n`fleet.transfer` is the official file-system adapter for Fleet's direct-only\nfile transfer path. Fleet core authenticates the account and endpoints, signs a\nshort-lived direct-session ticket, and requires one-time approval on both\ndevices. The plugin then reads or writes one regular file through the generic\nbounded `fleet.plugin.peer.v1` ABI.\n\nFile bytes use a dedicated reliable WebRTC DataChannel. The Worker and Durable\nObject carry only authentication, signaling, status, and short-lived tickets.\nIf a direct connection cannot be established, the transfer fails instead of\nfalling back to WebSocket, Worker, R2, TURN, or another relay.\n\nVersion 0.2.1 keeps manifest, chunk/hash, resume, acknowledgement, and commit\ninside the two plugin endpoints' private `fleet.transfer.v2` DATA protocol.\nFleet core preserves opaque DATA frame boundaries and does not understand file\ntransfer. One file, SHA-256 integrity, verified resume checkpoints, safe\ncancellation, no-clobber publication, and idempotent completion retry backed by\na transfer-bound local receipt are supported. Directories, symbolic links,\nspecial files, overwrite, and cross-account transfer remain excluded.",
       "platforms": [
         {
           "os": "darwin",

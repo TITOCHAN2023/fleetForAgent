@@ -12,16 +12,14 @@ sequenceDiagram
   participant Agent as Fleet Agent
   participant Plugin as Official plugin
   AI->>Tool: install_plugin(fleet.acp)
-  Tool->>Hub: plugin id
-  Hub->>Agent: official manifest + corr
+  Tool->>Agent: RTC 优先；可判定失败时经 Hub/WSS
   Agent->>Agent: local approval + platform + SHA-256
   Agent-->>Hub: plugin_accepted / plugin_result
   AI->>Tool: get_plugin_task(corr)
   Tool->>Hub: poll corr
   Hub-->>Tool: waiting_approval / running / done
   AI->>Tool: delegate_to_acp(...)
-  Tool->>Hub: invoke fleet.acp
-  Hub->>Agent: plugin action
+  Tool->>Agent: RTC 优先 invoke；可判定失败时经 Hub/WSS
   Agent->>Plugin: JSON request on stdin
   Plugin-->>Agent: JSON result on stdout
 ```
@@ -55,11 +53,13 @@ Fleet Agent 每次动作启动一次插件进程。请求从 stdin 读取：
 
 失败时返回 `{"ok":false,"error":"..."}`。stdout 上限 2 MiB，动作最长 1 小时。
 
-大文件不能套进这条 JSON 协议。官方 `fleet.transfer` 使用单独的 streaming ABI：首行控制数据和进度事件仍是有界 JSON，文件字节走进程 pipe，并由 Agent 直接接到专用 WebRTC DataChannel。这个 ABI 只对经过安装和二进制复验的 `fleet.transfer` 开放，不是任意插件获得网络或文件权限的后门。完整约束见 [Fleet 官方文件传输](./FILE_TRANSFER.md)。
+上面是通用 **task runtime**。本地 Tool 当前已 RTC 优先，并在能力缺失、建连失败或同步 `send()` 失败等可判定情形回退 Hub/WSS；远程 Worker MCP 直接走 WSS。它尚未解决“DataChannel 接受请求但 Agent 未确认接收”的灰区，所以不能宣称完整自动回退或 exactly-once。下一阶段必须补齐 Agent 接收 ACK、跨传输稳定的同一 `corr`、claim 与有界幂等结果重放。需要两个端点持续交换数据的插件使用通用 **peer runtime**：Worker 只协调同账户身份、批准、SDP 与短期票据，Agent/Tool 只建立可靠有序的直连通道并透明转发有界 FLPP DATA；业务协议全部由插件拥有。
+
+peer runtime 不是 `fleet.transfer` 的私有后门，也不是任意插件自动获得网络或文件权限。插件必须在固定官方目录中精确声明 action、role、protocol、ABI 和批准策略，设备还会复验安装版本与二进制 SHA-256。Core 中不得出现官方插件 ID、文件帧或 ACP method 分支。完整架构契约见 [Fleet 通用插件运行时](./PLUGIN_RUNTIME.md)，文件插件约束见 [Fleet 官方文件传输](./FILE_TRANSFER.md)。
 
 ## Fleet ACP
 
-官方 `fleet.acp` 插件是通用 ACP v1 客户端桥，不包含模型或厂商 Agent。它在远端机器启动用户配置的 ACP stdio 命令，并依次调用：
+官方 `fleet.acp v0.1.2` 插件是通用 ACP v1 客户端桥，不包含模型或厂商 Agent。它当前继续使用 task runtime，在远端机器启动用户配置的 ACP stdio 命令，并依次调用：
 
 1. `initialize`（protocolVersion 1）
 2. `session/new`（绝对 `cwd`）
@@ -67,3 +67,5 @@ Fleet Agent 每次动作启动一次插件进程。请求从 stdin 读取：
 4. 收集 `session/update`
 
 嵌套 `session/request_permission` 默认拒绝。只有调用者明确传入 `permission_mode=allow_once` 时，才会选择 Agent 提供的 `allow_once` 选项；永不选择 `allow_always`。
+
+`configure_acp` 和 `delegate_to_acp` 只是 Fleet Tool 的兼容入口，最终映射到通用插件 install/invoke/status 操作。Fleet Core 不解释 profile、prompt、ACP JSON-RPC method、流式 update 或 permission；这些数据只属于 `fleet-acp-plugin`。

@@ -3,11 +3,12 @@ import { test } from "node:test";
 import {
   MCP_STREAMABLE_PROTOCOL_VERSION,
   McpRpcSession,
+  McpStdioCallManager,
   isInitializeMessage,
   isMcpActivity,
   negotiateStreamableProtocolVersion,
 } from "./mcp-protocol.mjs";
-import { wrapTransportRpc } from "./operator.mjs";
+import { createOperator, wrapTransportRpc } from "./operator.mjs";
 
 const initialize = {
   jsonrpc: "2.0",
@@ -109,4 +110,126 @@ test("only meaningful MCP methods refresh idle activity", () => {
   assert.equal(isMcpActivity("tools/list"), true);
   assert.equal(isMcpActivity("ping"), false);
   assert.equal(isMcpActivity("notifications/initialized"), false);
+});
+
+test("stdio EOF closes the start gate, cancels and joins calls before manager shutdown", async () => {
+  const order = [];
+  const writes = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const calls = new McpStdioCallManager({
+    shutdown: async () => { order.push("shutdown"); },
+  });
+  const running = calls.run(async (signal) => {
+    order.push("call-started");
+    await gate;
+    assert.equal(signal.aborted, true);
+    order.push("call-finished");
+    return "late result";
+  });
+  const reply = running.then((value) => calls.write(() => writes.push(value)));
+
+  const closing = calls.close();
+  assert.equal(calls.closing, true);
+  assert.equal(calls.controller.signal.aborted, true);
+  assert.throws(() => calls.run(async () => {}), (error) => error?.code === "mcp_closing");
+  assert.deepEqual(order, ["call-started"]);
+  release();
+
+  await closing;
+  await reply;
+  assert.deepEqual(order, ["call-started", "call-finished", "shutdown"]);
+  assert.deepEqual(writes, [], "a completed background call wrote after stdin EOF");
+  assert.equal(calls.pendingCalls.size, 0);
+});
+
+test("a call registered before EOF cannot fall outside the shutdown snapshot", async () => {
+  const order = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const calls = new McpStdioCallManager({
+    shutdown: async () => { order.push("shutdown"); },
+  });
+  const running = calls.run(async () => {
+    await gate;
+    order.push("late-start-section");
+  });
+  const closing = calls.close();
+  release();
+  await Promise.all([running, closing]);
+  assert.deepEqual(order, ["late-start-section", "shutdown"]);
+});
+
+test("stdio EOF has a hard join boundary even when an RPC ignores cancellation forever", async () => {
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  let rpcSignal;
+  let shutdowns = 0;
+  const operator = createOperator({
+    rpc: async (_path, _body, options) => {
+      rpcSignal = options?.signal;
+      markStarted();
+      return new Promise(() => {});
+    },
+  });
+  const calls = new McpStdioCallManager({
+    joinTimeoutMs: 0,
+    shutdown: async () => { shutdowns += 1; },
+  });
+  void calls.run((signal) => operator.callTool("list_computers", {}, { signal })).catch(() => {});
+  await started;
+
+  await calls.close();
+
+  assert.equal(rpcSignal.aborted, true);
+  assert.equal(shutdowns, 1);
+  assert.equal(calls.closing, true);
+});
+
+test("stdio request cancellation aborts only the matching Hub RPC", async () => {
+  const signals = new Map();
+  const started = [];
+  const operator = createOperator({
+    rpc: async (_path, body, options) => {
+      const key = body.device_id;
+      signals.set(key, options.signal);
+      started.push(key);
+      return new Promise((resolve, reject) => {
+        options.signal.addEventListener(
+          "abort",
+          () => reject(options.signal.reason || new Error("cancelled")),
+          { once: true },
+        );
+      });
+    },
+  });
+  const calls = new McpStdioCallManager();
+  const first = calls.run(
+    (signal) => operator.callTool("get_computer", { device_id: "device-a" }, { signal }),
+    { key: "request-a" },
+  );
+  const second = calls.run(
+    (signal) => operator.callTool("get_computer", { device_id: "device-b" }, { signal }),
+    { key: "request-b" },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(started.sort(), ["device-a", "device-b"]);
+  assert.equal(calls.cancel("request-a"), true);
+  await assert.rejects(() => first, (error) => error?.code === "mcp_cancelled");
+  assert.equal(signals.get("device-a").aborted, true);
+  assert.equal(signals.get("device-b").aborted, false);
+  assert.equal(calls.cancel("missing"), false);
+  calls.cancel("request-b");
+  await assert.rejects(() => second, (error) => error?.code === "mcp_cancelled");
+  await calls.close();
+});
+
+test("stdio EOF also has a hard boundary around a shutdown hook that never settles", async () => {
+  const calls = new McpStdioCallManager({
+    joinTimeoutMs: 0,
+    shutdownTimeoutMs: 0,
+    shutdown: async () => new Promise(() => {}),
+  });
+  await calls.close();
+  assert.equal(calls.closing, true);
 });

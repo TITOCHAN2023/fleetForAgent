@@ -9,8 +9,51 @@ async function loadPeerConnection() {
   return peerConnectionCtor;
 }
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function abortReason(signal) {
+  return signal?.reason instanceof Error ? signal.reason : new Error("RTC request cancelled");
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortReason(signal);
+}
+
+function abortable(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise((resolve, reject) => {
+    const done = (callback, value) => {
+      signal.removeEventListener("abort", onAbort);
+      callback(value);
+    };
+    const onAbort = () => done(reject, abortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve(promise).then(
+      (value) => done(resolve, value),
+      (error) => done(reject, error),
+    );
+  });
+}
+
+function delay(ms, signal) {
+  let timer;
+  const pending = new Promise((resolve) => { timer = setTimeout(resolve, ms); });
+  return abortable(pending, signal).finally(() => clearTimeout(timer));
+}
+
+function settleWithin(promise, timeoutMs = 1_000) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    Promise.resolve(promise).then(
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+    );
+  });
 }
 
 function fingerprint(sdp) {
@@ -109,31 +152,36 @@ class DirectSession {
     this.wake();
   }
 
-  async waitReady(timeoutMs = CONNECT_TIMEOUT_MS) {
+  async waitReady(timeoutMs = CONNECT_TIMEOUT_MS, signal) {
     if (this.open && this.directReady && !this.closed) return;
-    await this.waitFor(() => this.open && this.directReady && !this.closed, timeoutMs);
+    await this.waitFor(() => this.open && this.directReady && !this.closed, timeoutMs, signal);
   }
 
-  async waitFor(check, timeoutMs = REPLY_TIMEOUT_MS) {
+  async waitFor(check, timeoutMs = REPLY_TIMEOUT_MS, signal) {
+    throwIfAborted(signal);
     if (check()) return check();
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       await new Promise((resolve, reject) => {
+        let settled = false;
         const left = Math.max(1, deadline - Date.now());
-        const timer = setTimeout(
-          () => {
-            this.waiters.delete(onWake);
-            resolve();
-          },
-          Math.min(left, 250),
-        );
-        const onWake = (error) => {
+        const finish = (error) => {
+          if (settled) return;
+          settled = true;
           clearTimeout(timer);
           this.waiters.delete(onWake);
+          signal?.removeEventListener("abort", onAbort);
           if (error) reject(error);
           else resolve();
         };
+        const timer = setTimeout(() => finish(), Math.min(left, 250));
+        const onWake = (error) => {
+          finish(error);
+        };
+        const onAbort = () => finish(abortReason(signal));
         this.waiters.add(onWake);
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted) onAbort();
       });
       if (this.closed) throw new Error("RTC data channel closed");
       const found = check();
@@ -176,7 +224,7 @@ class DirectSession {
       /* already closed */
     }
     try {
-      await this.pc.close();
+      await settleWithin(this.pc.close());
     } catch {
       /* already closed */
     }
@@ -202,16 +250,17 @@ export function createRtcManager({
     return claimsPromise;
   }
 
-  async function doEstablish(deviceId) {
+  async function doEstablish(deviceId, signal) {
+    throwIfAborted(signal);
     const existing = sessions.get(deviceId);
     if (existing?.open && existing.directReady && !existing.closed) return existing;
     if ((retryAt.get(deviceId) || 0) > Date.now()) return null;
     let config;
     let session;
     try {
-      config = await hubPost("/v1/rtc/config", { device_id: deviceId });
+      config = await hubPost("/v1/rtc/config", { device_id: deviceId }, { signal });
     } catch (error) {
-      retryAt.set(deviceId, Date.now() + 60_000);
+      if (!signal?.aborted) retryAt.set(deviceId, Date.now() + 60_000);
       throw error;
     }
     if (!config?.available) {
@@ -222,33 +271,33 @@ export function createRtcManager({
     const iceServers = (Array.isArray(config.stun_urls) ? config.stun_urls : []).map((urls) => ({
       urls,
     }));
-    const RTCPeerConnection = await loadPeerConnection();
+    const RTCPeerConnection = await abortable(loadPeerConnection(), signal);
     const pc = new RTCPeerConnection({ iceServers });
     const dc = pc.createDataChannel("fleet-v1", { ordered: true });
     const sid = crypto.randomUUID();
     try {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
+      const offer = await abortable(pc.createOffer(), signal);
+      await abortable(pc.setLocalDescription(offer), signal);
       const offerSdp = pc.localDescription?.sdp || offer.sdp;
       if (!fingerprint(offerSdp)) throw new Error("RTC offer fingerprint missing");
       session = new DirectSession({ sid, deviceId, operatorId, pc, dc });
       const previous = sessions.get(deviceId);
       sessions.set(deviceId, session);
       if (previous) void previous.close();
-      await hubPost("/v1/rtc/offer", { device_id: deviceId, sid, offer: offerSdp });
+      await hubPost("/v1/rtc/offer", { device_id: deviceId, sid, offer: offerSdp }, { signal });
       const deadline = Date.now() + CONNECT_TIMEOUT_MS;
       let ready;
       while (Date.now() < deadline) {
-        ready = await hubPost("/v1/rtc/session", { device_id: deviceId, sid });
+        ready = await hubPost("/v1/rtc/session", { device_id: deviceId, sid }, { signal });
         if (ready?.status === "ready") break;
-        await delay(100);
+        await delay(100, signal);
       }
       if (ready?.status !== "ready") throw new Error("RTC signaling timeout");
-      const tokenClaims = await claims();
-      const ticket = await verifyFleetStatement({
+      const tokenClaims = await abortable(claims(), signal);
+      const ticket = await abortable(verifyFleetStatement({
         publicSpkiB64: tokenClaims.pub,
         ...ready.statement,
-      });
+      }), signal);
       const now = Date.now();
       if (
         !ticket ||
@@ -270,15 +319,17 @@ export function createRtcManager({
       ) {
         throw new Error("RTC session ticket rejected");
       }
-      await pc.setRemoteDescription({ type: "answer", sdp: ready.answer });
-      await session.waitReady();
+      await abortable(pc.setRemoteDescription({ type: "answer", sdp: ready.answer }), signal);
+      await session.waitReady(CONNECT_TIMEOUT_MS, signal);
       retryAt.delete(deviceId);
       return session;
     } catch (error) {
-      try {
-        await hubPost("/v1/rtc/cancel", { device_id: deviceId, sid });
-      } catch {
-        /* best effort */
+      if (!signal?.aborted) {
+        try {
+          await hubPost("/v1/rtc/cancel", { device_id: deviceId, sid });
+        } catch {
+          /* best effort */
+        }
       }
       try {
         dc.close();
@@ -286,28 +337,29 @@ export function createRtcManager({
         /* already closed */
       }
       try {
-        await pc.close();
+        await settleWithin(pc.close());
       } catch {
         /* already closed */
       }
       if (sessions.get(deviceId) === session) sessions.delete(deviceId);
-      retryAt.set(deviceId, Date.now() + 60_000);
+      if (!signal?.aborted) retryAt.set(deviceId, Date.now() + 60_000);
       throw error;
     }
   }
 
-  async function establish(rawDeviceId) {
+  async function establish(rawDeviceId, { signal } = {}) {
+    throwIfAborted(signal);
     const deviceId = String(rawDeviceId || "").trim();
     const current = sessions.get(deviceId);
     if (current?.open && current.directReady && !current.closed) return current;
     if ((retryAt.get(deviceId) || 0) > Date.now()) return null;
     const active = connecting.get(deviceId);
-    if (active) return active;
-    const pending = doEstablish(deviceId).finally(() => {
+    if (active) return abortable(active, signal);
+    const pending = doEstablish(deviceId, signal).finally(() => {
       if (connecting.get(deviceId) === pending) connecting.delete(deviceId);
     });
     connecting.set(deviceId, pending);
-    return pending;
+    return abortable(pending, signal);
   }
 
   function existing(deviceId) {
@@ -325,7 +377,8 @@ export function createRtcManager({
     }
   }
 
-  async function tryRpc(path, body = {}) {
+  async function tryRpc(path, body = {}, { signal } = {}) {
+    throwIfAborted(signal);
     const deviceId = String(body.device_id || "").trim();
     if (!deviceId || ["/v1/list_computers", "/v1/get_computer", "/v1/heartbeat"].includes(path)) {
       return { handled: false };
@@ -356,8 +409,9 @@ export function createRtcManager({
     }
     if (!session?.open || !session.directReady || session.closed) {
       try {
-        session = await establish(deviceId);
+        session = await establish(deviceId, { signal });
       } catch {
+        throwIfAborted(signal);
         return { handled: false };
       }
     }
@@ -406,9 +460,10 @@ export function createRtcManager({
         return { handled: false };
       }
       try {
-        const msg = await session.waitFor(() => session.rows.get(corr)?.screen);
+        const msg = await session.waitFor(() => session.rows.get(corr)?.screen, REPLY_TIMEOUT_MS, signal);
         return { handled: true, value: { status: "ok", screen: msg.body }, transport: "rtc" };
       } catch {
+        throwIfAborted(signal);
         return { handled: false };
       }
     }
@@ -421,9 +476,10 @@ export function createRtcManager({
         return { handled: false };
       }
       try {
-        const msg = await session.waitFor(() => session.rows.get(corr)?.desktop);
+        const msg = await session.waitFor(() => session.rows.get(corr)?.desktop, REPLY_TIMEOUT_MS, signal);
         return { handled: true, value: msg.body, transport: "rtc" };
       } catch (error) {
+        throwIfAborted(signal);
         const deadline = Date.now() + REPLY_TIMEOUT_MS;
         while (Date.now() < deadline) {
           try {
@@ -431,14 +487,15 @@ export function createRtcManager({
               device_id: deviceId,
               corr,
               type: "desktop",
-            });
+            }, { signal });
             if (fallback?.status === "done") {
               return { handled: true, value: fallback.body, transport: "ws" };
             }
           } catch {
+            throwIfAborted(signal);
             /* keep the original RTC failure if relay recovery also fails */
           }
-          await delay(100);
+          await delay(100, signal);
         }
         throw error;
       }
@@ -460,7 +517,14 @@ export function createRtcManager({
     return { handled: false };
   }
 
-  return { tryRpc, establish, sessions, connecting };
+  async function shutdown() {
+    const current = [...sessions.values()];
+    sessions.clear();
+    retryAt.clear();
+    await Promise.allSettled(current.map((session) => session.close()));
+  }
+
+  return { tryRpc, establish, shutdown, sessions, connecting };
 }
 
 export const _test = { DirectSession, fingerprint, envelope };

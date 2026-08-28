@@ -62,17 +62,17 @@ const (
 )
 
 type Pending struct {
-	Corr        string               `json:"corr"`
-	Command     string               `json:"command"`
-	Requested   int64                `json:"requestedAt"`
-	Kind        string               `json:"kind,omitempty"`
-	Fingerprint string               `json:"-"`
-	PaneID      string               `json:"-"`
-	Keys        string               `json:"-"`
-	Key         string               `json:"-"`
-	Plugin      *pluginRequest       `json:"-"`
-	File        *filePendingApproval `json:"-"`
-	Sink        EnvelopeSink         `json:"-"`
+	Corr        string                     `json:"corr"`
+	Command     string                     `json:"command"`
+	Requested   int64                      `json:"requestedAt"`
+	Kind        string                     `json:"kind,omitempty"`
+	Fingerprint string                     `json:"-"`
+	PaneID      string                     `json:"-"`
+	Keys        string                     `json:"-"`
+	Key         string                     `json:"-"`
+	Plugin      *pluginRequest             `json:"-"`
+	Peer        *pluginPeerPendingApproval `json:"-"`
+	Sink        EnvelopeSink               `json:"-"`
 }
 
 type Envelope struct {
@@ -159,7 +159,9 @@ type Agent struct {
 	paneSinks           map[string]EnvelopeSink
 	rtcSessions         map[string]*rtcAgentSession
 	rtcPending          map[string]*rtcPendingOffer
-	fileTransfers       map[string]*fileTransferSession
+	peerSessions        map[string]*pluginPeerSession
+	peerDeliveries      map[string]struct{}
+	peerDeliveryOrder   []string
 	hb                  time.Duration
 	restarting          bool
 	autoUpdate          bool
@@ -348,7 +350,7 @@ func (a *Agent) setEnabled(on bool) {
 }
 
 func (a *Agent) setPermit(p Permit) {
-	var fileSessions []*fileTransferSession
+	var peerSessions []*pluginPeerSession
 	a.mu.Lock()
 	if p == PermitOff || p == PermitAsk || p == PermitAllow {
 		a.permit = p
@@ -359,14 +361,14 @@ func (a *Agent) setPermit(p Permit) {
 		a.lastDigest = ""
 		a.log("info", "permit → "+string(p))
 		if p == PermitOff {
-			fileSessions = a.takeFileTransfersLocked()
+			peerSessions = a.takePluginPeersLocked()
 		}
 		a.save()
 	}
 	ws := a.ws
 	a.mu.Unlock()
-	if len(fileSessions) > 0 {
-		cancelFileTransfers(fileSessions, "permit_off")
+	if len(peerSessions) > 0 {
+		cancelPluginPeers(peerSessions)
 	}
 	a.pushUI()
 	if ws != nil {
@@ -395,12 +397,12 @@ func (a *Agent) disconnectLocked(reason string) {
 	}
 	a.pending = nil
 	sessions := a.takeRTCSessionsLocked()
-	fileSessions := a.takeFileTransfersLocked()
+	peerSessions := a.takePluginPeersLocked()
 	if len(sessions) > 0 {
 		go closeRTCSessions(sessions)
 	}
-	if len(fileSessions) > 0 {
-		go cancelFileTransfers(fileSessions, "CONTROL_DISCONNECTED")
+	if len(peerSessions) > 0 {
+		go cancelPluginPeers(peerSessions)
 	}
 	a.clearDesktopSessionLocked()
 	a.conn = "offline"
@@ -583,10 +585,7 @@ func deviceName() string {
 }
 
 func agentCaps() []string {
-	caps := []string{"shell", "pane", "plugins", "rtc_v1"}
-	if fileTransferPluginReady() {
-		caps = append(caps, "file_transfer_v1")
-	}
+	caps := []string{"shell", "pane", "plugins", "rtc_v1", "plugin_peer_session_v1"}
 	if runtime.GOOS != "windows" {
 		caps = append(caps, "live_shell")
 	}
@@ -599,7 +598,7 @@ func agentCaps() []string {
 func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 	defer func() {
 		var sessions []*rtcAgentSession
-		var fileSessions []*fileTransferSession
+		var peerSessions []*pluginPeerSession
 		a.mu.Lock()
 		if a.ws == c {
 			a.ws = nil
@@ -609,13 +608,13 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 			a.paneSinks = nil
 			a.pending = nil
 			sessions = a.takeRTCSessionsLocked()
-			fileSessions = a.takeFileTransfersLocked()
+			peerSessions = a.takePluginPeersLocked()
 			a.clearDesktopSessionLocked()
 			a.log("warn", "socket closed")
 		}
 		a.mu.Unlock()
 		closeRTCSessions(sessions)
-		cancelFileTransfers(fileSessions, "CONTROL_DISCONNECTED")
+		abortPluginPeers(peerSessions)
 		a.pushUI()
 	}()
 	for {
@@ -647,14 +646,14 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 		case "rtc_cancel":
 			sid, _ := env.Body["sid"].(string)
 			a.cancelRTCSession(sid)
-		case "file_prepare":
-			a.handleFilePrepare(ctx, wsEnvelopeSink(c), env)
-		case "file_signal":
-			a.handleFileSignal(ctx, wsEnvelopeSink(c), env)
-		case "file_ticket":
-			a.handleFileTicket(env)
-		case "file_update":
-			a.handleFileUpdate(env)
+		case "peer_session_prepare", "peer_session_round_prepare", "peer_session_signal", "peer_session_ticket":
+			a.handlePluginPeerDelivery(ctx, wsEnvelopeSink(c), env)
+		case "peer_session_update":
+			if _, delivered := env.Body["delivery_id"]; delivered {
+				a.handlePluginPeerDelivery(ctx, wsEnvelopeSink(c), env)
+			} else {
+				a.handlePluginPeerUpdate(env)
+			}
 		default:
 			a.dispatchEnvelope(ctx, wsEnvelopeSink(c), env)
 		}
@@ -694,7 +693,7 @@ func (a *Agent) handleAuthRevoked(c *websocket.Conn, env Envelope) bool {
 	a.pending = nil
 	a.paneSinks = nil
 	sessions := a.takeRTCSessionsLocked()
-	fileSessions := a.takeFileTransfersLocked()
+	peerSessions := a.takePluginPeersLocked()
 	a.clearDesktopSessionLocked()
 	a.conn = "auth_failed"
 	a.err = "Hub token was reset or revoked. Paste the new token to reconnect."
@@ -709,7 +708,7 @@ func (a *Agent) handleAuthRevoked(c *websocket.Conn, env Envelope) bool {
 	a.save()
 	a.mu.Unlock()
 	closeRTCSessions(sessions)
-	cancelFileTransfers(fileSessions, "TOKEN_RESET")
+	cancelPluginPeers(peerSessions)
 	if c != nil {
 		_ = c.Close(websocket.StatusPolicyViolation, "token reset")
 	}
@@ -998,8 +997,8 @@ func (a *Agent) approve() {
 	if p.Kind == pendingKindPlugin && p.Plugin != nil {
 		_ = p.Sink(context.Background(), pluginAcceptedEnv(p.Corr, "running"))
 		go a.executePlugin(context.Background(), p.Sink, p.Corr, *p.Plugin)
-	} else if p.File != nil {
-		go p.File.approve()
+	} else if p.Peer != nil {
+		go p.Peer.approve()
 	} else if p.Kind == pendingKindType {
 		go a.deliverType(context.Background(), p.Sink, p.Corr, p.PaneID, p.Keys, p.Key, p.Fingerprint)
 	} else {
@@ -1028,8 +1027,8 @@ func (a *Agent) deny() {
 	if p == nil || p.Sink == nil {
 		return
 	}
-	if p.File != nil {
-		p.File.deny(errors.New("fleet: denied at the machine"))
+	if p.Peer != nil {
+		p.Peer.deny(errors.New("fleet: denied at the machine"))
 	} else if p.Kind == pendingKindPlugin {
 		_ = p.Sink(context.Background(), pluginResultEnv(p.Corr, nil, errors.New("fleet: denied at the machine")))
 	} else if p.Kind == pendingKindType {
@@ -1237,7 +1236,7 @@ func main() {
 		time.Sleep(400 * time.Millisecond)
 		return
 	}
-	go settingsNet.serve(ln, mux)
+	go settingsNet.serve(ln, secureSettingsHandler(mux))
 	if runtime.GOOS == "linux" {
 		log.Println("linux tray; hub from FLEET_URL + FLEET_TOKEN or", configPath())
 	} else {

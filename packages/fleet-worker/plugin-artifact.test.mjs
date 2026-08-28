@@ -12,7 +12,9 @@ import {
 } from "./src/plugin-artifact.mjs";
 
 const ID = "fleet.acp";
-const VERSION = "0.1.0";
+const ACP = officialPlugin(ID);
+assert.ok(ACP, "fleet.acp must exist in the pinned catalog");
+const VERSION = ACP.version;
 const PATH = `/v1/plugin-artifact/${ID}/${VERSION}/linux/arm64`;
 
 test("artifact route resolves one exact installable version and platform", () => {
@@ -22,9 +24,9 @@ test("artifact route resolves one exact installable version and platform", () =>
   assert.equal(resolved?.plugin.version, VERSION);
   assert.equal(resolved?.artifact.os, "linux");
   assert.equal(resolved?.artifact.arch, "arm64");
-  assert.match(
-    resolved?.artifact.url ?? "",
-    /^https:\/\/github\.com\/TITOCHAN2023\/fleet-acp-plugin\/releases\/download\/v0\.1\.0\//,
+  assert.equal(
+    resolved?.artifact.url,
+    ACP.artifacts.find((artifact) => artifact.os === "linux" && artifact.arch === "arm64")?.url,
   );
   assert.equal(parsePluginArtifactPath(`${PATH}/extra`), null);
   assert.equal(
@@ -42,13 +44,12 @@ test("artifact route resolves one exact installable version and platform", () =>
 });
 
 test("temporary install manifest adds same-origin mirrors without mutating registry data", () => {
-  const plugin = officialPlugin(ID);
-  const manifest = withPluginArtifactMirrors(plugin, "https://fleet.ginfo.cc");
+  const manifest = withPluginArtifactMirrors(ACP, "https://fleet.ginfo.cc");
   assert.equal(
     manifest.artifacts[0].mirror_url,
     `https://fleet.ginfo.cc/v1/plugin-artifact/${ID}/${VERSION}/darwin/amd64`,
   );
-  assert.equal(plugin.artifacts[0].mirror_url, undefined);
+  assert.equal(ACP.artifacts[0].mirror_url, undefined);
 });
 
 test("artifact proxy fetches only the pinned URL, streams, and allowlists response headers", async () => {

@@ -1,9 +1,6 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -15,50 +12,6 @@ import (
 	"testing"
 	"time"
 )
-
-const pluginStreamHelperEnv = "GO_WANT_FLEET_PLUGIN_STREAM_HELPER"
-
-func TestMain(m *testing.M) {
-	if os.Getenv(pluginStreamHelperEnv) == "1" {
-		os.Exit(runPluginStreamHelper())
-	}
-	os.Exit(m.Run())
-}
-
-func runPluginStreamHelper() int {
-	r := bufio.NewReader(os.Stdin)
-	line, err := r.ReadBytes('\n')
-	if err != nil {
-		return 2
-	}
-	var req struct {
-		Action string `json:"action"`
-	}
-	if json.Unmarshal(line, &req) != nil {
-		return 2
-	}
-	switch req.Action {
-	case "prepare_source":
-		_, _ = fmt.Fprintln(os.Stdout, `{"ok":true,"size":3145728}`)
-		chunk := bytes.Repeat([]byte("x"), 32<<10)
-		for i := 0; i < 96; i++ {
-			if _, err := os.Stdout.Write(chunk); err != nil {
-				return 3
-			}
-		}
-	case "prepare_target":
-		n, err := io.Copy(io.Discard, r)
-		if err != nil {
-			return 3
-		}
-		_, _ = fmt.Fprintf(os.Stdout, "{\"committed\":%d}\n{\"done\":true}\n", n)
-	case "hang":
-		time.Sleep(10 * time.Minute)
-	default:
-		return 4
-	}
-	return 0
-}
 
 func testManifest() pluginManifest {
 	name := "fleet-acp-plugin"
@@ -151,10 +104,37 @@ func TestCleanPluginID(t *testing.T) {
 	if got, err := cleanPluginID("fleet.acp"); err != nil || got != "fleet.acp" {
 		t.Fatalf("%q %v", got, err)
 	}
-	for _, bad := range []string{"", "../fleet", "Fleet ACP", "/tmp/x"} {
+	for _, bad := range []string{"", ".", "..", ".fleet", "_fleet", "-fleet", "../fleet", "Fleet ACP", "/tmp/x"} {
 		if _, err := cleanPluginID(bad); err == nil {
 			t.Fatalf("accepted %q", bad)
 		}
+	}
+}
+
+func TestPluginDirStaysBelowPluginRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("FLEET_HOME", home)
+	got, err := pluginDir("fleet.acp")
+	want := filepath.Join(home, "plugins", "fleet.acp")
+	if err != nil || got != want {
+		t.Fatalf("pluginDir(fleet.acp) = %q, %v; want %q", got, err, want)
+	}
+	for _, bad := range []string{".", "..", ".hidden", "-leading", "_leading", "a/b", `a\b`, "/tmp/x"} {
+		if _, err := pluginDir(bad); err == nil {
+			t.Fatalf("pluginDir accepted %q", bad)
+		}
+	}
+	root := filepath.Join(home, "plugins")
+	for _, bad := range []string{"", ".", "..", "../escape", "a/b", `a\b`} {
+		if _, err := containedPluginDir(root, bad); err == nil {
+			t.Fatalf("containment boundary accepted %q", bad)
+		}
+	}
+}
+
+func TestCleanPluginActionRejectsPrototypeKey(t *testing.T) {
+	if _, err := cleanPluginAction("__proto__"); err == nil {
+		t.Fatal("prototype-polluting action key accepted")
 	}
 }
 
@@ -182,25 +162,6 @@ func TestPluginConsentExplainsACPAction(t *testing.T) {
 	}
 }
 
-func TestPluginConsentExplainsTransferEndpoints(t *testing.T) {
-	source := pluginConsentText(pluginRequest{
-		Operation: "invoke", PluginID: "fleet.transfer", Action: "prepare_source",
-		Input: json.RawMessage(`{"path":"/Users/me/report.pdf","peer":"office-mini"}`),
-	})
-	if !strings.Contains(source, "/Users/me/report.pdf") || !strings.Contains(source, "office-mini") {
-		t.Fatalf("opaque source consent: %q", source)
-	}
-	target := pluginConsentText(pluginRequest{
-		Operation: "invoke", PluginID: "fleet.transfer", Action: "prepare_target",
-		Input: json.RawMessage(`{"directory":"/srv/incoming","name":"report.pdf","size":1048576,"peer":"macbook","overwrite":false}`),
-	})
-	for _, want := range []string{filepath.Join("/srv/incoming", "report.pdf"), "1048576", "macbook", "will not overwrite"} {
-		if !strings.Contains(target, want) {
-			t.Fatalf("target consent missing %q: %q", want, target)
-		}
-	}
-}
-
 func TestSoftwareChangesAlwaysAsk(t *testing.T) {
 	a := &Agent{enabled: true, permit: PermitAllow}
 	if v, _ := a.inputVerdict(); v != permitProceed {
@@ -219,7 +180,6 @@ func installPluginTestBinary(t *testing.T) installedPlugin {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("FLEET_HOME", home)
-	t.Setenv(pluginStreamHelperEnv, "1")
 	dir, err := pluginDir("fleet.transfer")
 	if err != nil {
 		t.Fatal(err)
@@ -319,6 +279,107 @@ func TestInstalledPluginEnforcesActionAllowlistAndApproval(t *testing.T) {
 	}
 }
 
+func TestPeerRuntimeEnvelopeSeparatesTaskAndPeerActions(t *testing.T) {
+	meta := installPluginTestBinary(t)
+	meta.ActionSpecs = map[string]pluginActionSpec{
+		"prepare_source": {Runtime: pluginRuntimePeer, Role: "source"},
+		"prepare_target": {Runtime: pluginRuntimePeer, Role: "target"},
+		"hang":           {Runtime: pluginRuntimeTask},
+	}
+	meta.PeerProtocols = []pluginPeerProtocol{{
+		ID: "example.bytes.v1", ABI: pluginPeerABI, Transport: "direct_ordered", Approval: "both_once",
+		Roles: map[string]string{"source": "prepare_source", "target": "prepare_target"},
+	}}
+	dir, err := pluginDir(meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writePluginMeta(dir, meta); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := installedPluginForPeerAction(meta.ID, "example.bytes.v1", "source", "prepare_source"); err == nil || !strings.Contains(err.Error(), "task runtime") {
+		t.Fatalf("task envelope exposed a peer capability: %v", err)
+	}
+	meta.Runtime = pluginRuntimePeer
+	if err := writePluginMeta(dir, meta); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := installedPluginForTaskAction(meta.ID, "prepare_source"); err == nil || !strings.Contains(err.Error(), "peer runtime") {
+		t.Fatalf("peer action reached task runtime: %v", err)
+	}
+	if _, _, err := installedPluginForTaskAction(meta.ID, "hang"); err != nil {
+		t.Fatalf("task action rejected: %v", err)
+	}
+	if _, _, err := installedPluginForPeerAction(meta.ID, "example.bytes.v1", "source", "prepare_source"); err != nil {
+		t.Fatalf("peer action rejected by peer runtime: %v", err)
+	}
+}
+
+func TestNormalizePluginPeerDeclarationsMatchesRegistryClosure(t *testing.T) {
+	actions := []string{"source", "target", "inspect"}
+	specs := map[string]pluginActionSpec{
+		"source":  {Runtime: pluginRuntimePeer, Role: "source"},
+		"target":  {Runtime: pluginRuntimePeer, Role: "target"},
+		"inspect": {Runtime: pluginRuntimeTask},
+	}
+	protocols := []pluginPeerProtocol{{
+		ID: "example.bytes.v1", ABI: pluginPeerABI, Transport: "direct_ordered", Approval: "both_once",
+		Roles: map[string]string{"source": "source", "target": "target"},
+	}}
+	if _, _, _, err := normalizePluginPeerDeclarations(pluginRuntimePeer, actions, specs, protocols); err != nil {
+		t.Fatalf("valid hybrid peer envelope rejected: %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		runtime   string
+		actions   []string
+		specs     map[string]pluginActionSpec
+		protocols []pluginPeerProtocol
+		want      string
+	}{
+		{
+			name: "task envelope with peer capability", runtime: pluginRuntimeTask,
+			actions: actions, specs: specs, protocols: protocols, want: "task runtime",
+		},
+		{
+			name: "partial action specs", runtime: pluginRuntimePeer, actions: actions,
+			specs: map[string]pluginActionSpec{
+				"source": {Runtime: pluginRuntimePeer, Role: "source"},
+				"target": {Runtime: pluginRuntimePeer, Role: "target"},
+			},
+			protocols: protocols, want: "every declared action",
+		},
+		{
+			name: "peer envelope without protocol", runtime: pluginRuntimePeer,
+			actions: []string{"inspect"}, specs: nil, protocols: nil, want: "requires peer_protocols",
+		},
+		{
+			name: "missing action runtime", runtime: pluginRuntimePeer, actions: []string{"source", "target"},
+			specs: map[string]pluginActionSpec{
+				"source": {Role: "source"},
+				"target": {Runtime: pluginRuntimePeer, Role: "target"},
+			},
+			protocols: protocols, want: "requires a runtime",
+		},
+		{
+			name: "non-registry protocol id", runtime: pluginRuntimePeer, actions: actions, specs: specs,
+			protocols: []pluginPeerProtocol{{
+				ID: "Example/bytes", ABI: pluginPeerABI, Transport: "direct_ordered", Approval: "both_once",
+				Roles: map[string]string{"source": "source", "target": "target"},
+			}}, want: "invalid peer protocol",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, _, err := normalizePluginPeerDeclarations(tt.runtime, tt.actions, tt.specs, tt.protocols)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error=%v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestInstalledPluginRejectsTamperedEntrypoint(t *testing.T) {
 	meta := installPluginTestBinary(t)
 	dir, err := pluginDir(meta.ID)
@@ -337,86 +398,5 @@ func TestInstalledPluginRejectsTamperedEntrypoint(t *testing.T) {
 	}
 	if _, _, err := installedPluginForAction(meta.ID, "prepare_source"); err == nil || !strings.Contains(err.Error(), "SHA-256 mismatch") {
 		t.Fatalf("tampered plugin error=%v", err)
-	}
-}
-
-func TestPluginStreamDoesNotCapFileBytes(t *testing.T) {
-	installPluginTestBinary(t)
-	stream, err := startPluginStream(context.Background(), "fleet.transfer", "prepare_source", json.RawMessage(`{"path":"/tmp/a"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := stream.Stdin().Close(); err != nil {
-		t.Fatal(err)
-	}
-	var manifest struct {
-		OK   bool  `json:"ok"`
-		Size int64 `json:"size"`
-	}
-	if err := stream.ReadJSONLine(&manifest); err != nil {
-		t.Fatal(err)
-	}
-	n, err := io.Copy(io.Discard, stream.Stdout())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := stream.Wait(); err != nil {
-		t.Fatal(err)
-	}
-	if !manifest.OK || manifest.Size != 3<<20 || n != 3<<20 {
-		t.Fatalf("manifest=%+v bytes=%d", manifest, n)
-	}
-}
-
-func TestPluginStreamTargetKeepsPayloadOutOfJSON(t *testing.T) {
-	installPluginTestBinary(t)
-	stream, err := startPluginStream(context.Background(), "fleet.transfer", "prepare_target", json.RawMessage(`{"path":"/tmp/b"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload := bytes.Repeat([]byte("payload"), 20000)
-	if _, err := stream.Stdin().Write(payload); err != nil {
-		t.Fatal(err)
-	}
-	if err := stream.Stdin().Close(); err != nil {
-		t.Fatal(err)
-	}
-	var committed struct {
-		Committed int64 `json:"committed"`
-	}
-	if err := stream.ReadJSONLine(&committed); err != nil {
-		t.Fatal(err)
-	}
-	var done struct {
-		Done bool `json:"done"`
-	}
-	if err := stream.ReadJSONLine(&done); err != nil {
-		t.Fatal(err)
-	}
-	if err := stream.Wait(); err != nil {
-		t.Fatal(err)
-	}
-	if committed.Committed != int64(len(payload)) || !done.Done {
-		t.Fatalf("committed=%d done=%v", committed.Committed, done.Done)
-	}
-}
-
-func TestPluginStreamBoundsControlAndHonorsCancellation(t *testing.T) {
-	installPluginTestBinary(t)
-	tooLarge, err := json.Marshal(map[string]string{"value": strings.Repeat("x", pluginStreamLine)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := startPluginStream(context.Background(), "fleet.transfer", "prepare_source", tooLarge); err == nil {
-		t.Fatal("oversized control line accepted")
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	stream, err := startPluginStream(ctx, "fleet.transfer", "hang", json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cancel()
-	if err := stream.Wait(); err == nil || !strings.Contains(err.Error(), "canceled") {
-		t.Fatalf("cancel error=%v", err)
 	}
 }

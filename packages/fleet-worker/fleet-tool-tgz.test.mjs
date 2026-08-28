@@ -38,8 +38,13 @@ function assertNpmTarball(tgz) {
     "package/package.json",
     "package/index.mjs",
     "package/operator.mjs",
-    "package/file-transfer.mjs",
+    "package/mcp-protocol.mjs",
+    "package/file-transfer-cli.mjs",
+    "package/file-transfer-contract.mjs",
     "package/file-transfer-rtc.mjs",
+    "package/plugin-peer-api.mjs",
+    "package/plugin-peer-plugin.mjs",
+    "package/plugin-peer-runtime.mjs",
     "package/official-plugins.generated.mjs",
     "package/tokenv1.mjs",
   ]) {
@@ -62,7 +67,7 @@ test("packer output matches the committed tarball contents", () => {
   try {
     packFleetTool({ outFile: fresh });
     assertNpmTarball(fresh);
-    for (const name of ["package/package.json", "package/index.mjs", "package/operator.mjs", "package/file-transfer.mjs", "package/file-transfer-rtc.mjs", "package/official-plugins.generated.mjs", "package/tokenv1.mjs"]) {
+    for (const name of ["package/package.json", "package/index.mjs", "package/operator.mjs", "package/mcp-protocol.mjs", "package/file-transfer-cli.mjs", "package/file-transfer-contract.mjs", "package/file-transfer-rtc.mjs", "package/plugin-peer-api.mjs", "package/plugin-peer-plugin.mjs", "package/plugin-peer-runtime.mjs", "package/official-plugins.generated.mjs", "package/tokenv1.mjs"]) {
       assert.equal(tarballFile(publicTgz, name), tarballFile(fresh, name), name);
     }
   } finally {
@@ -159,6 +164,10 @@ test("wrangler keeps SPA fallback, explicit DO migrations, and token vars secret
   assert.match(wrangler, /new_sqlite_classes = \["DeviceDO", "FleetDO"\]/);
   assert.match(wrangler, /new_sqlite_classes = \["McpDO"\]/);
   assert.match(wrangler, /tag = "v3"\s+new_sqlite_classes = \["TransferDO"\]/);
+  assert.match(
+    wrangler,
+    /tag = "v4"\s+new_sqlite_classes = \["PeerSessionDO"\]\s+deleted_classes = \["TransferDO"\]/,
+  );
   const varsBlock = wrangler.slice(wrangler.indexOf("\n[vars]"));
   const varsEnd = varsBlock.search(/\n\[\[|\n\[assets\]/);
   const vars = varsBlock.slice(0, varsEnd === -1 ? undefined : varsEnd);

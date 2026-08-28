@@ -68,14 +68,15 @@ import {
   withPluginArtifactMirrors,
 } from "./plugin-artifact.mjs";
 import {
-  readTransferControlText,
-  TRANSFER_CONTROL_MAX_BYTES,
-  TransferDO,
-  TransferError,
-  signTransferTicket,
-  type TransferEndpoint,
-  type TransferRecord,
-} from "./transfer";
+  buildPeerSessionTicketStatement,
+  PEER_SESSION_CONTROL_MAX_BYTES,
+  PEER_SESSION_PROTOCOL,
+  PEER_SESSION_TTL_MS,
+  PeerSessionDO,
+  PeerSessionError,
+  readPeerSessionControlText,
+  type PeerSessionRecord,
+} from "./peer-session";
 import {
   audMismatch,
   bearerToken,
@@ -100,7 +101,7 @@ export interface Env {
   DEVICE: DurableObjectNamespace;
   FLEET: DurableObjectNamespace;
   MCP: DurableObjectNamespace;
-  TRANSFER: DurableObjectNamespace;
+  PEER_SESSION: DurableObjectNamespace;
   HUB_TOKEN?: string;
   ADMIN_EMAILS?: string;
   HUB_ORIGIN?: string;
@@ -116,7 +117,14 @@ export interface Env {
   RTC_STUN_URLS?: string;
 }
 
-export { TransferDO };
+export { PeerSessionDO };
+
+export const PEER_SESSION_ACCOUNT_LIMIT = 32;
+
+type PeerSessionReservation = {
+  sessionId: string;
+  expiresAt: number;
+};
 
 function updateAdvert(env: Env) {
   return advertisedUpdate({
@@ -131,6 +139,8 @@ const HUB_WAIT_MAX_MS = 30_000;
 const HUB_WAIT_POLL_MS = 25;
 const RTC_SIGNAL_TTL_MS = 60_000;
 const RTC_SDP_MAX_BYTES = 128 << 10;
+export const DEVICE_WS_TEXT_MAX_BYTES = 16 << 20;
+type PeerDeliveryState = { id: string; at: number; state: "pending" | "acked" };
 
 function clampHubWaitMs(value: unknown): number {
   const n = Number(value);
@@ -174,6 +184,19 @@ type Envelope = {
   t: number;
   body: Record<string, unknown>;
 };
+
+function isDeviceEnvelope(value: unknown): value is Envelope {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return (
+    row.v === 1 &&
+    typeof row.type === "string" &&
+    row.type.length > 0 &&
+    Boolean(row.body) &&
+    typeof row.body === "object" &&
+    !Array.isArray(row.body)
+  );
+}
 
 type DeviceRow = {
   id: string;
@@ -351,6 +374,9 @@ export default {
       const resolved = await resolveActor(request, env, fleet);
       if (!resolved.actor) return deny(resolved);
       const actor = resolved.actor;
+      if (!actor.kid || actor.super) {
+        return json({ error: "device WebSocket requires a per-account Hub token" }, 401);
+      }
       const deviceId = deviceIdFrom(request);
       if (!deviceId) return json({ error: "x-device-id required" }, 400);
       const rowRes = await fleet.fetch(
@@ -387,8 +413,8 @@ async function handleAuthorizedOperatorRequest(
     return serveOfficialPluginArtifact(request);
   }
 
-  if (url.pathname.startsWith("/v1/transfer/")) {
-    return handleTransferOperatorRequest(request, env, fleet, actor);
+  if (url.pathname.startsWith("/v1/plugin-peer-session/")) {
+    return handlePeerSessionOperatorRequest(request, env, fleet, actor);
   }
 
   if (url.pathname === "/v1/rtc/config" && request.method === "POST") {
@@ -585,6 +611,18 @@ async function handleAuthorizedOperatorRequest(
     if (!["list", "install", "uninstall", "invoke"].includes(operation)) {
       return json({ error: "invalid plugin operation" }, 400);
     }
+    if (operation === "invoke") {
+      const action = String(body.action ?? "").trim();
+      if (!plugin || !isTaskPluginAction(plugin, action)) {
+        return json(
+          {
+            error: "plugin action requires the peer runtime",
+            code: "WRONG_PLUGIN_RUNTIME",
+          },
+          409,
+        );
+      }
+    }
     const stub = env.DEVICE.get(env.DEVICE.idFromName(deviceId));
     return stub.fetch(
       new Request("https://device/plugin", {
@@ -700,7 +738,7 @@ async function handleAuthorizedOperatorRequest(
   return null;
 }
 
-async function handleTransferOperatorRequest(
+async function handlePeerSessionOperatorRequest(
   request: Request,
   env: Env,
   fleet: DurableObjectStub,
@@ -708,21 +746,21 @@ async function handleTransferOperatorRequest(
 ): Promise<Response> {
   if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
   if (!actor.kid || actor.super) {
-    return json({ error: "file transfer requires a per-account Hub token" }, 401);
+    return json({ error: "peer sessions require a per-account Hub token" }, 401);
   }
   const operatorId = fingerprintFromHeaders(request.headers);
   if (!operatorId) return json({ error: "X-Fleet-Operator required" }, 400);
   const url = new URL(request.url);
-  const action = url.pathname.slice("/v1/transfer/".length);
-  if (!["create", "authorize", "signal", "signal/poll", "status", "event"].includes(action)) {
+  const action = url.pathname.slice("/v1/plugin-peer-session/".length);
+  if (!["create", "authorize", "signal", "inbox/poll", "status", "event"].includes(action)) {
     return json({ error: "not found" }, 404);
   }
   let rawBody: string;
   try {
-    rawBody = await readTransferControlText(request, TRANSFER_CONTROL_MAX_BYTES);
+    rawBody = await readPeerSessionControlText(request, PEER_SESSION_CONTROL_MAX_BYTES);
   } catch (error) {
-    if (error instanceof TransferError) return json({ error: error.message }, error.status);
-    return json({ error: "invalid transfer control request" }, 400);
+    if (error instanceof PeerSessionError) return json({ error: error.message }, error.status);
+    return json({ error: "invalid peer session control request" }, 400);
   }
   const body = (() => {
     try {
@@ -735,15 +773,32 @@ async function handleTransferOperatorRequest(
     return json({ error: "JSON object required" }, 400);
   }
 
-  let transferId: string;
+  let sessionId: string;
   let payload: Record<string, unknown>;
   if (action === "create") {
-    transferId = crypto.randomUUID();
-    let source = transferEndpointFrom(body.source);
-    let target = transferEndpointFrom(body.target);
-    if (!source || !target) return json({ error: "valid source and target required" }, 400);
-    const prepared: TransferEndpoint[] = [];
-    for (const endpoint of [source, target]) {
+    sessionId = String(body.session_id ?? "");
+    if (!validPeerSessionId(sessionId)) {
+      return json({ error: "valid session_id required" }, 400);
+    }
+    const protocolId = String(body.protocol_id ?? "").trim();
+    const initiator = String(body.initiator ?? "");
+    if (initiator !== "source" && initiator !== "target") {
+      return json({ error: "initiator must be source or target" }, 400);
+    }
+    const sourceSpec = peerEndpointSpec(body.source, protocolId, "source");
+    const targetSpec = peerEndpointSpec(body.target, protocolId, "target");
+    if (!sourceSpec || !targetSpec || !samePeerProtocol(sourceSpec.protocol, targetSpec.protocol)) {
+      return json(
+        {
+          error: "official plugins do not share the selected peer protocol",
+          code: "UNSUPPORTED_PLUGIN",
+        },
+        409,
+      );
+    }
+    const prepared: Array<Record<string, unknown>> = [];
+    for (const spec of [sourceSpec, targetSpec]) {
+      const endpoint = spec.endpoint;
       if (endpoint.kind === "tool" && endpoint.id !== operatorId) {
         return json({ error: "tool endpoint must match X-Fleet-Operator" }, 403);
       }
@@ -752,17 +807,18 @@ async function handleTransferOperatorRequest(
         continue;
       }
       const catalog = await fleet.fetch(
-        new Request(`https://fleet/device?id=${encodeURIComponent(endpoint.id)}`),
+        new Request(`https://fleet/device?id=${encodeURIComponent(String(endpoint.id))}`),
       );
       const row = (await catalog.json()) as DeviceRow;
       if (!row.id || row.userId !== actor.id) return json({ error: "not found" }, 404);
       if (!row.online) return json({ error: "device offline", code: "OFFLINE" }, 409);
-      if (!normalizeCaps(row.caps).includes("file_transfer_v1")) {
+      const advertised = normalizeCaps(row.caps);
+      if (!advertised.includes(PEER_SESSION_PROTOCOL)) {
         return json(
           {
             error: "unsupported",
             code: "UNSUPPORTED_CAP",
-            missing: "file_transfer_v1",
+            missing: PEER_SESSION_PROTOCOL,
             agentVer: row.agentVer ?? "",
             os: row.os ?? "",
           },
@@ -771,32 +827,36 @@ async function handleTransferOperatorRequest(
       }
       prepared.push({ ...endpoint, name: row.name || endpoint.id });
     }
-    [source, target] = prepared as [TransferEndpoint, TransferEndpoint];
     payload = {
-      ...body,
-      source,
-      target,
-      transfer_id: transferId,
+      session_id: sessionId,
       user_id: actor.id,
       kid: actor.kid,
-      coordinator_id: operatorId,
+      operator_id: operatorId,
+      coordinator: { kind: "tool", id: operatorId, name: "Fleet Tool" },
+      protocol: sourceSpec.protocol,
+      initiator,
+      source: prepared[0],
+      target: prepared[1],
     };
   } else {
-    transferId = String(body.transfer_id ?? "");
-    if (!validTransferId(transferId)) return json({ error: "valid transfer_id required" }, 400);
-    const { transfer_id: _transferId, ...rest } = body;
+    sessionId = String(body.session_id ?? "");
+    if (!validPeerSessionId(sessionId)) return json({ error: "valid session_id required" }, 400);
+    const { session_id: _sessionId, ...rest } = body;
     payload = rest;
   }
+
+  const reservation = await reservePeerSession(fleet, actor.id, sessionId);
+  if (!reservation.ok) return withCors(reservation);
 
   const headers = new Headers({
     "content-type": "application/json",
     "x-fleet-user": actor.id,
     "x-fleet-kid": actor.kid,
-    "x-transfer-caller-kind": "tool",
-    "x-transfer-caller-id": operatorId,
+    "x-peer-caller-kind": "tool",
+    "x-peer-caller-id": operatorId,
   });
-  const response = await env.TRANSFER.get(env.TRANSFER.idFromName(transferId)).fetch(
-    new Request(`https://transfer/${action}`, {
+  const response = await env.PEER_SESSION.get(env.PEER_SESSION.idFromName(sessionId)).fetch(
+    new Request(`https://peer-session/${action}`, {
       method: "POST",
       headers,
       body: JSON.stringify(payload),
@@ -900,9 +960,19 @@ export class FleetDO implements DurableObject {
       const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
       return this.rtcTicket(body);
     }
-    if (url.pathname === "/transfer-ticket" && request.method === "POST") {
-      const body = (await request.json().catch(() => ({}))) as { record?: TransferRecord };
-      return this.transferTicket(body.record);
+    if (url.pathname === "/peer-session-ticket" && request.method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as { record?: PeerSessionRecord };
+      return this.peerSessionTicket(body.record);
+    }
+    if (url.pathname === "/peer-session-reserve" && request.method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as {
+        user_id?: unknown;
+        session_id?: unknown;
+      };
+      return this.reservePeerSession(
+        String(body.user_id ?? ""),
+        String(body.session_id ?? ""),
+      );
     }
     if (url.pathname === "/token-meta") {
       const userId = url.searchParams.get("user") ?? "";
@@ -967,6 +1037,75 @@ export class FleetDO implements DurableObject {
       caps: normalizeCaps(r.caps),
       permit: normalizePermit(r.permit),
     }));
+  }
+
+  private async reservePeerSession(
+    userId: string,
+    sessionId: string,
+  ): Promise<Response> {
+    if (
+      !/^[a-zA-Z0-9._:@-]{1,128}$/.test(userId) ||
+      !validPeerSessionId(sessionId)
+    ) {
+      return json({ error: "invalid peer session reservation" }, 400);
+    }
+
+    const now = Date.now();
+    const key = `peer-session-reservations:${userId}`;
+    const result = await this.ctx.storage.transaction(async (txn) => {
+      const stored = await txn.get<PeerSessionReservation[]>(key);
+      const current = (Array.isArray(stored) ? stored : []).filter(
+        (item): item is PeerSessionReservation =>
+          Boolean(
+            item &&
+              validPeerSessionId(item.sessionId) &&
+              Number.isFinite(item.expiresAt) &&
+              item.expiresAt > now,
+          ),
+      );
+      const known = current.find((item) => item.sessionId === sessionId);
+      if (known) {
+        if (!Array.isArray(stored) || current.length !== stored.length) {
+          await txn.put(key, current);
+        }
+        return { ok: true as const, replay: true, expiresAt: known.expiresAt };
+      }
+      if (current.length >= PEER_SESSION_ACCOUNT_LIMIT) {
+        if (!Array.isArray(stored) || current.length !== stored.length) {
+          await txn.put(key, current);
+        }
+        return {
+          ok: false as const,
+          retryAfterMs: Math.max(1, Math.min(...current.map((item) => item.expiresAt)) - now),
+        };
+      }
+      const expiresAt = now + PEER_SESSION_TTL_MS;
+      await txn.put(key, [...current, { sessionId, expiresAt }]);
+      return { ok: true as const, replay: false, expiresAt };
+    });
+
+    if (!result.ok) {
+      const response = json(
+        {
+          error: "too many peer sessions",
+          code: "PEER_SESSION_LIMIT",
+          limit: PEER_SESSION_ACCOUNT_LIMIT,
+          retry_after_ms: result.retryAfterMs,
+        },
+        429,
+      );
+      response.headers.set(
+        "retry-after",
+        String(Math.max(1, Math.ceil(result.retryAfterMs / 1000))),
+      );
+      return response;
+    }
+    return json({
+      ok: true,
+      session_id: sessionId,
+      replay: result.replay,
+      expires_at: result.expiresAt,
+    });
   }
 
   async resolve(request: Request): Promise<Actor | null> {
@@ -1121,8 +1260,8 @@ export class FleetDO implements DurableObject {
     return json({ statement: await signFleetStatement({ privatePkcs8B64: user.priv, statement }) });
   }
 
-  async transferTicket(record?: TransferRecord): Promise<Response> {
-    if (!record?.userId || !record.kid) return json({ error: "invalid transfer ticket" }, 400);
+  async peerSessionTicket(record?: PeerSessionRecord): Promise<Response> {
+    if (!record?.userId || !record.kid) return json({ error: "invalid peer session ticket" }, 400);
     const user = await this.userById(record.userId);
     const banned = rejectIfBanned(user);
     if (banned) return json({ error: banned.error }, banned.status);
@@ -1135,10 +1274,15 @@ export class FleetDO implements DurableObject {
       return json({ error: "Hub token was reset or revoked" }, 401);
     }
     try {
-      const statement = await signTransferTicket({ privatePkcs8B64: user.priv, record });
-      return json({ statement });
+      const statement = buildPeerSessionTicketStatement(record);
+      return json({
+        statement: await signFleetStatement({
+          privatePkcs8B64: user.priv,
+          statement: { ...statement },
+        }),
+      });
     } catch {
-      return json({ error: "invalid transfer ticket" }, 400);
+      return json({ error: "invalid peer session ticket" }, 400);
     }
   }
 
@@ -1348,7 +1492,7 @@ export class McpDO implements DurableObject {
       const kid = request.headers.get("x-fleet-kid") ?? "";
       const sessionId = url.searchParams.get("sessionId") ?? "";
       if (!id || !kid || !sessionId) return json({ error: "unauthorized" }, 401);
-      this.actor = { id };
+      this.actor = { id, kid };
       this.kid = kid;
       this.fingerprint = crypto.randomUUID();
       this.session = new McpSseSession({ rpc: (path, body) => this.rpc(path, body) });
@@ -1377,7 +1521,7 @@ export class McpDO implements DurableObject {
         return jsonRpcError(null, -32600, "initialize request required", 400);
       }
       const now = Date.now();
-      this.actor = { id: actorId };
+      this.actor = { id: actorId, kid };
       this.kid = kid;
       this.fingerprint = crypto.randomUUID();
       this.httpStored = {
@@ -1453,7 +1597,7 @@ export class McpDO implements DurableObject {
       return false;
     }
     this.httpStored = stored;
-    this.actor = { id: stored.actorId };
+    this.actor = { id: stored.actorId, kid: stored.kid };
     this.kid = stored.kid;
     this.fingerprint = stored.fingerprint;
     this.httpSession ??= this.newHttpSession(stored);
@@ -1546,19 +1690,27 @@ export class DeviceDO implements DurableObject {
       return json({ ok: true });
     }
 
-    if (url.pathname === "/file-transfer-push" && request.method === "POST") {
+    if (url.pathname === "/plugin-peer-session-push" && request.method === "POST") {
       const sockets = this.ctx.getWebSockets();
       if (sockets.length === 0) return json({ error: "offline" }, 409);
       const ws = sockets[0]!;
       const att = (ws.deserializeAttachment() ?? {}) as WsAttachment;
-      if (!normalizeCaps(att.caps).includes("file_transfer_v1")) {
+      if (!normalizeCaps(att.caps).includes(PEER_SESSION_PROTOCOL)) {
         return json({ error: "unsupported", code: "UNSUPPORTED_CAP" }, 409);
       }
       const push = (await request.json().catch(() => ({}))) as Record<string, unknown>;
       const type = String(push.type ?? "");
       const body = push.body;
-      if (!["file_prepare", "file_signal", "file_ticket", "file_update"].includes(type)) {
-        return json({ error: "invalid file transfer push" }, 400);
+      if (
+        ![
+          "peer_session_prepare",
+          "peer_session_round_prepare",
+          "peer_session_signal",
+          "peer_session_ticket",
+          "peer_session_update",
+        ].includes(type)
+      ) {
+        return json({ error: "invalid peer session push" }, 400);
       }
       if (
         String(push.user_id ?? "") !== att.userId ||
@@ -1568,30 +1720,54 @@ export class DeviceDO implements DurableObject {
         typeof body !== "object" ||
         Array.isArray(body)
       ) {
-        return json({ error: "file transfer owner changed" }, 401);
+        return json({ error: "peer session owner changed" }, 401);
       }
-      const encoded = JSON.stringify(body);
+      const deliveryId = String(push.delivery_id ?? "");
+      if (!/^ps:[a-zA-Z0-9:._@-]{1,384}$/.test(deliveryId)) {
+        return json({ error: "invalid peer session delivery" }, 400);
+      }
+      const encoded = JSON.stringify({
+        delivery_id: deliveryId,
+        ...(body as Record<string, unknown>),
+      });
       if (new TextEncoder().encode(encoded).byteLength > RTC_SDP_MAX_BYTES + 8192) {
-        return json({ error: "file transfer control frame too large" }, 413);
+        return json({ error: "peer session control frame too large" }, 413);
       }
-      ws.send(JSON.stringify(envelope(type, body as Record<string, unknown>)));
-      return json({ ok: true });
+      const deliveryState = await this.ctx.storage.transaction(async (txn) => {
+        const key = "peer-delivery-ids";
+        const now = Date.now();
+        const current = ((await txn.get<PeerDeliveryState[]>(key)) ?? []).filter(
+          (item) => item.at + PEER_SESSION_TTL_MS > now,
+        );
+        const known = current.find((item) => item.id === deliveryId);
+        if (known?.state === "acked") return "acked" as const;
+        if (known) return "pending" as const;
+        if (current.length >= 4096) return "full" as const;
+        await txn.put(key, [...current, { id: deliveryId, at: now, state: "pending" }]);
+        return "fresh" as const;
+      });
+      if (deliveryState === "acked") return json({ ok: true, acknowledged: true });
+      if (deliveryState === "full")
+        return json({ error: "peer delivery dedupe backpressure" }, 409);
+      ws.send(JSON.stringify(envelope(type, JSON.parse(encoded) as Record<string, unknown>)));
+      return json({ ok: true, replay: deliveryState === "pending" });
     }
 
     if (request.headers.get("Upgrade") === "websocket") {
       const id = deviceIdFrom(request) ?? "unknown";
       const userId = request.headers.get("x-fleet-user") ?? undefined;
       const kid = request.headers.get("x-fleet-kid") ?? undefined;
-      if (userId && kid) {
-        const validated = await this.fleet().fetch(
-          new Request("https://fleet/validate-mcp", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ id: userId, kid }),
-          }),
-        );
-        if (!validated.ok) return json({ error: "Hub token was reset or revoked" }, 401);
+      if (!userId || !kid) {
+        return json({ error: "device WebSocket requires a per-account Hub token" }, 401);
       }
+      const validated = await this.fleet().fetch(
+        new Request("https://fleet/validate-mcp", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id: userId, kid }),
+        }),
+      );
+      if (!validated.ok) return json({ error: "Hub token was reset or revoked" }, 401);
       const claimed = await this.mark(id, {
         name: request.headers.get("x-device-name") ?? id,
         os: request.headers.get("x-device-os") ?? "linux",
@@ -1860,14 +2036,34 @@ export class DeviceDO implements DurableObject {
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
     if (typeof message !== "string") return;
-    let parsed: Envelope;
+    if (message.length > DEVICE_WS_TEXT_MAX_BYTES) {
+      ws.close(1009, "frame too large");
+      return;
+    }
+    const messageBytes = new TextEncoder().encode(message).byteLength;
+    if (messageBytes > DEVICE_WS_TEXT_MAX_BYTES) {
+      ws.close(1009, "frame too large");
+      return;
+    }
+    let value: unknown;
     try {
-      parsed = JSON.parse(message) as Envelope;
+      value = JSON.parse(message);
     } catch {
       return;
     }
-    if (parsed.v !== 1) {
+    if (!isDeviceEnvelope(value)) {
       ws.close(1003, "bad proto");
+      return;
+    }
+    const parsed = value;
+    if (
+      (parsed.type === "peer_session_ack" ||
+        parsed.type === "peer_session_authorized" ||
+        parsed.type === "peer_session_signal" ||
+        parsed.type === "peer_session_event") &&
+      messageBytes > PEER_SESSION_CONTROL_MAX_BYTES
+    ) {
+      ws.close(1009, "peer control frame too large");
       return;
     }
     const att = (ws.deserializeAttachment() ?? {}) as WsAttachment;
@@ -1912,12 +2108,17 @@ export class DeviceDO implements DurableObject {
       return;
     }
 
+    if (parsed.type === "peer_session_ack") {
+      await this.handlePeerSessionAck(att, parsed);
+      return;
+    }
+
     if (
-      parsed.type === "file_prepared" ||
-      parsed.type === "file_signal" ||
-      parsed.type === "file_event"
+      parsed.type === "peer_session_authorized" ||
+      parsed.type === "peer_session_signal" ||
+      parsed.type === "peer_session_event"
     ) {
-      await this.handleFileTransferMessage(ws, att, parsed);
+      await this.handlePeerSessionMessage(ws, att, parsed);
       return;
     }
 
@@ -2086,72 +2287,135 @@ export class DeviceDO implements DurableObject {
     return this.env.FLEET.get(this.env.FLEET.idFromName("fleet"));
   }
 
-  private async handleFileTransferMessage(ws: WebSocket, att: WsAttachment, parsed: Envelope) {
-    const transferId = String(parsed.body?.transfer_id ?? "");
+  private async handlePeerSessionMessage(ws: WebSocket, att: WsAttachment, parsed: Envelope) {
+    const sessionId = String(parsed.body?.session_id ?? "");
     if (
-      !validTransferId(transferId) ||
+      !validPeerSessionId(sessionId) ||
       !att.userId ||
       !att.kid ||
       !att.deviceId ||
-      !normalizeCaps(att.caps).includes("file_transfer_v1")
+      !normalizeCaps(att.caps).includes(PEER_SESSION_PROTOCOL)
     ) {
       ws.send(
         JSON.stringify(
-          envelope("file_update", {
-            transfer_id: transferId,
+          envelope("peer_session_update", {
+            session_id: sessionId,
             ok: false,
             status: 400,
-            error: "invalid file transfer request",
+            error: "invalid peer session request",
           }),
         ),
       );
       return;
     }
     const action =
-      parsed.type === "file_prepared"
+      parsed.type === "peer_session_authorized"
         ? "authorize"
-        : parsed.type === "file_signal"
+        : parsed.type === "peer_session_signal"
           ? "signal"
           : "event";
-    const { transfer_id: _transferId, ...payload } = parsed.body;
-    const response = await this.env.TRANSFER.get(this.env.TRANSFER.idFromName(transferId)).fetch(
-      new Request(`https://transfer/${action}`, {
+    const reservation = await reservePeerSession(
+      this.fleet(),
+      att.userId,
+      sessionId,
+    );
+    if (!reservation.ok) {
+      const value = (await reservation.json().catch(() => ({}))) as Record<string, unknown>;
+      ws.send(
+        JSON.stringify(
+          envelope("peer_session_update", {
+            session_id: sessionId,
+            ok: false,
+            status: reservation.status,
+            error: String(value.error ?? "peer session reservation failed"),
+            ...value,
+          }),
+        ),
+      );
+      return;
+    }
+    const { session_id: _sessionId, ...payload } = parsed.body;
+    const response = await this.env.PEER_SESSION.get(
+      this.env.PEER_SESSION.idFromName(sessionId),
+    ).fetch(
+      new Request(`https://peer-session/${action}`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           "x-fleet-user": att.userId,
           "x-fleet-kid": att.kid,
-          "x-transfer-caller-kind": "device",
-          "x-transfer-caller-id": att.deviceId,
+          "x-peer-caller-kind": "device",
+          "x-peer-caller-id": att.deviceId,
         },
         body: JSON.stringify(payload),
       }),
     );
     const value = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-    const callerMessages = Array.isArray(value.caller_messages) ? value.caller_messages : [];
-    for (const message of callerMessages) {
-      if (!message || typeof message !== "object" || Array.isArray(message)) continue;
-      const item = message as Record<string, unknown>;
-      const type = String(item.type ?? "");
-      if (type !== "file_ticket" || !item.body || typeof item.body !== "object") continue;
-      ws.send(JSON.stringify(envelope(type, item.body as Record<string, unknown>)));
-    }
-    const { caller_messages: _callerMessages, ...publicValue } = value;
-    const transfer =
-      publicValue.transfer && typeof publicValue.transfer === "object"
-        ? (publicValue.transfer as Record<string, unknown>)
+    const session =
+      value.session && typeof value.session === "object"
+        ? (value.session as Record<string, unknown>)
         : null;
     ws.send(
       JSON.stringify(
-        envelope("file_update", {
-          transfer_id: transferId,
+        envelope("peer_session_update", {
+          session_id: sessionId,
           ok: response.ok,
           status: response.status,
-          ...(typeof transfer?.phase === "string" ? { phase: transfer.phase } : {}),
-          ...publicValue,
+          ...(typeof session?.phase === "string" ? { phase: session.phase } : {}),
+          ...value,
         }),
       ),
     );
+  }
+
+  private async handlePeerSessionAck(att: WsAttachment, parsed: Envelope) {
+    const sessionId = String(parsed.body?.session_id ?? "");
+    const deliveryId = String(parsed.body?.delivery_id ?? "");
+    if (
+      !validPeerSessionId(sessionId) ||
+      !/^ps:[a-zA-Z0-9:._@-]{1,384}$/.test(deliveryId) ||
+      !att.userId ||
+      !att.kid ||
+      !att.deviceId ||
+      !normalizeCaps(att.caps).includes(PEER_SESSION_PROTOCOL)
+    ) {
+      return;
+    }
+    const reservation = await reservePeerSession(
+      this.fleet(),
+      att.userId,
+      sessionId,
+    );
+    if (!reservation.ok) return;
+    const response = await this.env.PEER_SESSION.get(
+      this.env.PEER_SESSION.idFromName(sessionId),
+    ).fetch(
+      new Request("https://peer-session/delivery/ack", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-fleet-user": att.userId,
+          "x-fleet-kid": att.kid,
+          "x-peer-caller-kind": "device",
+          "x-peer-caller-id": att.deviceId,
+        },
+        body: JSON.stringify({ delivery_id: deliveryId }),
+      }),
+    );
+    if (!response.ok) return;
+    await this.ctx.storage.transaction(async (txn) => {
+      const key = "peer-delivery-ids";
+      const now = Date.now();
+      const current = ((await txn.get<PeerDeliveryState[]>(key)) ?? []).filter(
+        (item) => item.at + PEER_SESSION_TTL_MS > now,
+      );
+      const known = current.find((item) => item.id === deliveryId);
+      if (known) {
+        known.state = "acked";
+        known.at = now;
+        await txn.put(key, current);
+      }
+    });
   }
 
   private noteBeat() {
@@ -2552,24 +2816,139 @@ async function owns(fleet: DurableObjectStub, actor: Actor, deviceId: string): P
   return Boolean(row.id && row.userId === actor.id);
 }
 
-function transferEndpointFrom(value: unknown): TransferEndpoint | null {
+function reservePeerSession(
+  fleet: DurableObjectStub,
+  userId: string,
+  sessionId: string,
+): Promise<Response> {
+  return fleet.fetch(
+    new Request("https://fleet/peer-session-reserve", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ user_id: userId, session_id: sessionId }),
+    }),
+  );
+}
+
+type PeerProtocolSnapshot = {
+  id: string;
+  abi: "fleet.plugin.peer.v1";
+  transport: "direct_ordered";
+  approval: "both_once";
+};
+
+function peerEndpointSpec(
+  value: unknown,
+  protocolId: string,
+  side: "source" | "target",
+): { endpoint: Record<string, unknown>; protocol: PeerProtocolSnapshot } | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const endpoint = value as Record<string, unknown>;
+  const allowed = new Set(["kind", "id", "plugin_id", "plugin_version", "action", "role", "input"]);
+  if (Object.keys(endpoint).some((key) => !allowed.has(key))) return null;
   const kind = String(endpoint.kind ?? "");
   const id = String(endpoint.id ?? "");
   if ((kind !== "tool" && kind !== "device") || !/^[a-zA-Z0-9._:@-]{1,128}$/.test(id)) {
     return null;
   }
-  return { kind, id };
+  const pluginId = String(endpoint.plugin_id ?? "").trim();
+  const pluginVersion = String(endpoint.plugin_version ?? "").trim();
+  const action = String(endpoint.action ?? "").trim();
+  const role = String(endpoint.role ?? "").trim();
+  if (role !== side) return null;
+  const plugin = officialPlugin(pluginId) as
+    | (NonNullable<ReturnType<typeof officialPlugin>> & {
+        runtime?: unknown;
+        action_specs?: unknown;
+        peer_protocols?: unknown;
+      })
+    | null;
+  if (!plugin || plugin.version !== pluginVersion || plugin.runtime !== "peer") return null;
+  const actionSpecs = plugin.action_specs;
+  if (!actionSpecs || typeof actionSpecs !== "object" || Array.isArray(actionSpecs)) return null;
+  const actionSpec = (actionSpecs as Record<string, unknown>)[action];
+  if (!actionSpec || typeof actionSpec !== "object" || Array.isArray(actionSpec)) return null;
+  const actionRow = actionSpec as Record<string, unknown>;
+  if (actionRow.runtime !== "peer" || actionRow.role !== role) return null;
+  if (!Array.isArray(plugin.peer_protocols)) return null;
+  const peerProtocol = (plugin.peer_protocols as unknown[]).find((candidate: unknown) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+    const row = candidate as Record<string, unknown>;
+    const roles = row.roles;
+    return (
+      row.id === protocolId &&
+      row.abi === "fleet.plugin.peer.v1" &&
+      row.transport === "direct_ordered" &&
+      row.approval === "both_once" &&
+      roles !== null &&
+      typeof roles === "object" &&
+      !Array.isArray(roles) &&
+      (roles as Record<string, unknown>)[role] === action
+    );
+  }) as Record<string, unknown> | undefined;
+  if (!peerProtocol) return null;
+  return {
+    endpoint: {
+      kind,
+      id,
+      plugin_id: pluginId,
+      plugin_version: pluginVersion,
+      action,
+      role,
+      input: endpoint.input ?? null,
+    },
+    protocol: {
+      id: protocolId,
+      abi: "fleet.plugin.peer.v1",
+      transport: "direct_ordered",
+      approval: "both_once",
+    },
+  };
 }
 
-function validTransferId(value: string): boolean {
+export function isTaskPluginAction(
+  plugin: {
+    runtime?: unknown;
+    actions?: unknown;
+    action_specs?: unknown;
+  },
+  action: string,
+): boolean {
+  if (!action || !Array.isArray(plugin.actions) || !plugin.actions.includes(action)) return false;
+  const specs = plugin.action_specs;
+  const spec =
+    specs && typeof specs === "object" && !Array.isArray(specs)
+      ? (specs as Record<string, unknown>)[action]
+      : undefined;
+  if (spec !== undefined) {
+    if (!spec || typeof spec !== "object" || Array.isArray(spec)) return false;
+    return (spec as Record<string, unknown>).runtime === "task";
+  }
+  return plugin.runtime === undefined || plugin.runtime === "task";
+}
+
+function samePeerProtocol(left: PeerProtocolSnapshot, right: PeerProtocolSnapshot): boolean {
+  return (
+    left.id === right.id &&
+    left.abi === right.abi &&
+    left.transport === right.transport &&
+    left.approval === right.approval
+  );
+}
+
+function validPeerSessionId(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function withCookies(res: Response, setCookie?: string): Response {
   const headers = new Headers(res.headers);
   if (setCookie) headers.append("set-cookie", setCookie);
+  return new Response(res.body, { status: res.status, headers });
+}
+
+function withCors(res: Response): Response {
+  const headers = new Headers(res.headers);
+  for (const [key, value] of Object.entries(CORS)) headers.set(key, value);
   return new Response(res.body, { status: res.status, headers });
 }
 

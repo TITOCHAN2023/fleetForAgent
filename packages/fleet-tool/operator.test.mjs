@@ -22,6 +22,7 @@ import {
   formatMcpText,
   applyCliDevFlag,
   isFleetDev,
+  installManifest,
   newOperatorFingerprint,
   officialPlugin,
   publicOfficialPlugins,
@@ -1001,6 +1002,47 @@ test("official plugin registry pins every platform artifact to SHA-256", () => {
   assert.equal(publicOfficialPlugins()[0].descriptions.zh.includes("Agent"), true);
 });
 
+test("install manifest preserves immutable peer declarations and defaults legacy plugins to task", () => {
+  const peer = installManifest({
+    schema_version: 1,
+    id: "example.peer",
+    name: "Example",
+    version: "1.0.0",
+    publisher: "Fleet Official",
+    license: "MIT",
+    description: { en: "example" },
+    repository: "https://github.com/example/example",
+    actions: ["source"],
+    approval_actions: ["source"],
+    runtime: "peer",
+    action_specs: { source: { runtime: "peer", role: "source" } },
+    peer_protocols: [{ id: "example.v1", roles: { source: "source" } }],
+    artifacts: [],
+  });
+  assert.equal(peer.runtime, "peer");
+  assert.equal(peer.action_specs.source.role, "source");
+  assert.equal(peer.peer_protocols[0].id, "example.v1");
+  assert.equal(Object.isFrozen(peer.action_specs.source), true);
+  assert.throws(() => { peer.action_specs.source.role = "target"; }, TypeError);
+
+  const legacy = installManifest({
+    schema_version: 1,
+    id: "example.task",
+    name: "Task",
+    version: "1.0.0",
+    publisher: "Fleet Official",
+    license: "MIT",
+    description: { en: "task" },
+    repository: "https://github.com/example/task",
+    actions: ["run"],
+    approval_actions: [],
+    artifacts: [],
+  });
+  assert.equal(legacy.runtime, "task");
+  assert.deepEqual(legacy.action_specs, {});
+  assert.deepEqual(legacy.peer_protocols, []);
+});
+
 test("plugin tools send ids and actions but never client-supplied artifact URLs", async () => {
   const { rpc, calls } = mockRpc({
     "/v1/plugin": (body) => ({ corr: "p1", status: "pending", body }),
@@ -1113,18 +1155,77 @@ test("local file endpoints delegate to the local streaming manager", async () =>
   assert.deepEqual(calls, [["start", { source, target }], ["status", "t-1"], ["cancel", "t-1"]]);
 });
 
+test("stdio cancellation signal reaches local transfer start and blocks an already-cancelled call", async () => {
+  const seen = [];
+  const fileTransfer = {
+    start: async (_input, options) => {
+      seen.push(options?.signal);
+      return { transfer_id: "t-signal", phase: "waiting_approval" };
+    },
+  };
+  const op = createOperator({ rpc: async () => assert.fail("unexpected Hub RPC"), fileTransfer });
+  const input = {
+    source: { kind: "tool", path: "/tmp/source.bin" },
+    target: { kind: "device", device_id: "device-a", directory: "/tmp/incoming" },
+  };
+  const active = new AbortController();
+  await op.callTool("start_file_transfer", input, {
+    signal: active.signal,
+    isCancelled: () => active.signal.aborted,
+  });
+  assert.equal(seen[0], active.signal);
+
+  const cancelled = new AbortController();
+  cancelled.abort();
+  await assert.rejects(
+    () => op.callTool("start_file_transfer", input, {
+      signal: cancelled.signal,
+      isCancelled: () => cancelled.signal.aborted,
+    }),
+    /cancelled/i,
+  );
+  assert.equal(seen.length, 1, "cancelled stdio call reached transfer manager start");
+});
+
+test("every ordinary Hub RPC receives the tools/call cancellation signal", async () => {
+  const controller = new AbortController();
+  let seenSignal;
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const op = createOperator({
+    rpc: async (_path, _body, options) => {
+      seenSignal = options?.signal;
+      markStarted();
+      return new Promise((resolve, reject) => {
+        const abort = () => reject(seenSignal.reason || new Error("cancelled"));
+        seenSignal.addEventListener("abort", abort, { once: true });
+      });
+    },
+  });
+  const pending = op.callTool("list_computers", {}, { signal: controller.signal });
+  await started;
+  controller.abort(new Error("stdio closed"));
+  await assert.rejects(() => pending, /stdio closed/);
+  assert.equal(seenSignal, controller.signal);
+});
+
 test("remote MCP can coordinate device-to-device but cannot claim a Tool disk", async () => {
   const { rpc, calls } = mockRpc({
-    "/v1/transfer/create": (body) => ({ transfer: { transfer_id: "t-2", phase: "pending", body } }),
+    "/v1/plugin-peer-session/create": (body) => ({ session: { session_id: body.session_id, phase: "waiting_approval", body } }),
   });
   const op = createOperator({ rpc });
   const row = await op.callTool("start_file_transfer", {
     source: { kind: "device", device_id: "source-a", path: "/srv/a.bin" },
     target: { kind: "device", device_id: "target-b", directory: "/srv/incoming" },
   });
-  assert.equal(row.transfer_id, "t-2");
-  assert.equal(calls[0].path, "/v1/transfer/create");
-  assert.deepEqual(calls[0].body.source, { kind: "device", id: "source-a" });
+  assert.equal(row.transfer_id, calls[0].body.session_id);
+  assert.equal(calls[0].path, "/v1/plugin-peer-session/create");
+  assert.equal(calls[0].body.initiator, "source");
+  assert.deepEqual(calls[0].body.source.input, { path: "/srv/a.bin", chunk_size: 32768 });
+  assert.equal(calls[0].body.target.input.directory, "/srv/incoming");
+  assert.equal(calls[0].body.target.input.transfer_id, calls[0].body.session_id);
+  assert.match(calls[0].body.target.input.source, /^[0-9a-f]{64}$/);
+  assert.equal("name" in calls[0].body.target.input, false);
   await assert.rejects(
     () =>
       op.callTool("start_file_transfer", {

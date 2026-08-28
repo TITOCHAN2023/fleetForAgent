@@ -1,0 +1,37 @@
+name = "fleet-plugin-peer-vm"
+main = "worker.ts"
+compatibility_date = "2026-04-07"
+workers_dev = false
+
+# Every VM container resolves this name to the Colima host gateway. The token
+# audience and the URL used by Agent/Tool therefore remain byte-for-byte equal.
+[vars]
+HUB_ORIGIN = "http://fleet-hub.test:8787"
+
+[[durable_objects.bindings]]
+name = "DEVICE"
+class_name = "DeviceDO"
+
+[[durable_objects.bindings]]
+name = "FLEET"
+class_name = "FleetDO"
+
+[[durable_objects.bindings]]
+name = "MCP"
+class_name = "McpDO"
+
+[[durable_objects.bindings]]
+name = "PEER_SESSION"
+class_name = "PeerSessionDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["DeviceDO", "FleetDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["McpDO"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["PeerSessionDO"]

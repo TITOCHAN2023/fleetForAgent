@@ -29,6 +29,8 @@ import {
 } from "./operator.mjs";
 import { createRtcManager } from "./rtc.mjs";
 import { createFileTransferManager } from "./file-transfer-rtc.mjs";
+import { startAndWaitFileTransfer } from "./file-transfer-cli.mjs";
+import { McpStdioCallManager } from "./mcp-protocol.mjs";
 import {
   highSecAuthorization,
   verifyFleetStatement,
@@ -61,22 +63,30 @@ const token = process.env.FLEET_TOKEN || "";
 
 const argv = applyCliDevFlag(process.argv.slice(2), process.env);
 
-async function hubHeaders() {
-  const authorization = await highSecAuthorization(token, url);
+async function hubHeaders({ signal } = {}) {
+  signal?.throwIfAborted?.();
+  const authorization = await highSecAuthorization(
+    token,
+    url,
+    (input, init = {}) => fetch(input, { ...init, signal }),
+  );
+  signal?.throwIfAborted?.();
   return fleetHubHeaders({ authorization, fingerprint: operatorFingerprint });
 }
 
-async function rawHubRpc(path, body, { timed = false } = {}) {
+async function rawHubRpc(path, body, { timed = false, signal } = {}) {
   if (!url || !token) {
     throw new Error("Need FLEET_URL and FLEET_TOKEN (env or ~/.fleet/mcp.env)");
   }
   const payload = body ?? {};
-  const headers = await hubHeaders();
+  signal?.throwIfAborted?.();
+  const headers = await hubHeaders({ signal });
   if (timed && isFleetDev(process.env)) {
     const measured = await measureHubFetch(`${url}${path}`, {
       method: "POST",
       headers: { ...headers, "X-Fleet-Dev": "1" },
       body: { ...payload, dev: true },
+      signal,
     });
     if (!measured.ok) throw new Error(measured.json?.error || String(measured.status));
     return { __fleetTimed: true, json: measured.json, hop: { ...measured.hop, path } };
@@ -85,6 +95,7 @@ async function rawHubRpc(path, body, { timed = false } = {}) {
     method: "POST",
     headers,
     body: JSON.stringify(payload),
+    signal,
   });
   const json = await res.json();
   if (!res.ok) {
@@ -97,7 +108,7 @@ async function rawHubRpc(path, body, { timed = false } = {}) {
 }
 
 const rtcManager = createRtcManager({
-  hubPost: (path, body) => rawHubRpc(path, body, { timed: false }),
+  hubPost: (path, body, options) => rawHubRpc(path, body, { timed: false, ...options }),
   token,
   operatorId: operatorFingerprint,
   verifyTokenV1,
@@ -106,19 +117,22 @@ const rtcManager = createRtcManager({
 });
 
 const fileTransferManager = createFileTransferManager({
-  hubPost: (path, body) => rawHubRpc(path, body, { timed: false }),
+  hubPost: (path, body, options) => rawHubRpc(path, body, { timed: false, ...options }),
   token,
   operatorId: operatorFingerprint,
   verifyTokenV1,
   verifyFleetStatement,
+  hubOrigin: url,
+  authorization: async (options) => (await hubHeaders(options)).authorization,
 });
 
-async function hubRpc(path, body, { timed = false } = {}) {
-  const direct = await rtcManager.tryRpc(path, body);
+async function hubRpc(path, body, { timed = false, signal } = {}) {
+  signal?.throwIfAborted?.();
+  const direct = await rtcManager.tryRpc(path, body, { signal });
   if (direct.handled) {
     return wrapTransportRpc(direct.value, isDeviceTransportPath(path) ? direct.transport || "rtc" : null);
   }
-  const relayed = await rawHubRpc(path, body, { timed });
+  const relayed = await rawHubRpc(path, body, { timed, signal });
   return wrapTransportRpc(relayed, isDeviceTransportPath(path) ? "ws" : null);
 }
 
@@ -164,16 +178,10 @@ async function cli(args) {
     if (!a || !deviceId || !targetDirectory) {
       throw new Error("usage: send-file <local_source_path> <target_device_id> <target_directory>");
     }
-    console.log(
-      JSON.stringify(
-        await fileTransferManager.start({
-          source: { kind: "tool", path: a },
-          target: { kind: "device", device_id: deviceId, directory: targetDirectory },
-        }),
-        null,
-        2,
-      ),
-    );
+    await runFileTransferCLI({
+      source: { kind: "tool", path: a },
+      target: { kind: "device", device_id: deviceId, directory: targetDirectory },
+    });
     return;
   }
   if (cmd === "receive-file") {
@@ -181,16 +189,10 @@ async function cli(args) {
     if (!a || !sourcePath || !localDirectory) {
       throw new Error("usage: receive-file <source_device_id> <source_path> <local_directory>");
     }
-    console.log(
-      JSON.stringify(
-        await fileTransferManager.start({
-          source: { kind: "device", device_id: a, path: sourcePath },
-          target: { kind: "tool", directory: localDirectory },
-        }),
-        null,
-        2,
-      ),
-    );
+    await runFileTransferCLI({
+      source: { kind: "device", device_id: a, path: sourcePath },
+      target: { kind: "tool", directory: localDirectory },
+    });
     return;
   }
   if (cmd === "transfer-file") {
@@ -198,16 +200,10 @@ async function cli(args) {
     if (!a || !sourcePath || !targetDeviceId || !targetDirectory) {
       throw new Error("usage: transfer-file <source_device_id> <source_path> <target_device_id> <target_directory>");
     }
-    console.log(
-      JSON.stringify(
-        await fileTransferManager.start({
-          source: { kind: "device", device_id: a, path: sourcePath },
-          target: { kind: "device", device_id: targetDeviceId, directory: targetDirectory },
-        }),
-        null,
-        2,
-      ),
-    );
+    await runFileTransferCLI({
+      source: { kind: "device", device_id: a, path: sourcePath },
+      target: { kind: "device", device_id: targetDeviceId, directory: targetDirectory },
+    });
     return;
   }
   if (cmd === "transfer-status") {
@@ -223,17 +219,46 @@ async function cli(args) {
   throw new Error("commands: list | run | result | screen | send-file | receive-file | transfer-file | transfer-status | transfer-cancel");
 }
 
+async function runFileTransferCLI(input) {
+  const controller = new AbortController();
+  const interrupt = () => controller.abort();
+  const terminate = () => void fileTransferManager.shutdown();
+  process.once("SIGINT", interrupt);
+  process.once("SIGTERM", terminate);
+  try {
+    let phase = "";
+    const result = await startAndWaitFileTransfer(fileTransferManager, input, {
+      signal: controller.signal,
+      onProgress(value) {
+        const next = value?.local?.phase || value?.phase || "unknown";
+        if (next === phase) return;
+        phase = next;
+        process.stderr.write(`${JSON.stringify({ transfer_id: value?.transfer_id || value?.session_id, phase: next })}\n`);
+      },
+    });
+    console.log(JSON.stringify(result, null, 2));
+  } finally {
+    process.removeListener("SIGINT", interrupt);
+    process.removeListener("SIGTERM", terminate);
+  }
+}
+
 function mcp() {
   const { tools, prompts, getPrompt, callTool } = createOperator({
-    rpc: (path, body) => hubRpc(path, body, { timed: true }),
+    rpc: (path, body, options) => hubRpc(path, body, { timed: true, ...options }),
     fileTransfer: fileTransferManager,
     env: process.env,
   });
-  const cancelled = new Map();
+  const calls = new McpStdioCallManager({
+    shutdown: async () => {
+      await Promise.allSettled([fileTransferManager.shutdown(), rtcManager.shutdown()]);
+    },
+  });
 
   const rl = readline();
   void (async () => {
-    for await (const line of rl) {
+    try {
+      for await (const line of rl) {
       if (!line.trim()) continue;
       let msg;
       try {
@@ -243,7 +268,7 @@ function mcp() {
       }
       if (msg.method === "notifications/cancelled") {
         const rid = msg.params?.requestId == null ? "" : String(msg.params.requestId);
-        if (rid && cancelled.has(rid)) cancelled.set(rid, true);
+        if (rid) calls.cancel(rid);
         continue;
       }
       if (msg.method === "notifications/initialized") continue;
@@ -274,48 +299,48 @@ function mcp() {
         }
         if (msg.method === "tools/call") {
           const reqId = String(id);
-          cancelled.set(reqId, false);
           const progressToken = msg.params?._meta?.progressToken ?? id;
           const name = msg.params?.name;
           const args = msg.params?.arguments ?? {};
-          void (async () => {
-            try {
-              const out = await callTool(name, args, {
-                isCancelled: () => cancelled.get(reqId) === true,
-                onProgress: ({ progress, total }) => {
-                  notify("notifications/progress", { progressToken, progress, total });
-                },
+          const pending = calls.run(async (signal) => {
+            const out = await callTool(name, args, {
+              signal,
+              isCancelled: () => signal.aborted,
+              onProgress: ({ progress, total }) => {
+                calls.write(() => notify("notifications/progress", { progressToken, progress, total }));
+              },
+            });
+            const text = { type: "text", text: formatMcpText(name, out, process.env) };
+            const b64 =
+              out &&
+              out.ok === true &&
+              typeof out.image_b64 === "string" &&
+              out.image_b64.length > 0
+                ? out.image_b64
+                : "";
+            const content = [];
+            if (b64) {
+              content.push({
+                type: "image",
+                mimeType: out.mime || "image/jpeg",
+                data: b64,
               });
-              cancelled.delete(reqId);
-              const text = { type: "text", text: formatMcpText(name, out, process.env) };
-              const b64 =
-                out &&
-                out.ok === true &&
-                typeof out.image_b64 === "string" &&
-                out.image_b64.length > 0
-                  ? out.image_b64
-                  : "";
-              const content = [];
-              if (b64) {
-                content.push({
-                  type: "image",
-                  mimeType: out.mime || "image/jpeg",
-                  data: b64,
-                });
-              }
-              content.push(text);
-              const payload = { content };
-              if (out && typeof out === "object" && (out.isError === true || out.ok === false)) {
-                payload.isError = true;
-              }
-              const meta = fleetResultMeta(out) || {};
-              if (out && typeof out === "object" && out.dev && Number.isFinite(out.dev.total_ms)) {
-                Object.assign(meta, { duration_ms: out.dev.total_ms, fleet_dev: out.dev });
-              }
-              if (Object.keys(meta).length > 0) payload._meta = meta;
-              reply(id, payload);
-            } catch (err) {
-              cancelled.delete(reqId);
+            }
+            content.push(text);
+            const payload = { content };
+            if (out && typeof out === "object" && (out.isError === true || out.ok === false)) {
+              payload.isError = true;
+            }
+            const meta = fleetResultMeta(out) || {};
+            if (out && typeof out === "object" && out.dev && Number.isFinite(out.dev.total_ms)) {
+              Object.assign(meta, { duration_ms: out.dev.total_ms, fleet_dev: out.dev });
+            }
+            if (Object.keys(meta).length > 0) payload._meta = meta;
+            return payload;
+          }, { key: reqId });
+          void pending.then(
+            (payload) => calls.write(() => reply(id, payload)),
+            (err) => calls.write(() => {
               process.stdout.write(
                 JSON.stringify({
                   jsonrpc: "2.0",
@@ -323,21 +348,25 @@ function mcp() {
                   error: { code: -32000, message: err instanceof Error ? err.message : String(err) },
                 }) + "\n",
               );
-            }
-          })();
+            }),
+          );
           continue;
         }
         reply(id, {});
       } catch (err) {
-        cancelled.delete(id);
-        process.stdout.write(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            id,
-            error: { code: -32000, message: err instanceof Error ? err.message : String(err) },
-          }) + "\n",
-        );
+        calls.write(() => {
+          process.stdout.write(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id,
+              error: { code: -32000, message: err instanceof Error ? err.message : String(err) },
+            }) + "\n",
+          );
+        });
       }
+      }
+    } finally {
+      await calls.close();
     }
   })();
 }

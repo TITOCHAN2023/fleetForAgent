@@ -6,11 +6,23 @@ Same protocol as `packages/fleet-hub` (plain Node). Pick one backend.
 
 Jobs do **not** run on the Worker. The device keeps a pane buffer (tmux-style snapshot). The wire is latest-wins at ~4 Hz. `POST /v1/run` returns `accepted` immediately.
 
-Agent/tool 0.6.0 may negotiate a direct WebRTC DataChannel through this Worker. WSS remains connected for control, signed token revocation, and automatic fallback. New peers ACK terminal DataChannel replies; an unacknowledged reply is replayed once through WSS, while healthy direct traffic still bypasses the Worker. The DataChannel carries the unchanged v1 Envelope, so shell, desktop, and plugin semantics do not fork. Optional `RTC_STUN_URLS` is a comma-separated public `[vars]` value, never a secret. There is no TURN relay in this version.
+Agent/tool 0.6.0 may negotiate a direct WebRTC DataChannel through this Worker for shell, pane, desktop, and task plugin traffic. WSS remains connected for control, signed token revocation, and fallback. New peers ACK terminal DataChannel replies; an unacknowledged result is replayed once through WSS, while healthy direct traffic still bypasses the Worker. The DataChannel carries the unchanged v1 Envelope, so those handlers do not fork. Optional `RTC_STUN_URLS` is a comma-separated public `[vars]` value, never a secret. There is no TURN relay in this version.
+
+Current task fallback covers missing capability, setup failure, and synchronous send failure. It does not safely cover a request write accepted by the DataChannel but not yet confirmed by the Agent. The future hardened path requires an Agent receive ACK, the same caller-generated `corr` on both paths, a persisted Worker claim before execution, and bounded Agent/Worker idempotent replay. It must narrow today's generic plugin fast path to `invoke` of task actions and force list/install/uninstall onto WSS-only. Generic peer DATA has the opposite policy: it is direct-only and never falls back through this Worker.
 
 Full steps: [English](../../docs/en/deploy.md) · [中文](../../docs/zh/deploy.md)
 
 Hub tokens are `flt_1` (RSA-2048, bound to `HUB_ORIGIN` in `wrangler.toml`). Agents and stdio MCP authenticate with `Fleet-OAEP`. Remote Streamable HTTP uses `POST /mcp`, returns an opaque `Mcp-Session-Id`, and persists only the session identity plus operator selection inside its isolated `McpDO`. Classic SSE remains at `/mcp/sse`: Bearer is sent on the initial GET, then the server announces a random token-free message URL. Both transports revalidate the current key id on every JSON-RPC message. After deploy, users must issue a new token and run agent 0.2.9+.
+
+## Generic plugin peer sessions
+
+`/v1/plugin-peer-session/*` is the control plane for direct, ordered plugin-to-plugin sessions. `PeerSessionDO` stores account and endpoint identity, the exact frozen registry protocol, per-endpoint Core nonce hashes, SDP fingerprints, a short-lived signed `plugin_peer` ticket, and a persistent delivery outbox. It never stores or relays plugin DATA.
+
+Creation selects one registry `peer_protocols` entry and supplies `source` and `target` descriptors containing the exact plugin ID, version, action, role, plus at most 8 KiB of canonical opaque action input. The Worker validates `runtime`, `action_specs`, and `peer_protocols` from the build-pinned official registry. Missing or inconsistent declarations fail closed. The opaque input exists only in the initial prepare outbox and is not copied into the session record or ticket.
+
+Each endpoint Core generates a 32-byte session nonce and a fresh round nonce, submits their unpadded base64url encodings to `authorize`, and retains the raw values locally. The DO decodes and hashes them; only the four SHA-256 hashes enter durable state and the ticket. After the DataChannel opens, the endpoint Cores exchange raw nonces directly and verify them against the signed hashes before allowing opaque FLPP DATA.
+
+The DO generates every negotiation `round_id`. State mutation and outbox insertion are one storage transaction; DeviceDO/FleetDO calls happen afterward. A stable `delivery_id`, replay-until-Agent-ACK DeviceDO delivery, replayable tool inbox with `ack_delivery_ids`, and alarm backoff make control delivery at-least-once without turning the Worker into a byte relay. Every lifecycle event is bound to its round; `active` and `complete` are recorded per side and become global only after both endpoints report them. Old-round callbacks, signals, and ticket jobs cannot modify a newer round. See [`docs/PLUGIN_RUNTIME.md`](../../docs/PLUGIN_RUNTIME.md).
 
 ```bash
 cd packages/fleet-worker

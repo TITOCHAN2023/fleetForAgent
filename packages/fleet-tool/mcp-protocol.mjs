@@ -66,6 +66,110 @@ export function negotiateStreamableProtocolVersion(message) {
     : MCP_STREAMABLE_PROTOCOL_VERSION;
 }
 
+function mcpClosingError() {
+  return Object.assign(new Error("MCP stdio is closing"), { code: "mcp_closing" });
+}
+
+function mcpCancelledError() {
+  return Object.assign(new Error("MCP request cancelled"), { code: "mcp_cancelled" });
+}
+
+const MCP_STDIO_JOIN_TIMEOUT_MS = 1_000;
+
+function boundedJoin(promises, timeoutMs) {
+  const settled = Promise.allSettled(promises);
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) return settled;
+  if (timeoutMs === 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    settled.then(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+export class McpStdioCallManager {
+  constructor({
+    shutdown = async () => {},
+    joinTimeoutMs = MCP_STDIO_JOIN_TIMEOUT_MS,
+    shutdownTimeoutMs = MCP_STDIO_JOIN_TIMEOUT_MS,
+  } = {}) {
+    if (typeof shutdown !== "function") throw new TypeError("shutdown must be a function");
+    this.shutdown = shutdown;
+    this.joinTimeoutMs = joinTimeoutMs;
+    this.shutdownTimeoutMs = shutdownTimeoutMs;
+    this.controller = new AbortController();
+    this.pendingCalls = new Set();
+    this.callControllers = new Map();
+    this.closing = false;
+    this.closePromise = null;
+  }
+
+  run(task, { key = "" } = {}) {
+    if (this.closing) throw mcpClosingError();
+    if (typeof task !== "function") throw new TypeError("task must be a function");
+    const callKey = key == null ? "" : String(key);
+    if (callKey && this.callControllers.has(callKey)) {
+      throw Object.assign(new Error(`MCP request ${callKey} is already running`), { code: "mcp_duplicate_request" });
+    }
+    const callController = new AbortController();
+    const closeCall = () => callController.abort(this.controller.signal.reason || mcpClosingError());
+    this.controller.signal.addEventListener("abort", closeCall, { once: true });
+    if (callKey) this.callControllers.set(callKey, callController);
+    let resolveCall;
+    let rejectCall;
+    const tracked = new Promise((resolve, reject) => {
+      resolveCall = resolve;
+      rejectCall = reject;
+    });
+    this.pendingCalls.add(tracked);
+    const finish = (settle, value) => {
+      this.pendingCalls.delete(tracked);
+      this.controller.signal.removeEventListener("abort", closeCall);
+      if (callKey && this.callControllers.get(callKey) === callController) {
+        this.callControllers.delete(callKey);
+      }
+      settle(value);
+    };
+    try {
+      Promise.resolve(task(callController.signal)).then(
+        (value) => finish(resolveCall, value),
+        (error) => finish(rejectCall, error),
+      );
+    } catch (error) {
+      finish(rejectCall, error);
+    }
+    return tracked;
+  }
+
+  cancel(key, reason = mcpCancelledError()) {
+    const callKey = key == null ? "" : String(key);
+    const controller = this.callControllers.get(callKey);
+    if (!controller) return false;
+    controller.abort(reason);
+    return true;
+  }
+
+  write(callback) {
+    if (this.closing) return false;
+    callback();
+    return true;
+  }
+
+  close() {
+    if (this.closePromise) return this.closePromise;
+    this.closing = true;
+    this.controller.abort(mcpClosingError());
+    const pending = [...this.pendingCalls];
+    this.closePromise = (async () => {
+      await boundedJoin(pending, this.joinTimeoutMs);
+      await boundedJoin([Promise.resolve().then(() => this.shutdown())], this.shutdownTimeoutMs);
+    })();
+    return this.closePromise;
+  }
+}
+
 export class McpRpcSession {
   constructor({ rpc, operator, env = {}, state = {}, protocolVersion = MCP_LEGACY_PROTOCOL_VERSION } = {}) {
     if (!operator && typeof rpc !== "function") throw new Error("rpc or operator required");

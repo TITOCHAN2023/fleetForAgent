@@ -8,9 +8,16 @@ const SOURCE_REPOSITORY = "https://github.com/TITOCHAN2023/fleet-plugins";
 const GENERATED_MODULE = join(ROOT, "packages/fleet-tool/official-plugins.generated.mjs");
 const PUBLIC_REGISTRY = join(ROOT, "packages/fleet-worker/public/plugin-registry.json");
 const ID = /^[a-z0-9][a-z0-9._-]{0,79}$/;
+const ACTION = /^[a-z0-9._-]{1,80}$/;
+const VERSION = /^[0-9A-Za-z._+-]{1,80}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const OS = new Set(["darwin", "linux", "windows"]);
 const ARCH = new Set(["amd64", "arm64"]);
+const RUNTIME = new Set(["task", "peer"]);
+const PEER_ABI = new Set(["fleet.plugin.peer.v1"]);
+const PEER_TRANSPORT = new Set(["direct_ordered"]);
+const PEER_APPROVAL = new Set(["both_once"]);
+const PEER_ROLES = new Set(["source", "target"]);
 
 function fail(message) {
   throw new Error(`plugin registry: ${message}`);
@@ -21,12 +28,45 @@ function text(value, field) {
   return value.trim();
 }
 
+function exactKeys(value, allowed, field) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) fail(`${field} contains unsupported field ${key}`);
+  }
+}
+
 function httpsUrl(value, field, host) {
   const raw = text(value, field);
   let url;
   try { url = new URL(raw); } catch { fail(`${field} must be a valid URL`); }
   if (url.protocol !== "https:" || (host && url.hostname !== host)) fail(`${field} must be HTTPS${host ? ` on ${host}` : ""}`);
   return raw;
+}
+
+function actionName(value, field) {
+  const action = text(value, field);
+  if (!ACTION.test(action) || action === "__proto__") {
+    fail(`${field} must use lowercase ASCII [a-z0-9._-] and must not be __proto__`);
+  }
+  return action;
+}
+
+function pluginVersion(value, field) {
+  const version = text(value, field);
+  if (!VERSION.test(version)) {
+    fail(`${field} must use 1-80 ASCII letters, digits, dot, underscore, plus, or hyphen`);
+  }
+  return version;
+}
+
+function officialRepository(value, field) {
+  const repository = text(value, field);
+  const match = repository.match(
+    /^https:\/\/github\.com\/TITOCHAN2023\/([a-z0-9][a-z0-9._-]{0,79})$/,
+  );
+  if (!match || !ID.test(match[1])) {
+    fail(`${field} must be exactly https://github.com/TITOCHAN2023/<valid-id>`);
+  }
+  return repository;
 }
 
 export function validateRegistry(input) {
@@ -48,16 +88,95 @@ export function validateRegistry(input) {
     if (typeof plugin.installable !== "boolean") fail(`${field}.installable must be boolean`);
     if (!Array.isArray(plugin.categories) || !plugin.categories.length) fail(`${field}.categories must be non-empty`);
     if (!Array.isArray(plugin.actions) || !Array.isArray(plugin.artifacts)) fail(`${field}.actions and artifacts must be arrays`);
-    const actions = plugin.actions.map((value, actionIndex) => text(value, `${field}.actions.${actionIndex}`));
+    const actions = plugin.actions.map((value, actionIndex) => actionName(value, `${field}.actions.${actionIndex}`));
     if (new Set(actions).size !== actions.length) fail(`${field}.actions must be unique`);
+    const runtime = plugin.runtime === undefined ? "task" : text(plugin.runtime, `${field}.runtime`);
+    if (!RUNTIME.has(runtime)) fail(`${field}.runtime must be task or peer`);
+    const rawActionSpecs = plugin.action_specs ?? {};
+    if (!rawActionSpecs || typeof rawActionSpecs !== "object" || Array.isArray(rawActionSpecs)) {
+      fail(`${field}.action_specs must be an object`);
+    }
+    const actionSpecs = {};
+    const specEntries = Object.entries(rawActionSpecs);
+    if (specEntries.length && specEntries.length !== actions.length) {
+      fail(`${field}.action_specs must describe every declared action or be omitted`);
+    }
+    for (const [action, spec] of specEntries) {
+      const specField = `${field}.action_specs.${action}`;
+      actionName(action, specField);
+      if (!actions.includes(action)) fail(`${specField} refers to an undeclared action`);
+      if (!spec || typeof spec !== "object" || Array.isArray(spec)) fail(`${specField} must be an object`);
+      exactKeys(spec, ["runtime", "role"], specField);
+      const actionRuntime = text(spec.runtime, `${specField}.runtime`);
+      if (!RUNTIME.has(actionRuntime)) fail(`${specField}.runtime must be task or peer`);
+      if (actionRuntime === "peer") {
+        const role = text(spec.role, `${specField}.role`);
+        if (!ID.test(role)) fail(`${specField}.role is invalid`);
+        actionSpecs[action] = { runtime: actionRuntime, role };
+      } else {
+        if (spec.role !== undefined) fail(`${specField}.role is only valid for peer actions`);
+        actionSpecs[action] = { runtime: actionRuntime };
+      }
+    }
+    const rawPeerProtocols = plugin.peer_protocols ?? [];
+    if (!Array.isArray(rawPeerProtocols)) fail(`${field}.peer_protocols must be an array`);
+    const protocolIds = new Set();
+    const referencedPeerActions = new Set();
+    const peerProtocols = rawPeerProtocols.map((protocol, protocolIndex) => {
+      const protocolField = `${field}.peer_protocols.${protocolIndex}`;
+      if (!protocol || typeof protocol !== "object" || Array.isArray(protocol)) fail(`${protocolField} must be an object`);
+      exactKeys(protocol, ["id", "abi", "transport", "approval", "roles"], protocolField);
+      const id = text(protocol.id, `${protocolField}.id`);
+      if (!ID.test(id) || protocolIds.has(id)) fail(`${protocolField}.id is invalid or duplicated`);
+      protocolIds.add(id);
+      const abi = text(protocol.abi, `${protocolField}.abi`);
+      const transport = text(protocol.transport, `${protocolField}.transport`);
+      const approval = text(protocol.approval, `${protocolField}.approval`);
+      if (!PEER_ABI.has(abi)) fail(`${protocolField}.abi is unsupported`);
+      if (!PEER_TRANSPORT.has(transport)) fail(`${protocolField}.transport is unsupported`);
+      if (!PEER_APPROVAL.has(approval)) fail(`${protocolField}.approval is unsupported`);
+      if (!protocol.roles || typeof protocol.roles !== "object" || Array.isArray(protocol.roles)) {
+        fail(`${protocolField}.roles must be an object`);
+      }
+      const roleEntries = Object.entries(protocol.roles);
+      if (
+        roleEntries.length !== PEER_ROLES.size ||
+        roleEntries.some(([role]) => !PEER_ROLES.has(role))
+      ) {
+        fail(`${protocolField}.roles must contain exactly source and target`);
+      }
+      const roles = {};
+      for (const [role, actionValue] of roleEntries) {
+        const action = text(actionValue, `${protocolField}.roles.${role}`);
+        if (!actions.includes(action)) fail(`${protocolField}.roles.${role} refers to an undeclared action`);
+        const spec = actionSpecs[action];
+        if (!spec || spec.runtime !== "peer" || spec.role !== role) {
+          fail(`${protocolField}.roles.${role} must match a peer action_spec`);
+        }
+        if (referencedPeerActions.has(action)) fail(`${protocolField}.roles references peer action ${action} more than once`);
+        referencedPeerActions.add(action);
+        roles[role] = action;
+      }
+      if (!Object.keys(roles).length) fail(`${protocolField}.roles must not be empty`);
+      return { id, abi, transport, approval, roles };
+    });
+    for (const [action, spec] of Object.entries(actionSpecs)) {
+      if (spec.runtime === "peer" && !referencedPeerActions.has(action)) {
+        fail(`${field}.action_specs.${action} is not referenced by a peer protocol role`);
+      }
+    }
+    if (runtime === "task" && (peerProtocols.length || Object.values(actionSpecs).some((spec) => spec.runtime === "peer"))) {
+      fail(`${field}.task runtime cannot declare peer actions or peer_protocols`);
+    }
+    if (runtime === "peer" && !peerProtocols.length) fail(`${field}.peer runtime requires peer_protocols`);
     if (!Array.isArray(plugin.approval_actions ?? [])) fail(`${field}.approval_actions must be an array`);
-    const approvalActions = (plugin.approval_actions ?? []).map((value, actionIndex) => text(value, `${field}.approval_actions.${actionIndex}`));
+    const approvalActions = (plugin.approval_actions ?? []).map((value, actionIndex) => actionName(value, `${field}.approval_actions.${actionIndex}`));
     if (new Set(approvalActions).size !== approvalActions.length || approvalActions.some((action) => !actions.includes(action))) {
       fail(`${field}.approval_actions must be unique members of actions`);
     }
-    const repository = httpsUrl(plugin.repository, `${field}.repository`, "github.com");
+    const repository = officialRepository(plugin.repository, `${field}.repository`);
     const repositoryPath = new URL(repository).pathname.replace(/\/$/, "");
-    const version = text(plugin.version, `${field}.version`);
+    const version = pluginVersion(plugin.version, `${field}.version`);
     const platforms = new Set();
     const artifacts = plugin.artifacts.map((artifact, artifactIndex) => {
       const artifactField = `${field}.artifacts.${artifactIndex}`;
@@ -69,15 +188,26 @@ export function validateRegistry(input) {
       const url = httpsUrl(artifact.url, `${artifactField}.url`, "github.com");
       const parsed = new URL(url);
       const releasePrefix = `${repositoryPath}/releases/download/v${version}/`;
-      if (!parsed.pathname.startsWith(releasePrefix)) fail(`${artifactField}.url must come from this plugin repository and v${version}`);
+      const filename = parsed.pathname.slice(releasePrefix.length);
+      if (
+        parsed.username ||
+        parsed.password ||
+        parsed.port ||
+        parsed.search ||
+        parsed.hash ||
+        !parsed.pathname.startsWith(releasePrefix) ||
+        !filename ||
+        filename.includes("/")
+      ) fail(`${artifactField}.url must come from this plugin repository and v${version}`);
       if (!SHA256.test(artifact.sha256)) fail(`${artifactField}.sha256 is invalid`);
       const entrypoint = text(artifact.entrypoint, `${artifactField}.entrypoint`);
-      if (entrypoint.includes("/") || entrypoint.includes("\\")) fail(`${artifactField}.entrypoint must be a basename`);
+      if (entrypoint === "." || entrypoint === ".." || entrypoint.includes("/") || entrypoint.includes("\\")) {
+        fail(`${artifactField}.entrypoint must be a non-empty basename other than . or ..`);
+      }
       return { os: artifact.os, arch: artifact.arch, url, sha256: artifact.sha256, entrypoint };
     });
     if (plugin.installable) {
       if (plugin.publisher !== "Fleet Official") fail(`${field} installable publisher must be Fleet Official`);
-      if (!new URL(repository).pathname.startsWith("/TITOCHAN2023/")) fail(`${field} installable repository is outside the Fleet trust root`);
       if (!plugin.actions.length || !artifacts.length) fail(`${field} installable entry requires actions and artifacts`);
     } else if (artifacts.length) {
       fail(`${field} non-installable entry cannot contain artifacts`);
@@ -95,8 +225,11 @@ export function validateRegistry(input) {
       categories: plugin.categories.map((value, categoryIndex) => text(value, `${field}.categories.${categoryIndex}`)),
       description,
       installable: plugin.installable,
+      runtime,
       actions,
       approval_actions: approvalActions,
+      action_specs: actionSpecs,
+      peer_protocols: peerProtocols,
       artifacts,
       source_file: text(plugin.source_file, `${field}.source_file`),
       body: text(plugin.body, `${field}.body`),

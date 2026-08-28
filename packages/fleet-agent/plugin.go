@@ -35,17 +35,39 @@ type pluginArtifact struct {
 	Entrypoint string `json:"entrypoint"`
 }
 
+const (
+	pluginRuntimeTask = "task"
+	pluginRuntimePeer = "peer"
+	pluginPeerABI     = "fleet.plugin.peer.v1"
+)
+
+type pluginActionSpec struct {
+	Runtime string `json:"runtime"`
+	Role    string `json:"role,omitempty"`
+}
+
+type pluginPeerProtocol struct {
+	ID        string            `json:"id"`
+	ABI       string            `json:"abi"`
+	Transport string            `json:"transport"`
+	Approval  string            `json:"approval"`
+	Roles     map[string]string `json:"roles"`
+}
+
 type pluginManifest struct {
-	SchemaVersion   int              `json:"schema_version"`
-	ID              string           `json:"id"`
-	Name            string           `json:"name"`
-	Version         string           `json:"version"`
-	Publisher       string           `json:"publisher"`
-	License         string           `json:"license"`
-	Repository      string           `json:"repository"`
-	Actions         []string         `json:"actions"`
-	ApprovalActions []string         `json:"approval_actions,omitempty"`
-	Artifacts       []pluginArtifact `json:"artifacts"`
+	SchemaVersion   int                         `json:"schema_version"`
+	ID              string                      `json:"id"`
+	Name            string                      `json:"name"`
+	Version         string                      `json:"version"`
+	Publisher       string                      `json:"publisher"`
+	License         string                      `json:"license"`
+	Repository      string                      `json:"repository"`
+	Actions         []string                    `json:"actions"`
+	ApprovalActions []string                    `json:"approval_actions,omitempty"`
+	Runtime         string                      `json:"runtime,omitempty"`
+	ActionSpecs     map[string]pluginActionSpec `json:"action_specs,omitempty"`
+	PeerProtocols   []pluginPeerProtocol        `json:"peer_protocols,omitempty"`
+	Artifacts       []pluginArtifact            `json:"artifacts"`
 }
 
 type pluginRequest struct {
@@ -58,18 +80,21 @@ type pluginRequest struct {
 }
 
 type installedPlugin struct {
-	ID              string   `json:"id"`
-	Name            string   `json:"name"`
-	Version         string   `json:"version"`
-	Publisher       string   `json:"publisher"`
-	License         string   `json:"license"`
-	Repository      string   `json:"repository"`
-	ArtifactURL     string   `json:"artifact_url,omitempty"`
-	SHA256          string   `json:"sha256"`
-	Entrypoint      string   `json:"entrypoint"`
-	Actions         []string `json:"actions,omitempty"`
-	ApprovalActions []string `json:"approval_actions,omitempty"`
-	InstalledAt     int64    `json:"installed_at"`
+	ID              string                      `json:"id"`
+	Name            string                      `json:"name"`
+	Version         string                      `json:"version"`
+	Publisher       string                      `json:"publisher"`
+	License         string                      `json:"license"`
+	Repository      string                      `json:"repository"`
+	ArtifactURL     string                      `json:"artifact_url,omitempty"`
+	SHA256          string                      `json:"sha256"`
+	Entrypoint      string                      `json:"entrypoint"`
+	Actions         []string                    `json:"actions,omitempty"`
+	ApprovalActions []string                    `json:"approval_actions,omitempty"`
+	Runtime         string                      `json:"runtime,omitempty"`
+	ActionSpecs     map[string]pluginActionSpec `json:"action_specs,omitempty"`
+	PeerProtocols   []pluginPeerProtocol        `json:"peer_protocols,omitempty"`
+	InstalledAt     int64                       `json:"installed_at"`
 }
 
 type capBuffer struct {
@@ -116,34 +141,8 @@ func pluginConsentText(req pluginRequest) string {
 	case "uninstall":
 		return "uninstall plugin " + req.PluginID
 	case "invoke":
-		var input struct {
-			Command        string `json:"command"`
-			CWD            string `json:"cwd"`
-			Prompt         string `json:"prompt"`
-			PermissionMode string `json:"permission_mode"`
-			Path           string `json:"path"`
-			Directory      string `json:"directory"`
-			Name           string `json:"name"`
-			Peer           string `json:"peer"`
-			Size           int64  `json:"size"`
-		}
-		_ = json.Unmarshal(req.Input, &input)
-		if req.PluginID == "fleet.transfer" && req.Action == "prepare_source" {
-			return fmt.Sprintf("send file %q to %q", input.Path, input.Peer)
-		}
-		if req.PluginID == "fleet.transfer" && req.Action == "prepare_target" {
-			target := filepath.Join(input.Directory, input.Name)
-			return fmt.Sprintf("receive %d bytes from %q into %q (will not overwrite)", input.Size, input.Peer, target)
-		}
-		if req.Action == "configure" && strings.TrimSpace(input.Command) != "" {
-			return fmt.Sprintf("plugin %s configure command: %s", req.PluginID, clip(input.Command, 80))
-		}
-		if req.Action == "delegate" {
-			nested := "nested permissions rejected"
-			if input.PermissionMode == "allow_once" {
-				nested = "nested permissions allow once"
-			}
-			return fmt.Sprintf("plugin %s delegate in %s (%s): %s", req.PluginID, clip(input.CWD, 60), nested, clip(input.Prompt, 100))
+		if text, ok := legacyPluginConsent(req); ok {
+			return text
 		}
 		return fmt.Sprintf("plugin %s: %s", req.PluginID, req.Action)
 	default:
@@ -156,7 +155,7 @@ func pluginSoftwareChange(operation string) bool {
 }
 
 func pluginActionRequiresApproval(id, action string) (bool, error) {
-	meta, _, err := installedPluginForAction(id, action)
+	meta, _, err := installedPluginForTaskAction(id, action)
 	if err != nil {
 		return false, err
 	}
@@ -273,7 +272,7 @@ func pluginsDir() string { return filepath.Join(fleetHome(), "plugins") }
 
 func cleanPluginID(id string) (string, error) {
 	id = strings.TrimSpace(id)
-	if id == "" || len(id) > 80 {
+	if id == "" || len(id) > 80 || !(id[0] >= 'a' && id[0] <= 'z' || id[0] >= '0' && id[0] <= '9') {
 		return "", errors.New("invalid plugin id")
 	}
 	for _, r := range id {
@@ -286,7 +285,7 @@ func cleanPluginID(id string) (string, error) {
 
 func cleanPluginAction(action string) (string, error) {
 	action = strings.TrimSpace(action)
-	if action == "" || len(action) > 80 {
+	if action == "" || action == "__proto__" || len(action) > 80 {
 		return "", errors.New("invalid plugin action")
 	}
 	for _, r := range action {
@@ -412,11 +411,8 @@ func containsString(values []string, want string) bool {
 }
 
 func pluginActions(id string, actions, approvalActions []string) ([]string, []string, error) {
-	// fleet.acp predates persisted action metadata. Preserve those installations
-	// with its fixed historical surface instead of turning an absent allowlist
-	// into an allow-all bypass.
-	if len(actions) == 0 && id == "fleet.acp" {
-		actions = []string{"configure", "profiles", "delegate"}
+	if len(actions) == 0 {
+		actions = legacyPluginActions(id)
 	}
 	actions, err := cleanStringSet(actions, true)
 	if err != nil {
@@ -434,12 +430,153 @@ func pluginActions(id string, actions, approvalActions []string) ([]string, []st
 	return actions, approvalActions, nil
 }
 
+func normalizePluginRuntime(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return pluginRuntimeTask, nil
+	}
+	if value != pluginRuntimeTask && value != pluginRuntimePeer {
+		return "", fmt.Errorf("invalid plugin runtime %q", value)
+	}
+	return value, nil
+}
+
+func normalizePluginPeerDeclarations(runtimeName string, actions []string, specs map[string]pluginActionSpec, protocols []pluginPeerProtocol) (string, map[string]pluginActionSpec, []pluginPeerProtocol, error) {
+	runtimeName, err := normalizePluginRuntime(runtimeName)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	actionSet := make(map[string]struct{}, len(actions))
+	for _, action := range actions {
+		actionSet[action] = struct{}{}
+	}
+	if len(specs) != 0 && len(specs) != len(actions) {
+		return "", nil, nil, errors.New("action_specs must describe every declared action or be omitted")
+	}
+	normalizedSpecs := make(map[string]pluginActionSpec, len(specs))
+	for rawAction, spec := range specs {
+		action, err := cleanPluginAction(rawAction)
+		if err != nil || action != rawAction {
+			return "", nil, nil, errors.New("invalid plugin action_specs key")
+		}
+		if _, ok := actionSet[action]; !ok {
+			return "", nil, nil, fmt.Errorf("action_specs references undeclared action %q", action)
+		}
+		spec.Runtime = strings.TrimSpace(spec.Runtime)
+		if spec.Runtime == "" {
+			return "", nil, nil, fmt.Errorf("action_spec %q requires a runtime", action)
+		}
+		spec.Runtime, err = normalizePluginRuntime(spec.Runtime)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		spec.Role = strings.TrimSpace(spec.Role)
+		if spec.Runtime == pluginRuntimeTask && spec.Role != "" {
+			return "", nil, nil, fmt.Errorf("task action %q cannot declare a peer role", action)
+		}
+		if spec.Runtime == pluginRuntimePeer && spec.Role != "source" && spec.Role != "target" {
+			return "", nil, nil, fmt.Errorf("peer action %q requires role source or target", action)
+		}
+		normalizedSpecs[action] = spec
+	}
+	normalizedProtocols := make([]pluginPeerProtocol, 0, len(protocols))
+	seenProtocols := make(map[string]struct{}, len(protocols))
+	referencedPeerActions := make(map[string]struct{}, len(actions))
+	for _, protocol := range protocols {
+		protocol.ID = strings.TrimSpace(protocol.ID)
+		protocol.ABI = strings.TrimSpace(protocol.ABI)
+		protocol.Transport = strings.TrimSpace(protocol.Transport)
+		protocol.Approval = strings.TrimSpace(protocol.Approval)
+		if cleanID, cleanErr := cleanPluginID(protocol.ID); cleanErr != nil || cleanID != protocol.ID ||
+			protocol.ABI != pluginPeerABI || protocol.Transport != "direct_ordered" || protocol.Approval != "both_once" {
+			return "", nil, nil, fmt.Errorf("invalid peer protocol declaration %q", protocol.ID)
+		}
+		if _, duplicate := seenProtocols[protocol.ID]; duplicate {
+			return "", nil, nil, fmt.Errorf("duplicate peer protocol %q", protocol.ID)
+		}
+		seenProtocols[protocol.ID] = struct{}{}
+		if len(protocol.Roles) != 2 || protocol.Roles["source"] == "" || protocol.Roles["target"] == "" {
+			return "", nil, nil, fmt.Errorf("peer protocol %q must declare source and target roles", protocol.ID)
+		}
+		roles := make(map[string]string, 2)
+		for role, action := range protocol.Roles {
+			if role != "source" && role != "target" {
+				return "", nil, nil, fmt.Errorf("peer protocol %q has invalid role %q", protocol.ID, role)
+			}
+			action = strings.TrimSpace(action)
+			if _, ok := actionSet[action]; !ok {
+				return "", nil, nil, fmt.Errorf("peer protocol %q references undeclared action %q", protocol.ID, action)
+			}
+			spec, ok := normalizedSpecs[action]
+			if !ok || spec.Runtime != pluginRuntimePeer || spec.Role != role {
+				return "", nil, nil, fmt.Errorf("peer action %q does not declare role %q", action, role)
+			}
+			if _, duplicate := referencedPeerActions[action]; duplicate {
+				return "", nil, nil, fmt.Errorf("peer action %q is referenced more than once", action)
+			}
+			referencedPeerActions[action] = struct{}{}
+			roles[role] = action
+		}
+		protocol.Roles = roles
+		normalizedProtocols = append(normalizedProtocols, protocol)
+	}
+	for action, spec := range normalizedSpecs {
+		if spec.Runtime != pluginRuntimePeer {
+			continue
+		}
+		if _, found := referencedPeerActions[action]; !found {
+			return "", nil, nil, fmt.Errorf("peer action %q is not referenced by peer_protocols", action)
+		}
+	}
+	if runtimeName == pluginRuntimeTask && (len(normalizedProtocols) != 0 || len(referencedPeerActions) != 0) {
+		return "", nil, nil, errors.New("task runtime cannot declare peer actions or peer_protocols")
+	}
+	if runtimeName == pluginRuntimePeer && len(normalizedProtocols) == 0 {
+		return "", nil, nil, errors.New("peer runtime requires peer_protocols")
+	}
+	if len(normalizedSpecs) == 0 {
+		normalizedSpecs = nil
+	}
+	return runtimeName, normalizedSpecs, normalizedProtocols, nil
+}
+
+func pluginPeerAction(meta installedPlugin, protocolID, role, action string) (pluginPeerProtocol, error) {
+	spec, ok := meta.ActionSpecs[action]
+	if !ok {
+		spec = pluginActionSpec{Runtime: meta.Runtime}
+	}
+	if spec.Runtime != pluginRuntimePeer || spec.Role != role {
+		return pluginPeerProtocol{}, fmt.Errorf("plugin action %q is not a %s peer action", action, role)
+	}
+	for _, protocol := range meta.PeerProtocols {
+		if protocol.ID == protocolID && protocol.Roles[role] == action {
+			return protocol, nil
+		}
+	}
+	return pluginPeerProtocol{}, fmt.Errorf("plugin does not declare peer protocol %q for %s", protocolID, role)
+}
+
 func pluginDir(id string) (string, error) {
 	id, err := cleanPluginID(id)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(pluginsDir(), id), nil
+	return containedPluginDir(pluginsDir(), id)
+}
+
+// containedPluginDir is a second boundary behind cleanPluginID. Filesystem
+// containment must not depend on the validator remaining correct forever.
+func containedPluginDir(root, id string) (string, error) {
+	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, `/\`) {
+		return "", errors.New("plugin directory escapes plugin root")
+	}
+	root = filepath.Clean(root)
+	dir := filepath.Join(root, id)
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || filepath.IsAbs(rel) || rel != id {
+		return "", errors.New("plugin directory escapes plugin root")
+	}
+	return dir, nil
 }
 
 func validateOfficialManifest(m pluginManifest) (pluginArtifact, error) {
@@ -455,7 +592,11 @@ func validateOfficialManifest(m pluginManifest) (pluginArtifact, error) {
 	if _, err := officialRepositoryPath(m.Repository); err != nil {
 		return pluginArtifact{}, err
 	}
-	if _, _, err := pluginActions(m.ID, m.Actions, m.ApprovalActions); err != nil {
+	actions, _, err := pluginActions(m.ID, m.Actions, m.ApprovalActions)
+	if err != nil {
+		return pluginArtifact{}, err
+	}
+	if _, _, _, err := normalizePluginPeerDeclarations(m.Runtime, actions, m.ActionSpecs, m.PeerProtocols); err != nil {
 		return pluginArtifact{}, err
 	}
 	for _, artifact := range m.Artifacts {
@@ -489,6 +630,10 @@ func installPluginFromHub(ctx context.Context, m pluginManifest, hubInput, hubTo
 		return installedPlugin{}, err
 	}
 	actions, approvalActions, err := pluginActions(m.ID, m.Actions, m.ApprovalActions)
+	if err != nil {
+		return installedPlugin{}, err
+	}
+	runtimeName, actionSpecs, peerProtocols, err := normalizePluginPeerDeclarations(m.Runtime, actions, m.ActionSpecs, m.PeerProtocols)
 	if err != nil {
 		return installedPlugin{}, err
 	}
@@ -588,6 +733,9 @@ func installPluginFromHub(ctx context.Context, m pluginManifest, hubInput, hubTo
 		Entrypoint:      artifact.Entrypoint,
 		Actions:         actions,
 		ApprovalActions: approvalActions,
+		Runtime:         runtimeName,
+		ActionSpecs:     actionSpecs,
+		PeerProtocols:   peerProtocols,
 		InstalledAt:     time.Now().UnixMilli(),
 	}
 	if err := writePluginMeta(dir, meta); err != nil {
@@ -637,6 +785,10 @@ func readPluginMeta(id string) (installedPlugin, string, error) {
 	}
 	meta.Actions = actions
 	meta.ApprovalActions = approvalActions
+	meta.Runtime, meta.ActionSpecs, meta.PeerProtocols, err = normalizePluginPeerDeclarations(meta.Runtime, meta.Actions, meta.ActionSpecs, meta.PeerProtocols)
+	if err != nil {
+		return meta, "", err
+	}
 	return meta, dir, nil
 }
 
@@ -666,7 +818,7 @@ func validateInstalledPlugin(meta installedPlugin) error {
 		return err
 	}
 	if meta.ArtifactURL == "" {
-		if meta.ID != "fleet.acp" {
+		if !legacyPluginAllowsMissingArtifact(meta.ID) {
 			return errors.New("installed plugin is missing artifact provenance; reinstall it")
 		}
 	} else if err := validateArtifactURL(meta.ArtifactURL, meta.Repository, meta.Version); err != nil {
@@ -681,7 +833,11 @@ func validateInstalledPlugin(meta installedPlugin) error {
 	if _, err := cleanPluginEntrypoint(meta.Entrypoint); err != nil {
 		return err
 	}
-	_, _, err := pluginActions(meta.ID, meta.Actions, meta.ApprovalActions)
+	actions, _, err := pluginActions(meta.ID, meta.Actions, meta.ApprovalActions)
+	if err != nil {
+		return err
+	}
+	_, _, _, err = normalizePluginPeerDeclarations(meta.Runtime, actions, meta.ActionSpecs, meta.PeerProtocols)
 	return err
 }
 
@@ -743,6 +899,32 @@ func installedPluginForAction(id, action string) (installedPlugin, string, error
 	return meta, path, nil
 }
 
+func installedPluginForTaskAction(id, action string) (installedPlugin, string, error) {
+	meta, path, err := installedPluginForAction(id, action)
+	if err != nil {
+		return installedPlugin{}, "", err
+	}
+	spec, ok := meta.ActionSpecs[action]
+	if !ok {
+		spec.Runtime = meta.Runtime
+	}
+	if spec.Runtime != pluginRuntimeTask {
+		return installedPlugin{}, "", fmt.Errorf("plugin action %q requires the peer runtime", action)
+	}
+	return meta, path, nil
+}
+
+func installedPluginForPeerAction(id, protocol, role, action string) (installedPlugin, string, error) {
+	meta, path, err := installedPluginForAction(id, action)
+	if err != nil {
+		return installedPlugin{}, "", err
+	}
+	if _, err := pluginPeerAction(meta, protocol, role, action); err != nil {
+		return installedPlugin{}, "", err
+	}
+	return meta, path, nil
+}
+
 func listInstalledPlugins() ([]installedPlugin, error) {
 	entries, err := os.ReadDir(pluginsDir())
 	if errors.Is(err, os.ErrNotExist) {
@@ -778,8 +960,34 @@ func uninstallPlugin(id string) (map[string]any, error) {
 	return map[string]any{"id": id, "removed": true}, nil
 }
 
+func runPluginCommand(ctx context.Context, cmd *exec.Cmd) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	configurePluginProcess(cmd)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		terminatePluginProcessTree(cmd, false)
+		select {
+		case <-done:
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+		terminatePluginProcessTree(cmd, true)
+		<-done
+		return ctx.Err()
+	}
+}
+
 func invokePlugin(ctx context.Context, req pluginRequest) (any, error) {
-	_, path, err := installedPluginForAction(req.PluginID, req.Action)
+	_, path, err := installedPluginForTaskAction(req.PluginID, req.Action)
 	if err != nil {
 		return nil, err
 	}
@@ -801,13 +1009,13 @@ func invokePlugin(ctx context.Context, req pluginRequest) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(callCtx, path)
+	cmd := exec.Command(path)
 	cmd.Env = append(os.Environ(), "FLEET_PLUGIN_DATA_DIR="+filepath.Join(dir, "data"))
 	cmd.Stdin = bytes.NewReader(payload)
 	out := &capBuffer{max: pluginMaxOutput}
 	errOut := &capBuffer{max: 256 << 10}
 	cmd.Stdout, cmd.Stderr = out, errOut
-	if err := cmd.Run(); err != nil {
+	if err := runPluginCommand(callCtx, cmd); err != nil {
 		if callCtx.Err() != nil {
 			return nil, fmt.Errorf("plugin timed out: %w", callCtx.Err())
 		}

@@ -11,4 +11,4 @@ Add another locale later as `docs/<code>/` with the same filenames.
 
 Security design: [Fleet 直连与撤销安全模型](zh/rtc-security.md).
 
-Shared subsystem docs: [official plugins](PLUGINS.md) · [direct file transfer](FILE_TRANSFER.md).
+Shared subsystem docs: [plugin runtime architecture](PLUGIN_RUNTIME.md) · [official plugins](PLUGINS.md) · [direct file transfer](FILE_TRANSFER.md).

@@ -55,12 +55,14 @@ xattr -cr "/Applications/Fleet Agent.app"
 ## Release
 
 ```bash
-VERSION=0.5.2 npm run release:agent
-gh release create v0.5.2 \
+VERSION=0.5.3 npm run release:agent
+gh release create v0.5.3 \
   public/dl/FleetAgent-* \
   public/dl/fleet-agent-linux-*.tar.gz \
   public/dl/checksums.txt \
-  public/dl/checksums-0.5.2.txt
+  public/dl/checksums-0.5.3.txt
 ```
 
 macOS 菜单栏需要 **CGO_ENABLED=1**（本机 clang）。Windows 托盘是 syscall，Linux 托盘是 DBus，交叉编译都保持 `CGO_ENABLED=0`。Windows 加 `-H windowsgui`。
+
+打包命令也是发布门禁，不只是编译器。它会拒绝带 AppleDouble/PAX 元数据或非 root 归属的 Linux 包，再在只读、无 capability 的 Docker 容器中分别把两种架构的正式二进制运行十轮。执行前必须启动 Docker；门禁失败就不能上传 Release。

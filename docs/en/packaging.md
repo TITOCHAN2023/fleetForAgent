@@ -55,12 +55,14 @@ Do not tell users “if the dmg will not open, download the zip and use it as a 
 ## Release
 
 ```bash
-VERSION=0.5.2 npm run release:agent
-gh release create v0.5.2 \
+VERSION=0.5.3 npm run release:agent
+gh release create v0.5.3 \
   public/dl/FleetAgent-* \
   public/dl/fleet-agent-linux-*.tar.gz \
   public/dl/checksums.txt \
-  public/dl/checksums-0.5.2.txt
+  public/dl/checksums-0.5.3.txt
 ```
 
 macOS menu bar needs **CGO_ENABLED=1** (local clang). Windows tray is syscall, Linux tray is DBus; both stay `CGO_ENABLED=0` for cross-compile. Windows adds `-H windowsgui`.
+
+The packaging command is a release gate, not just a compiler. It rejects Linux archives with AppleDouble/PAX metadata or non-root ownership, then extracts and runs both formal Linux binaries ten times in read-only, capability-dropped Docker containers. Docker must be running; a failed gate means the release must not be uploaded.

@@ -9,8 +9,8 @@ OUT="$ROOT/public/dl"
 mkdir -p "$OUT" "$SRC/dist"
 cd "$SRC"
 go mod tidy
-LDFLAGS="-s -w"
-VERSION="${VERSION:-0.5.2}"
+VERSION="${VERSION:-0.5.3}"
+LDFLAGS="-s -w -X main.agentVersion=${VERSION}"
 
 build() {
   local os="$1" arch="$2" ext="$3"
@@ -112,17 +112,27 @@ PLIST
 pack_macos arm64
 pack_macos amd64
 
-mkdir -p dist/linuxpack
-cp dist/linux-amd64 dist/linuxpack/fleet-agent
-cp dist/linux-amd64 dist/linuxpack/fleet
-chmod +x dist/linuxpack/fleet-agent dist/linuxpack/fleet
-tar -C dist/linuxpack -czf "$OUT/fleet-agent-linux-amd64.tar.gz" fleet-agent fleet
+pack_linux() {
+  local arch="$1"
+  local stage="$SRC/dist/linuxpack-${arch}"
+  local archive="$OUT/fleet-agent-linux-${arch}.tar.gz"
 
-mkdir -p dist/linuxpack-arm64
-cp dist/linux-arm64 dist/linuxpack-arm64/fleet-agent
-cp dist/linux-arm64 dist/linuxpack-arm64/fleet
-chmod +x dist/linuxpack-arm64/fleet-agent dist/linuxpack-arm64/fleet
-tar -C dist/linuxpack-arm64 -czf "$OUT/fleet-agent-linux-arm64.tar.gz" fleet-agent fleet
+  rm -rf "$stage"
+  mkdir -p "$stage"
+  cp "dist/linux-${arch}" "$stage/fleet-agent"
+  cp "dist/linux-${arch}" "$stage/fleet"
+  chmod +x "$stage/fleet-agent" "$stage/fleet"
+
+  # macOS bsdtar otherwise emits AppleDouble (._*) and provenance PAX records.
+  # Normalize ownership so extraction also works for capability-dropped root.
+  COPYFILE_DISABLE=1 tar \
+    --format=ustar --no-xattrs \
+    --owner=0 --group=0 --numeric-owner \
+    -C "$stage" -czf "$archive" fleet-agent fleet
+}
+
+pack_linux amd64
+pack_linux arm64
 
 (
   cd "$OUT"
@@ -144,3 +154,6 @@ cp "$OUT/checksums.txt" "$OUT/checksums-${VERSION}.txt"
 
 echo "releases:"
 ls -lh "$OUT"
+
+node --test "$ROOT/scripts/releases.test.mjs"
+bash "$ROOT/scripts/test-agent-release.sh" "$OUT" "$VERSION"

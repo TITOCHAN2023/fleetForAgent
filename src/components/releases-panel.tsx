@@ -20,7 +20,7 @@ const BUILDS: {
   { id: "mac-intel-zip", os: "rel.macIntelZip", file: "FleetAgent-macos-amd64.zip", hint: "rel.macIntelZipHint", icon: Apple },
   { id: "linux", os: "rel.linux", file: "fleet-agent-linux-amd64.tar.gz", hint: "rel.linuxHint", icon: Server },
   { id: "linux-arm", os: "rel.linuxArm", file: "fleet-agent-linux-arm64.tar.gz", hint: "rel.linuxArmHint", icon: Server },
-  { id: "sum", os: "rel.checksums", file: "checksums-0.5.2.txt", hint: "rel.checksumsHint", icon: Server },
+  { id: "sum", os: "rel.checksums", file: "checksums-0.5.3.txt", hint: "rel.checksumsHint", icon: Server },
 ];
 
 export function ReleasesPanel() {

@@ -1,6 +1,6 @@
 # Fleet 直连与撤销安全模型
 
-这份文档描述 Agent 0.5.1 和本地 fleet-tool 0.5.1 的实现边界。它不是另一套远程执行协议。Worker 仍是身份与会话的信任根，WSS 仍是控制通道，WebRTC DataChannel 只是可选的数据通道。新版双方会在 `rtc_ready` 后协商终态结果 ACK；只有未确认的结果才通过 WSS 补投，旧版不协商该扩展。
+这份文档描述 Agent 0.5.2 和本地 fleet-tool 0.5.2 的实现边界。它不是另一套远程执行协议。Worker 仍是身份与会话的信任根，WSS 仍是控制通道，WebRTC DataChannel 只是可选的数据通道。RTC 信令和已建立会话使用不同生命周期；新版双方会在 `rtc_ready` 后协商终态结果 ACK，只有未确认的结果才通过 WSS 补投，旧版不协商该扩展。
 
 ## 不变量
 

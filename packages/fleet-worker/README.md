@@ -6,7 +6,7 @@ Same protocol as `packages/fleet-hub` (plain Node). Pick one backend.
 
 Jobs do **not** run on the Worker. The device keeps a pane buffer (tmux-style snapshot). The wire is latest-wins at ~4 Hz. `POST /v1/run` returns `accepted` immediately.
 
-Agent/tool 0.5.1 may negotiate a direct WebRTC DataChannel through this Worker. WSS remains connected for control, signed token revocation, and automatic fallback. New peers ACK terminal DataChannel replies; an unacknowledged reply is replayed once through WSS, while healthy direct traffic still bypasses the Worker. The DataChannel carries the unchanged v1 Envelope, so shell, desktop, and plugin semantics do not fork. Optional `RTC_STUN_URLS` is a comma-separated public `[vars]` value, never a secret. There is no TURN relay in this version.
+Agent/tool 0.5.2 may negotiate a direct WebRTC DataChannel through this Worker. WSS remains connected for control, signed token revocation, and automatic fallback. New peers ACK terminal DataChannel replies; an unacknowledged reply is replayed once through WSS, while healthy direct traffic still bypasses the Worker. The DataChannel carries the unchanged v1 Envelope, so shell, desktop, and plugin semantics do not fork. Optional `RTC_STUN_URLS` is a comma-separated public `[vars]` value, never a secret. There is no TURN relay in this version.
 
 Full steps: [English](../../docs/en/deploy.md) · [中文](../../docs/zh/deploy.md)
 

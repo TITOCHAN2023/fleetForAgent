@@ -46,6 +46,7 @@ type rtcAgentSession struct {
 	answer     string
 	pc         *webrtc.PeerConnection
 	dc         *webrtc.DataChannel
+	cancel     context.CancelFunc
 	authorized bool
 	readySent  bool
 	closed     bool
@@ -199,9 +200,14 @@ func (s *rtcAgentSession) close() {
 	}
 	s.closed = true
 	pc := s.pc
+	cancel := s.cancel
+	s.cancel = nil
 	waiters := s.ackWaiters
 	s.ackWaiters = nil
 	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	for _, wait := range waiters {
 		wait <- false
 	}
@@ -269,7 +275,7 @@ func (a *Agent) handleRTCOffer(ctx context.Context, c *websocket.Conn, env Envel
 	a.mu.Unlock()
 	go func() {
 		defer cancel()
-		session, answer, err := a.newRTCSession(offerCtx, sid, operatorID, offer, rtcStunURLs(env.Body))
+		session, answer, err := a.newRTCSession(offerCtx, ctx, sid, operatorID, offer, rtcStunURLs(env.Body))
 		a.mu.Lock()
 		current := a.rtcPending[sid] == reservation
 		if current {
@@ -305,7 +311,7 @@ func (a *Agent) handleRTCOffer(ctx context.Context, c *websocket.Conn, env Envel
 		if old != nil {
 			old.close()
 		}
-		if err := wsjson.Write(offerCtx, c, Envelope{
+		if err := wsjson.Write(ctx, c, Envelope{
 			V: 1, Type: "rtc_answer", ID: fmt.Sprintf("%d", time.Now().UnixNano()), T: time.Now().UnixMilli(),
 			Body: map[string]any{"sid": sid, "answer": answer},
 		}); err != nil {
@@ -314,7 +320,7 @@ func (a *Agent) handleRTCOffer(ctx context.Context, c *websocket.Conn, env Envel
 	}()
 }
 
-func (a *Agent) newRTCSession(ctx context.Context, sid, operatorID, offer string, stunURLs []string) (*rtcAgentSession, string, error) {
+func (a *Agent) newRTCSession(handshakeCtx, lifetimeCtx context.Context, sid, operatorID, offer string, stunURLs []string) (*rtcAgentSession, string, error) {
 	servers := make([]webrtc.ICEServer, 0, 1)
 	if len(stunURLs) > 0 {
 		servers = append(servers, webrtc.ICEServer{URLs: stunURLs})
@@ -323,7 +329,8 @@ func (a *Agent) newRTCSession(ctx context.Context, sid, operatorID, offer string
 	if err != nil {
 		return nil, "", err
 	}
-	s := &rtcAgentSession{sid: sid, operatorID: operatorID, offer: offer, pc: pc}
+	sessionCtx, sessionCancel := context.WithCancel(lifetimeCtx)
+	s := &rtcAgentSession{sid: sid, operatorID: operatorID, offer: offer, pc: pc, cancel: sessionCancel}
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
 		if dc.Label() != "fleet-v1" {
 			_ = dc.Close()
@@ -358,12 +365,12 @@ func (a *Agent) newRTCSession(ctx context.Context, sid, operatorID, offer string
 				s.noteAck(env.Corr)
 				return
 			}
-			if !a.claimRTCEnvelope(ctx, s, env.Corr) {
+			if !a.claimRTCEnvelope(sessionCtx, s, env.Corr) {
 				s.close()
 				a.dropRTCSession(sid, s)
 				return
 			}
-			a.dispatchEnvelope(ctx, a.rtcSink(s), env)
+			a.dispatchEnvelope(sessionCtx, a.rtcSink(s), env)
 		})
 	})
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
@@ -387,9 +394,9 @@ func (a *Agent) newRTCSession(ctx context.Context, sid, operatorID, offer string
 	}
 	select {
 	case <-gathered:
-	case <-ctx.Done():
+	case <-handshakeCtx.Done():
 		s.close()
-		return nil, "", ctx.Err()
+		return nil, "", handshakeCtx.Err()
 	case <-time.After(10 * time.Second):
 		s.close()
 		return nil, "", fmt.Errorf("ICE gathering timeout")

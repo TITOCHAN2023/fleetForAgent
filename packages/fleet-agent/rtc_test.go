@@ -63,10 +63,14 @@ func TestRTCDataChannelUsesSharedEnvelopeDispatch(t *testing.T) {
 	if local == nil {
 		t.Fatal("missing offer")
 	}
-	session, answer, err := agent.newRTCSession(ctx, "test-session", "test-operator", local.SDP, nil)
+	handshakeCtx, cancelHandshake := context.WithCancel(ctx)
+	session, answer, err := agent.newRTCSession(handshakeCtx, ctx, "test-session", "test-operator", local.SDP, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Signaling is short-lived; established commands belong to the RTC
+	// session and must survive when signaling finishes.
+	cancelHandshake()
 	defer session.close()
 	session.mu.Lock()
 	session.authorized = true

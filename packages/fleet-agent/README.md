@@ -30,7 +30,7 @@ Where to change what:
 | Keep the machine awake while enabled | `internal/keepalive/` |
 | `rm -rf /` and friends | `internal/policy/` |
 
-Agent 0.5.0 advertises `rtc_v1`. WSS and RTC both feed the same `dispatchEnvelope`; handlers reply through `EnvelopeSink`, so changing transport cannot bypass plugin approval, desktop consent, panes, or device policy. A direct session is accepted only after the hub-signed ticket binds both DTLS fingerprints to the current token kid, device, and operator; the Tool waits for the Agent's post-verification `rtc_ready` before sending business data. Token revocation or any WSS loss closes every DataChannel before reconnect logic runs.
+Agent 0.5.1 advertises `rtc_v1`. WSS and RTC both feed the same `dispatchEnvelope`; handlers reply through `EnvelopeSink`, so changing transport cannot bypass plugin approval, desktop consent, panes, or device policy. A direct session is accepted only after the hub-signed ticket binds both DTLS fingerprints to the current token kid, device, and operator; the Tool waits for the Agent's post-verification `rtc_ready` before sending business data. New peers then negotiate terminal-result ACKs: an unacknowledged `result`, `plugin_result`, or `desktop` reply is replayed once through the authenticated WSS control path and the unhealthy DataChannel is closed. Old peers do not negotiate this extension and keep their existing behavior. Token revocation or any WSS loss closes every DataChannel before reconnect logic runs.
 
 Build and test from this directory:
 

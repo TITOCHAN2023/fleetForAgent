@@ -55,12 +55,12 @@ xattr -cr "/Applications/Fleet Agent.app"
 ## Release
 
 ```bash
-VERSION=0.5.0 npm run release:agent
-gh release create v0.5.0 \
+VERSION=0.5.1 npm run release:agent
+gh release create v0.5.1 \
   public/dl/FleetAgent-* \
   public/dl/fleet-agent-linux-*.tar.gz \
   public/dl/checksums.txt \
-  public/dl/checksums-0.5.0.txt
+  public/dl/checksums-0.5.1.txt
 ```
 
 macOS 菜单栏需要 **CGO_ENABLED=1**（本机 clang）。Windows 托盘是 syscall，Linux 托盘是 DBus，交叉编译都保持 `CGO_ENABLED=0`。Windows 加 `-H windowsgui`。

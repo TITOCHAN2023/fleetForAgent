@@ -1,6 +1,7 @@
 const CONNECT_TIMEOUT_MS = 12_000;
 const REPLY_TIMEOUT_MS = 8_000;
 const MAX_SESSION_ROWS = 256;
+const ACK_TYPES = new Set(["result", "plugin_result", "desktop"]);
 let peerConnectionCtor;
 
 async function loadPeerConnection() {
@@ -81,6 +82,11 @@ class DirectSession {
     if (msg?.v !== 1 || typeof msg.type !== "string") return;
     if (msg.type === "rtc_ready" && msg.body?.sid === this.sid) {
       this.directReady = true;
+      try {
+        this.send(envelope("rtc_ack_ready", { version: 1 }));
+      } catch {
+        /* The channel state handler will force WSS fallback. */
+      }
       this.wake();
       return;
     }
@@ -92,6 +98,13 @@ class DirectSession {
       }
       const current = this.rows.get(corr) || {};
       this.rows.set(corr, { ...current, [msg.type]: msg });
+      if (ACK_TYPES.has(msg.type)) {
+        try {
+          this.send(envelope("rtc_ack", { type: msg.type }, corr));
+        } catch {
+          /* Agent will replay the result through WSS. */
+        }
+      }
     }
     this.wake();
   }

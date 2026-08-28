@@ -18,6 +18,7 @@ import (
 const (
 	rtcSignalMax    = 128 << 10
 	rtcSessionLimit = 8
+	rtcAckTimeout   = time.Second
 )
 
 var rtcFingerprintPattern = regexp.MustCompile(`(?im)^a=fingerprint:sha-256\s+([0-9a-f:]+)\s*$`)
@@ -48,7 +49,9 @@ type rtcAgentSession struct {
 	authorized bool
 	readySent  bool
 	closed     bool
+	ackEnabled bool
 	claimed    map[string]struct{}
+	ackWaiters map[string]chan bool
 }
 
 type rtcPendingOffer struct {
@@ -101,6 +104,74 @@ func (s *rtcAgentSession) sink() EnvelopeSink {
 	}
 }
 
+func rtcAckEnvelope(env Envelope) bool {
+	switch env.Type {
+	case "result", "plugin_result", "desktop":
+		return env.Corr != ""
+	default:
+		return false
+	}
+}
+
+func (s *rtcAgentSession) needsAck(env Envelope) bool {
+	s.mu.Lock()
+	enabled := s.ackEnabled
+	s.mu.Unlock()
+	return enabled && rtcAckEnvelope(env)
+}
+
+func (s *rtcAgentSession) sendWithAck(ctx context.Context, env Envelope) error {
+	wait := make(chan bool, 1)
+	s.mu.Lock()
+	if s.closed || !s.authorized {
+		s.mu.Unlock()
+		return fmt.Errorf("rtc session unavailable")
+	}
+	if s.ackWaiters == nil {
+		s.ackWaiters = make(map[string]chan bool)
+	}
+	s.ackWaiters[env.Corr] = wait
+	s.mu.Unlock()
+
+	if err := s.sink()(ctx, env); err != nil {
+		s.forgetAck(env.Corr, wait)
+		return err
+	}
+	timer := time.NewTimer(rtcAckTimeout)
+	defer timer.Stop()
+	select {
+	case ok := <-wait:
+		if ok {
+			return nil
+		}
+		return fmt.Errorf("rtc session closed before result ack")
+	case <-timer.C:
+		s.forgetAck(env.Corr, wait)
+		return fmt.Errorf("rtc result ack timeout")
+	case <-ctx.Done():
+		s.forgetAck(env.Corr, wait)
+		return ctx.Err()
+	}
+}
+
+func (s *rtcAgentSession) forgetAck(corr string, wait chan bool) {
+	s.mu.Lock()
+	if s.ackWaiters[corr] == wait {
+		delete(s.ackWaiters, corr)
+	}
+	s.mu.Unlock()
+}
+
+func (s *rtcAgentSession) noteAck(corr string) {
+	s.mu.Lock()
+	wait := s.ackWaiters[corr]
+	delete(s.ackWaiters, corr)
+	s.mu.Unlock()
+	if wait != nil {
+		wait <- true
+	}
+}
+
 func (s *rtcAgentSession) reserveClaim(corr string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -128,7 +199,12 @@ func (s *rtcAgentSession) close() {
 	}
 	s.closed = true
 	pc := s.pc
+	waiters := s.ackWaiters
+	s.ackWaiters = nil
 	s.mu.Unlock()
+	for _, wait := range waiters {
+		wait <- false
+	}
 	if pc != nil {
 		_ = pc.Close()
 	}
@@ -272,6 +348,16 @@ func (a *Agent) newRTCSession(ctx context.Context, sid, operatorID, offer string
 			if json.Unmarshal(message.Data, &env) != nil || env.V != 1 {
 				return
 			}
+			if env.Type == "rtc_ack_ready" {
+				s.mu.Lock()
+				s.ackEnabled = true
+				s.mu.Unlock()
+				return
+			}
+			if env.Type == "rtc_ack" {
+				s.noteAck(env.Corr)
+				return
+			}
 			if !a.claimRTCEnvelope(ctx, s, env.Corr) {
 				s.close()
 				a.dropRTCSession(sid, s)
@@ -343,7 +429,13 @@ func (a *Agent) claimRTCEnvelope(ctx context.Context, s *rtcAgentSession, corr s
 func (a *Agent) rtcSink(s *rtcAgentSession) EnvelopeSink {
 	direct := s.sink()
 	return func(ctx context.Context, env Envelope) error {
-		if err := direct(ctx, env); err == nil {
+		var err error
+		if s.needsAck(env) {
+			err = s.sendWithAck(ctx, env)
+		} else {
+			err = direct(ctx, env)
+		}
+		if err == nil {
 			return nil
 		}
 		s.close()

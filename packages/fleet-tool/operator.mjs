@@ -5,7 +5,7 @@ import { OFFICIAL_PLUGIN_CATALOG as GENERATED_PLUGIN_CATALOG, PLUGIN_REGISTRY_SO
  * Do not write hub_sessions, ~/.fleet, or a workspace file.
  */
 
-export const FLEET_VERSION = "0.5.0";
+export const FLEET_VERSION = "0.5.1";
 
 export { PLUGIN_REGISTRY_SOURCE };
 export const OFFICIAL_PLUGIN_CATALOG = GENERATED_PLUGIN_CATALOG;
@@ -770,6 +770,14 @@ export function createOperator({
   let lastUsed = trimId(state.lastUsed) || null;
   let lastCwd = trimId(state.lastCwd) || null;
   const envDefault = trimId(env.FLEET_DEVICE_ID) || null;
+  const corrByDevice = new Map();
+  if (state.corrByDevice && typeof state.corrByDevice === "object" && !Array.isArray(state.corrByDevice)) {
+    for (const [rawDeviceId, rawCorr] of Object.entries(state.corrByDevice)) {
+      const deviceId = trimId(rawDeviceId);
+      const corr = trimId(rawCorr);
+      if (deviceId && corr) corrByDevice.set(deviceId, corr);
+    }
+  }
   const fleetDev = isFleetDev(env);
   const tools = buildTools();
 
@@ -864,10 +872,23 @@ export function createOperator({
     return out;
   }
 
-  async function peekResult(deviceId, trace, waitMs = 0) {
+  function rememberCorr(deviceId, value) {
+    const corr = trimId(value);
+    if (corr) corrByDevice.set(deviceId, corr);
+    return corr;
+  }
+
+  function currentCorr(deviceId) {
+    return corrByDevice.get(deviceId) || "";
+  }
+
+  async function peekResult(deviceId, trace, waitMs = 0, corr = "") {
     const body = { device_id: deviceId };
+    const ticket = corr || currentCorr(deviceId);
+    if (ticket) body.corr = ticket;
     if (waitMs > 0) body.wait_ms = waitMs;
     const row = await callRpc(trace, "/v1/get_result", body);
+    rememberCorr(deviceId, row?.corr);
     return decorateResult(row, deviceId);
   }
 
@@ -875,30 +896,33 @@ export function createOperator({
     const budget = clampWaitMs(timeoutMs);
     const startedAt = now();
     const deadline = startedAt + budget;
-    let snapshot = await peekResult(deviceId, trace, 0);
+    let ticket = rememberCorr(deviceId, corr) || currentCorr(deviceId);
+    let snapshot = await peekResult(deviceId, trace, 0, ticket);
+    ticket = rememberCorr(deviceId, snapshot?.corr) || ticket;
     if (isFinishedResult(snapshot) || budget <= 0) {
-      return isFinishedResult(snapshot) ? snapshot : runningSnapshot(snapshot, corr, deviceId);
+      return isFinishedResult(snapshot) ? snapshot : runningSnapshot(snapshot, ticket, deviceId);
     }
     while (now() < deadline) {
       if (isFinishedResult(snapshot)) return snapshot;
-      if (hooks?.isCancelled?.()) return runningSnapshot(snapshot, corr, deviceId);
+      if (hooks?.isCancelled?.()) return runningSnapshot(snapshot, ticket, deviceId);
       const left = deadline - now();
       if (left <= 0) break;
       hooks?.onProgress?.({ progress: budget - left, total: budget });
       const sl = Math.min(WAIT_POLL_MS, left);
       if (trace) trace.sleep_ms += sl;
       await sleep(sl);
-      snapshot = await peekResult(deviceId, trace, 0);
+      snapshot = await peekResult(deviceId, trace, 0, ticket);
+      ticket = rememberCorr(deviceId, snapshot?.corr) || ticket;
     }
     if (isFinishedResult(snapshot)) return snapshot;
-    return runningSnapshot(snapshot, corr, deviceId);
+    return runningSnapshot(snapshot, ticket, deviceId);
   }
 
   async function execOnDevice(deviceId, command, waitMs, trace, hooks) {
     const body = { device_id: deviceId, command };
     const t0 = now();
     const started = await callRpc(trace, "/v1/run", body);
-    const corr = started?.corr;
+    const corr = rememberCorr(deviceId, started?.corr);
     if (waitMs <= 0) {
       return withDevice({ ...started, corr, status: started?.status ?? "running" }, deviceId);
     }
@@ -972,6 +996,8 @@ export function createOperator({
     if (name === "read_screen") {
       const deviceId = resolveDevice(args);
       const body = { device_id: deviceId };
+      const corr = currentCorr(deviceId);
+      if (corr) body.corr = corr;
       const row = await callRpc(trace, "/v1/read_screen", body);
       return withDev(withDevice(row, deviceId), trace);
     }
@@ -983,6 +1009,8 @@ export function createOperator({
       if (args.keys != null) body.keys = args.keys;
       if (args.key != null && String(args.key) !== "") body.key = String(args.key);
       if (body.keys == null && body.key) body.keys = body.key;
+      const corr = currentCorr(deviceId);
+      if (corr) body.corr = corr;
       const row = await callRpc(trace, "/v1/type", body);
       return withDev(withDevice(row, deviceId), trace);
     }
@@ -1076,6 +1104,6 @@ export function createOperator({
     callTool,
     resolveDevice,
     currentDevice,
-    getState: () => ({ lastUsed, lastCwd, envDefault }),
+    getState: () => ({ lastUsed, lastCwd, envDefault, corrByDevice: Object.fromEntries(corrByDevice) }),
   };
 }

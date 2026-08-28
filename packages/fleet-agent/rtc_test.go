@@ -18,7 +18,11 @@ func TestRTCDataChannelUsesSharedEnvelopeDispatch(t *testing.T) {
 	agent := &Agent{
 		enabled: true, permit: PermitAllow, panes: pane.NewSupervisor(),
 		policyBlocked: func(command string) bool { return command == "printf must-not-run" },
-		relaySink:     func(_ context.Context, _ Envelope) error { return nil },
+	}
+	relayReplies := make(chan Envelope, 16)
+	agent.relaySink = func(_ context.Context, env Envelope) error {
+		relayReplies <- env
+		return nil
 	}
 	operator, err := webrtc.NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
@@ -36,6 +40,13 @@ func TestRTCDataChannelUsesSharedEnvelopeDispatch(t *testing.T) {
 		var env Envelope
 		if json.Unmarshal(message.Data, &env) == nil {
 			replies <- env
+			if env.Type == "result" && env.Corr == "rtc-ok" {
+				ack, _ := json.Marshal(Envelope{
+					V: 1, Type: "rtc_ack", ID: "ack", Corr: env.Corr, T: time.Now().UnixMilli(),
+					Body: map[string]any{"type": env.Type},
+				})
+				_ = dc.SendText(string(ack))
+			}
 		}
 	})
 
@@ -81,12 +92,14 @@ func TestRTCDataChannelUsesSharedEnvelopeDispatch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	send(Envelope{V: 1, Type: "rtc_ack_ready", ID: "ack-ready", T: time.Now().UnixMilli(), Body: map[string]any{"version": 1}})
 	send(Envelope{V: 1, Type: "run", ID: "one", Corr: "rtc-ok", T: time.Now().UnixMilli(), Body: map[string]any{
 		"command": "printf rtc-ok", "fingerprint": "test-operator",
 	}})
 	waitRTCReply(t, ctx, replies, "rtc-ok", func(env Envelope) bool {
 		return env.Type == "result" && env.Body["ok"] == true && strings.Contains(env.Body["stdout"].(string), "rtc-ok")
 	})
+	assertNoRTCRelayResult(t, relayReplies, "rtc-ok", rtcAckTimeout+200*time.Millisecond)
 
 	send(Envelope{V: 1, Type: "run", ID: "two", Corr: "rtc-blocked", T: time.Now().UnixMilli(), Body: map[string]any{
 		"command": "printf must-not-run", "fingerprint": "test-operator",
@@ -94,6 +107,24 @@ func TestRTCDataChannelUsesSharedEnvelopeDispatch(t *testing.T) {
 	waitRTCReply(t, ctx, replies, "rtc-blocked", func(env Envelope) bool {
 		return env.Type == "result" && env.Body["ok"] == false && env.Body["exit_code"] == float64(126)
 	})
+	waitRTCReply(t, ctx, relayReplies, "rtc-blocked", func(env Envelope) bool {
+		return env.Type == "result" && env.Body["ok"] == false
+	})
+}
+
+func TestRTCAckRequiresNegotiation(t *testing.T) {
+	session := &rtcAgentSession{authorized: true}
+	result := resultEnv("corr-1", true, 0, "ok", "")
+	if session.needsAck(result) {
+		t.Fatal("old Tool sessions must keep the pre-ACK behavior")
+	}
+	session.ackEnabled = true
+	if !session.needsAck(result) {
+		t.Fatal("negotiated terminal results must require an ACK")
+	}
+	if session.needsAck(Envelope{V: 1, Type: "screen", Corr: "corr-1"}) {
+		t.Fatal("screen snapshots must not add ACK traffic")
+	}
 }
 
 func TestRTCClaimIsOnceAndResponseFallsBackToRelay(t *testing.T) {
@@ -130,6 +161,22 @@ func waitRTCReply(t *testing.T, ctx context.Context, replies <-chan Envelope, co
 			}
 		case <-ctx.Done():
 			t.Fatalf("timeout waiting for %s", corr)
+		}
+	}
+}
+
+func assertNoRTCRelayResult(t *testing.T, replies <-chan Envelope, corr string, wait time.Duration) {
+	t.Helper()
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	for {
+		select {
+		case env := <-replies:
+			if env.Type == "result" && env.Corr == corr {
+				t.Fatalf("acked RTC result %s was mirrored to relay", corr)
+			}
+		case <-timer.C:
+			return
 		}
 	}
 }

@@ -63,7 +63,14 @@ test("shared MCP protocol exposes per-result transport only in _meta", async () 
 });
 
 test("Streamable HTTP can restore process-local device selection after DO eviction", async () => {
-  const first = new McpRpcSession({ rpc: async () => ({}) });
+  const calls = [];
+  const rpc = async (path, body) => {
+    calls.push({ path, body: { ...body } });
+    if (path === "/v1/run") return { corr: "job-a", status: "running" };
+    if (path === "/v1/get_result") return { corr: body.corr, status: "pending" };
+    return {};
+  };
+  const first = new McpRpcSession({ rpc });
   const selected = await first.dispatch({
     jsonrpc: "2.0",
     id: 1,
@@ -72,8 +79,15 @@ test("Streamable HTTP can restore process-local device selection after DO evicti
   });
   assert.equal(JSON.parse(selected.result.content[0].text).device_id, "box-a");
   assert.equal(first.getState().lastUsed, "box-a");
+  await first.dispatch({
+    jsonrpc: "2.0",
+    id: "run",
+    method: "tools/call",
+    params: { name: "run", arguments: { command: "sleep 1", wait_ms: 0 } },
+  });
+  assert.equal(first.getState().corrByDevice["box-a"], "job-a");
 
-  const restored = new McpRpcSession({ rpc: async () => ({}), state: first.getState() });
+  const restored = new McpRpcSession({ rpc, state: first.getState() });
   const current = await restored.dispatch({
     jsonrpc: "2.0",
     id: 2,
@@ -81,6 +95,14 @@ test("Streamable HTTP can restore process-local device selection after DO evicti
     params: { name: "get_current_computer", arguments: {} },
   });
   assert.equal(JSON.parse(current.result.content[0].text).device_id, "box-a");
+  await restored.dispatch({
+    jsonrpc: "2.0",
+    id: "result",
+    method: "tools/call",
+    params: { name: "get_result", arguments: {} },
+  });
+  assert.equal(calls.at(-1).path, "/v1/get_result");
+  assert.equal(calls.at(-1).body.corr, "job-a");
 });
 
 test("only meaningful MCP methods refresh idle activity", () => {

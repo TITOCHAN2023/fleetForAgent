@@ -59,18 +59,6 @@ const url = (process.env.FLEET_URL || "").replace(/\/$/, "");
 const token = process.env.FLEET_TOKEN || "";
 
 const argv = applyCliDevFlag(process.argv.slice(2), process.env);
-if (argv.length) {
-  if (!url || !token) {
-    console.error("Need FLEET_URL and FLEET_TOKEN (env or ~/.fleet/mcp.env)");
-    process.exit(1);
-  }
-  void cli(argv).catch((err) => {
-    console.error(err instanceof Error ? err.message : err);
-    process.exit(1);
-  });
-} else {
-  mcp();
-}
 
 async function hubHeaders() {
   const authorization = await highSecAuthorization(token, url);
@@ -127,6 +115,19 @@ async function hubRpc(path, body, { timed = false } = {}) {
 
 async function rpc(path, body) {
   return unwrapTimedRpc(await hubRpc(path, body, { timed: false })).json;
+}
+
+if (argv.length) {
+  if (!url || !token) {
+    console.error("Need FLEET_URL and FLEET_TOKEN (env or ~/.fleet/mcp.env)");
+    process.exit(1);
+  }
+  void cli(argv).catch((err) => {
+    console.error(err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+} else {
+  mcp();
 }
 
 async function cli(args) {

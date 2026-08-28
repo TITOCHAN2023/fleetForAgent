@@ -59,7 +59,8 @@ test("heartbeat stays on the existing hub path and never opens RTC", async () =>
 });
 
 test("Tool sends no business data before Agent confirms its ticket with rtc_ready", async () => {
-  const dc = {};
+  const sent = [];
+  const dc = { send: (raw) => sent.push(JSON.parse(raw)) };
   const pc = { connectionStateChange: { subscribe() {} } };
   const session = new _test.DirectSession({
     sid: "11111111-2222-4333-8444-555555555555",
@@ -83,6 +84,23 @@ test("Tool sends no business data before Agent confirms its ticket with rtc_read
   );
   await session.waitReady(10);
   assert.equal(session.directReady, true);
+  assert.equal(sent.at(-1).type, "rtc_ack_ready");
+  assert.equal(sent.at(-1).body.version, 1);
+  session.onMessage(JSON.stringify({
+    v: 1,
+    type: "result",
+    corr: "corr-1",
+    t: Date.now(),
+    body: { ok: true, exit_code: 0, stdout: "ok" },
+  }));
+  assert.deepEqual(sent.at(-1), {
+    v: 1,
+    type: "rtc_ack",
+    id: sent.at(-1).id,
+    corr: "corr-1",
+    t: sent.at(-1).t,
+    body: { type: "result" },
+  });
 });
 
 test("closed RTC snapshots fall back to the hub unless the final reply was already received", async () => {

@@ -90,6 +90,32 @@ test("packed fleet-tool starts and asks for FLEET_URL / FLEET_TOKEN", () => {
   }
 });
 
+test("packed fleet-tool initializes RTC before starting its CLI", () => {
+  const dir = mkdtempSync(join(tmpdir(), "fleet-tool-cli-test-"));
+  try {
+    execFileSync("tar", ["-xzf", publicTgz, "-C", dir]);
+    let err;
+    try {
+      execFileSync("node", [join(dir, "package/index.mjs"), "list"], {
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          FLEET_URL: "http://127.0.0.1:9",
+          FLEET_TOKEN: "invalid-test-token",
+        },
+        timeout: 5000,
+      });
+    } catch (e) {
+      err = e;
+    }
+    assert.ok(err, "expected invalid-token or connection failure");
+    assert.doesNotMatch(String(err.stderr || err.stdout || err), /before initialization/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("Help and Settings snippets use npx, not a repo clone", () => {
   assert.match(html, /npx -y https:\/\/fleet\.ginfo\.cc\/fleet-tool\.tgz/);
   assert.equal((html.match(/npx -y https:\/\/fleet\.ginfo\.cc\/fleet-tool\.tgz/g) || []).length, 2);

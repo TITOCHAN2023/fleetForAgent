@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createSessionBook } from "../fleet-worker/src/session.mjs";
 import {
   CWD_MARK,
   FLEET_VERSION,
@@ -179,6 +180,7 @@ test("run wait_ms omitted waits and returns the finished payload", async () => {
   assert.ok(calls.some((c) => c.path === "/v1/get_result"));
   assert.equal("wait_ms" in calls[0].body, false);
   assert.ok(calls.filter((c) => c.path === "/v1/get_result").every((c) => !("wait_ms" in c.body)));
+  assert.ok(calls.filter((c) => c.path === "/v1/get_result").every((c) => c.body.corr === "c1"));
   assertSentCommand(calls[0].body.command, "pwd");
 });
 
@@ -465,7 +467,7 @@ test("remembered device offline fails explicitly with no fallback", async () => 
   assert.equal(runs[0].body.device_id, "dead");
 });
 
-test("type and get_result never send corr even if the model hallucinates one", async () => {
+test("type, result, and screen use the internally issued corr, never a model-supplied corr", async () => {
   const { rpc, calls } = mockRpc({
     "/v1/run": () => ({ corr: "job-a", status: "running" }),
     "/v1/type": () => ({ ok: true, status: "typed" }),
@@ -479,9 +481,83 @@ test("type and get_result never send corr even if the model hallucinates one", a
   await op.callTool("read_screen", { corr: "job-a" });
   const bodies = calls.filter((c) => c.path !== "/v1/run").map((c) => c.body);
   assert.ok(bodies.length >= 3);
-  assert.ok(bodies.every((b) => !("corr" in b)));
+  assert.ok(bodies.every((b) => b.corr === "job-a"));
   assert.ok(bodies.every((b) => !("fingerprint" in b)));
   assert.ok(bodies.every((b) => !("operator" in b)));
+});
+
+test("concurrent runs on one device poll only their own corr", async () => {
+  const calls = [];
+  const rpc = async (path, body) => {
+    calls.push({ path, body: { ...body } });
+    if (path === "/v1/run") {
+      if (body.command === "slow") {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return { corr: "job-slow", status: "running" };
+      }
+      return { corr: "job-fast", status: "running" };
+    }
+    if (path === "/v1/get_result") {
+      assert.ok(["job-slow", "job-fast"].includes(body.corr));
+      return {
+        corr: body.corr,
+        status: "done",
+        ok: true,
+        exit_code: 0,
+        stdout: body.corr === "job-slow" ? "slow-only" : "fast-only",
+      };
+    }
+    throw new Error(`unexpected ${path}`);
+  };
+  const op = createOperator({ rpc });
+  const [slow, fast] = await Promise.all([
+    op.callTool("run", { device_id: "host-a", command: "slow" }),
+    op.callTool("run", { device_id: "host-a", command: "fast" }),
+  ]);
+  assert.equal(slow.stdout, "slow-only");
+  assert.equal(fast.stdout, "fast-only");
+  assert.deepEqual(
+    calls.filter((call) => call.path === "/v1/get_result").map((call) => call.body.corr).sort(),
+    ["job-fast", "job-slow"],
+  );
+});
+
+test("two operator processes on one device receive only their own results", async () => {
+  const sessions = createSessionBook();
+  const results = new Map();
+  let seq = 0;
+  const rpcFor = (fingerprint) => async (path, body) => {
+    if (path === "/v1/run") {
+      const corr = `job-${++seq}`;
+      sessions.claim(fingerprint, corr);
+      results.set(corr, {
+        corr,
+        status: "done",
+        ok: true,
+        exit_code: 0,
+        stdout: `${fingerprint}:${body.command}`,
+      });
+      return { corr, status: "running" };
+    }
+    if (path === "/v1/get_result") {
+      const resolved = sessions.resolve(fingerprint, body.corr);
+      if (resolved.drop || !resolved.corr) return { status: "pending" };
+      return results.get(resolved.corr) || { corr: resolved.corr, status: "pending" };
+    }
+    throw new Error(`unexpected ${path}`);
+  };
+
+  const operatorA = createOperator({ rpc: rpcFor("agent-a") });
+  const operatorB = createOperator({ rpc: rpcFor("agent-b") });
+  const [a, b] = await Promise.all([
+    operatorA.callTool("run", { device_id: "shared-host", command: "A" }),
+    operatorB.callTool("run", { device_id: "shared-host", command: "B" }),
+  ]);
+
+  assert.equal(a.stdout, "agent-a:A");
+  assert.equal(b.stdout, "agent-b:B");
+  assert.equal(sessions.resolve("agent-a", b.corr).drop, true);
+  assert.equal(sessions.resolve("agent-b", a.corr).drop, true);
 });
 
 test("get_result after set_computer uses last-used; hub isolates by fingerprint header", async () => {
@@ -908,8 +984,8 @@ test("applyCliDevFlag sets FLEET_DEV and strips --dev", () => {
   assert.equal(isFleetDev({}), false);
 });
 
-test("MCP version is 0.5.0", () => {
-  assert.equal(FLEET_VERSION, "0.5.0");
+test("MCP version is 0.5.1", () => {
+  assert.equal(FLEET_VERSION, "0.5.1");
 });
 
 test("official plugin registry pins every platform artifact to SHA-256", () => {

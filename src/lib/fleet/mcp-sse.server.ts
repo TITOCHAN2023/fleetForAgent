@@ -34,7 +34,12 @@ export type Operator = {
       onProgress?: (progress: { progress: number; total: number }) => void;
     },
   ) => Promise<unknown>;
-  getState?: () => { lastUsed?: string | null; lastCwd?: string | null; envDefault?: string | null };
+  getState?: () => {
+    lastUsed?: string | null;
+    lastCwd?: string | null;
+    envDefault?: string | null;
+    corrByDevice?: Record<string, string>;
+  };
 };
 
 type MakeOperator = (options: {

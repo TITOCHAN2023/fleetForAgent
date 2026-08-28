@@ -89,7 +89,7 @@ Agent 填 `http://127.0.0.1:8787`（会转成 `ws://…/v1/device`）。
 
 ### 可选的点对点数据通道和自建 STUN
 
-Agent 0.5.0 与本地 `fleet-tool` 0.5.0 会先保留原来的 WSS 控制连接，再尝试建立 WebRTC DataChannel。直连成功后，`run`、pane、桌面和插件仍传同一份 `{ v, type, id, corr, t, body }`；打洞失败、超时、旧客户端没有 `rtc_v1`，都会回到原来的 Worker → WSS 路径。远程 `/mcp` 和 `/mcp/sse` 运行在 Worker 内，没有 UDP socket，继续走中枢。
+Agent 0.5.1 与本地 `fleet-tool` 0.5.1 会先保留原来的 WSS 控制连接，再尝试建立 WebRTC DataChannel。直连成功后，`run`、pane、桌面和插件仍传同一份 `{ v, type, id, corr, t, body }`。新版双方会协商终态结果 ACK：DataChannel 写入成功但 Tool 没收到时，Agent 才会经 WSS 补投一次并关闭坏掉的直连；健康直连的业务数据仍不经过 Worker。旧客户端不协商 ACK，保持原行为。打洞失败、超时或缺少 `rtc_v1` 时，继续回到原来的 Worker → WSS 路径。远程 `/mcp` 和 `/mcp/sse` 运行在 Worker 内，没有 UDP socket，继续走中枢。
 
 ```mermaid
 flowchart LR

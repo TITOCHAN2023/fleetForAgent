@@ -10,6 +10,6 @@
     "werift": "0.24.4"
   },
   "scripts": {
-    "test": "node --test operator.test.mjs mcp-protocol.test.mjs rtc.test.mjs"
+    "test": "node --test operator.test.mjs mcp-protocol.test.mjs rtc.test.mjs file-transfer.test.mjs file-transfer-rtc.test.mjs"
   }
 }

@@ -41,6 +41,9 @@ test("guide advertises only the MCP tools shipped on main", () => {
     "uninstall_plugin",
     "invoke_plugin",
     "get_plugin_task",
+    "start_file_transfer",
+    "get_file_transfer",
+    "cancel_file_transfer",
     "configure_acp",
     "delegate_to_acp",
   ]);

@@ -1077,6 +1077,64 @@ test("buildTools ships desktop_screenshot and desktop_action", () => {
   assert.equal(names.filter((n) => n === "read_screen").length, 1);
 });
 
+test("file transfer tools expose one generic endpoint model", () => {
+  const tools = buildTools();
+  for (const name of ["start_file_transfer", "get_file_transfer", "cancel_file_transfer"]) {
+    assert.ok(tools.some((tool) => tool.name === name), name);
+  }
+  const start = tools.find((tool) => tool.name === "start_file_transfer");
+  assert.deepEqual(start.inputSchema.required, ["source", "target"]);
+  assert.deepEqual(start.inputSchema.properties.source.properties.kind.enum, ["tool", "device"]);
+  assert.match(start.description, /never falls back/i);
+});
+
+test("local file endpoints delegate to the local streaming manager", async () => {
+  const calls = [];
+  const fileTransfer = {
+    start: async (input) => {
+      calls.push(["start", input]);
+      return { transfer_id: "t-1", phase: "preparing_source" };
+    },
+    status: async (id) => {
+      calls.push(["status", id]);
+      return { transfer_id: id, phase: "transferring" };
+    },
+    cancel: async (id) => {
+      calls.push(["cancel", id]);
+      return { transfer_id: id, phase: "cancelled" };
+    },
+  };
+  const op = createOperator({ rpc: async () => assert.fail("Hub rpc should stay inside the transfer manager"), fileTransfer });
+  const source = { kind: "tool", path: "/tmp/source.bin" };
+  const target = { kind: "device", device_id: "device-a", directory: "/tmp/incoming" };
+  assert.equal((await op.callTool("start_file_transfer", { source, target })).transfer_id, "t-1");
+  assert.equal((await op.callTool("get_file_transfer", { transfer_id: "t-1" })).phase, "transferring");
+  assert.equal((await op.callTool("cancel_file_transfer", { transfer_id: "t-1" })).phase, "cancelled");
+  assert.deepEqual(calls, [["start", { source, target }], ["status", "t-1"], ["cancel", "t-1"]]);
+});
+
+test("remote MCP can coordinate device-to-device but cannot claim a Tool disk", async () => {
+  const { rpc, calls } = mockRpc({
+    "/v1/transfer/create": (body) => ({ transfer: { transfer_id: "t-2", phase: "pending", body } }),
+  });
+  const op = createOperator({ rpc });
+  const row = await op.callTool("start_file_transfer", {
+    source: { kind: "device", device_id: "source-a", path: "/srv/a.bin" },
+    target: { kind: "device", device_id: "target-b", directory: "/srv/incoming" },
+  });
+  assert.equal(row.transfer_id, "t-2");
+  assert.equal(calls[0].path, "/v1/transfer/create");
+  assert.deepEqual(calls[0].body.source, { kind: "device", id: "source-a" });
+  await assert.rejects(
+    () =>
+      op.callTool("start_file_transfer", {
+        source: { kind: "tool", path: "/tmp/a" },
+        target: { kind: "device", device_id: "target-b", directory: "/srv/incoming" },
+      }),
+    /local Fleet Tool/i,
+  );
+});
+
 test("newOperatorFingerprint is a UUID and is not read from FLEET_OPERATOR", () => {
   const prev = process.env.FLEET_OPERATOR;
   process.env.FLEET_OPERATOR = "model-filled-id";

@@ -28,6 +28,9 @@ const MCP_TOOLS: { name: string; key: MessageKey }[] = [
   { name: "uninstall_plugin", key: "guide.tool.uninstall_plugin" },
   { name: "invoke_plugin", key: "guide.tool.invoke_plugin" },
   { name: "get_plugin_task", key: "guide.tool.get_plugin_task" },
+  { name: "start_file_transfer", key: "guide.tool.start_file_transfer" },
+  { name: "get_file_transfer", key: "guide.tool.get_file_transfer" },
+  { name: "cancel_file_transfer", key: "guide.tool.cancel_file_transfer" },
   { name: "configure_acp", key: "guide.tool.configure_acp" },
   { name: "delegate_to_acp", key: "guide.tool.delegate_to_acp" },
 ];

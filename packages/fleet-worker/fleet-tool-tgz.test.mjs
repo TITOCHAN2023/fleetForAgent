@@ -38,6 +38,8 @@ function assertNpmTarball(tgz) {
     "package/package.json",
     "package/index.mjs",
     "package/operator.mjs",
+    "package/file-transfer.mjs",
+    "package/file-transfer-rtc.mjs",
     "package/official-plugins.generated.mjs",
     "package/tokenv1.mjs",
   ]) {
@@ -60,7 +62,7 @@ test("packer output matches the committed tarball contents", () => {
   try {
     packFleetTool({ outFile: fresh });
     assertNpmTarball(fresh);
-    for (const name of ["package/package.json", "package/index.mjs", "package/operator.mjs", "package/official-plugins.generated.mjs", "package/tokenv1.mjs"]) {
+    for (const name of ["package/package.json", "package/index.mjs", "package/operator.mjs", "package/file-transfer.mjs", "package/file-transfer-rtc.mjs", "package/official-plugins.generated.mjs", "package/tokenv1.mjs"]) {
       assert.equal(tarballFile(publicTgz, name), tarballFile(fresh, name), name);
     }
   } finally {
@@ -154,9 +156,9 @@ test("wrangler keeps SPA fallback, explicit DO migrations, and token vars secret
   assert.doesNotMatch(wrangler, /run_worker_first = true/);
   assert.match(worker, /isFleetToolTgzPath/);
   assert.match(worker, /serveFleetToolTgz/);
-  assert.equal((wrangler.match(/new_sqlite_classes/g) || []).length, 2);
   assert.match(wrangler, /new_sqlite_classes = \["DeviceDO", "FleetDO"\]/);
   assert.match(wrangler, /new_sqlite_classes = \["McpDO"\]/);
+  assert.match(wrangler, /tag = "v3"\s+new_sqlite_classes = \["TransferDO"\]/);
   const varsBlock = wrangler.slice(wrangler.indexOf("\n[vars]"));
   const varsEnd = varsBlock.search(/\n\[\[|\n\[assets\]/);
   const vars = varsBlock.slice(0, varsEnd === -1 ? undefined : varsEnd);

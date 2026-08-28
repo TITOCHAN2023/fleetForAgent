@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "type": "file_ack",
+  "id": "815739bb-bca5-48a9-aeee-2c16bbfe11de",
+  "t": 1800000000000,
+  "body": {
+    "transfer_id": "e3407bcb-732a-45ee-80e2-0f95761b5b13",
+    "committed": 32768
+  }
+}

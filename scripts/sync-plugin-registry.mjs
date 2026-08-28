@@ -48,7 +48,16 @@ export function validateRegistry(input) {
     if (typeof plugin.installable !== "boolean") fail(`${field}.installable must be boolean`);
     if (!Array.isArray(plugin.categories) || !plugin.categories.length) fail(`${field}.categories must be non-empty`);
     if (!Array.isArray(plugin.actions) || !Array.isArray(plugin.artifacts)) fail(`${field}.actions and artifacts must be arrays`);
+    const actions = plugin.actions.map((value, actionIndex) => text(value, `${field}.actions.${actionIndex}`));
+    if (new Set(actions).size !== actions.length) fail(`${field}.actions must be unique`);
+    if (!Array.isArray(plugin.approval_actions ?? [])) fail(`${field}.approval_actions must be an array`);
+    const approvalActions = (plugin.approval_actions ?? []).map((value, actionIndex) => text(value, `${field}.approval_actions.${actionIndex}`));
+    if (new Set(approvalActions).size !== approvalActions.length || approvalActions.some((action) => !actions.includes(action))) {
+      fail(`${field}.approval_actions must be unique members of actions`);
+    }
     const repository = httpsUrl(plugin.repository, `${field}.repository`, "github.com");
+    const repositoryPath = new URL(repository).pathname.replace(/\/$/, "");
+    const version = text(plugin.version, `${field}.version`);
     const platforms = new Set();
     const artifacts = plugin.artifacts.map((artifact, artifactIndex) => {
       const artifactField = `${field}.artifacts.${artifactIndex}`;
@@ -59,7 +68,8 @@ export function validateRegistry(input) {
       platforms.add(platform);
       const url = httpsUrl(artifact.url, `${artifactField}.url`, "github.com");
       const parsed = new URL(url);
-      if (!parsed.pathname.startsWith("/TITOCHAN2023/") || !parsed.pathname.includes("/releases/download/")) fail(`${artifactField}.url is outside the Fleet release trust root`);
+      const releasePrefix = `${repositoryPath}/releases/download/v${version}/`;
+      if (!parsed.pathname.startsWith(releasePrefix)) fail(`${artifactField}.url must come from this plugin repository and v${version}`);
       if (!SHA256.test(artifact.sha256)) fail(`${artifactField}.sha256 is invalid`);
       const entrypoint = text(artifact.entrypoint, `${artifactField}.entrypoint`);
       if (entrypoint.includes("/") || entrypoint.includes("\\")) fail(`${artifactField}.entrypoint must be a basename`);
@@ -77,7 +87,7 @@ export function validateRegistry(input) {
       id,
       order: plugin.order,
       name: text(plugin.name, `${field}.name`),
-      version: text(plugin.version, `${field}.version`),
+      version,
       publisher: text(plugin.publisher, `${field}.publisher`),
       license: text(plugin.license, `${field}.license`),
       repository,
@@ -85,7 +95,8 @@ export function validateRegistry(input) {
       categories: plugin.categories.map((value, categoryIndex) => text(value, `${field}.categories.${categoryIndex}`)),
       description,
       installable: plugin.installable,
-      actions: plugin.actions.map((value, actionIndex) => text(value, `${field}.actions.${actionIndex}`)),
+      actions,
+      approval_actions: approvalActions,
       artifacts,
       source_file: text(plugin.source_file, `${field}.source_file`),
       body: text(plugin.body, `${field}.body`),

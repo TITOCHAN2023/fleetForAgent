@@ -40,6 +40,8 @@ export function packFleetTool({ outFile = DEFAULT_OUT } = {}) {
     writeFileSync(join(stage, "index.mjs"), rewriteToolIndex(readFileSync(join(TOOL_DIR, "index.mjs"), "utf8")));
     cpSync(join(TOOL_DIR, "operator.mjs"), join(stage, "operator.mjs"));
     cpSync(join(TOOL_DIR, "rtc.mjs"), join(stage, "rtc.mjs"));
+    cpSync(join(TOOL_DIR, "file-transfer.mjs"), join(stage, "file-transfer.mjs"));
+    cpSync(join(TOOL_DIR, "file-transfer-rtc.mjs"), join(stage, "file-transfer-rtc.mjs"));
     cpSync(join(TOOL_DIR, "official-plugins.generated.mjs"), join(stage, "official-plugins.generated.mjs"));
     cpSync(TOKEN_SRC, join(stage, "tokenv1.mjs"));
     cpSync(join(TOOL_DIR, "README.md"), join(stage, "README.md"));
@@ -53,7 +55,7 @@ export function packFleetTool({ outFile = DEFAULT_OUT } = {}) {
           type: "module",
           bin: { "fleet-tool": "./index.mjs" },
           dependencies: { werift: "0.24.4" },
-          files: ["index.mjs", "operator.mjs", "rtc.mjs", "official-plugins.generated.mjs", "tokenv1.mjs", "README.md"],
+          files: ["index.mjs", "operator.mjs", "rtc.mjs", "file-transfer.mjs", "file-transfer-rtc.mjs", "official-plugins.generated.mjs", "tokenv1.mjs", "README.md"],
         },
         null,
         2,

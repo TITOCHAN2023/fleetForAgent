@@ -23,25 +23,29 @@ const (
 	pendingKindPlugin = "plugin"
 	pluginMaxDownload = 100 << 20
 	pluginMaxOutput   = 2 << 20
+	pluginStreamLine  = 64 << 10
 )
 
 type pluginArtifact struct {
 	OS         string `json:"os"`
 	Arch       string `json:"arch"`
 	URL        string `json:"url"`
+	MirrorURL  string `json:"mirror_url,omitempty"`
 	SHA256     string `json:"sha256"`
 	Entrypoint string `json:"entrypoint"`
 }
 
 type pluginManifest struct {
-	SchemaVersion int              `json:"schema_version"`
-	ID            string           `json:"id"`
-	Name          string           `json:"name"`
-	Version       string           `json:"version"`
-	Publisher     string           `json:"publisher"`
-	License       string           `json:"license"`
-	Repository    string           `json:"repository"`
-	Artifacts     []pluginArtifact `json:"artifacts"`
+	SchemaVersion   int              `json:"schema_version"`
+	ID              string           `json:"id"`
+	Name            string           `json:"name"`
+	Version         string           `json:"version"`
+	Publisher       string           `json:"publisher"`
+	License         string           `json:"license"`
+	Repository      string           `json:"repository"`
+	Actions         []string         `json:"actions"`
+	ApprovalActions []string         `json:"approval_actions,omitempty"`
+	Artifacts       []pluginArtifact `json:"artifacts"`
 }
 
 type pluginRequest struct {
@@ -54,15 +58,18 @@ type pluginRequest struct {
 }
 
 type installedPlugin struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Version     string `json:"version"`
-	Publisher   string `json:"publisher"`
-	License     string `json:"license"`
-	Repository  string `json:"repository"`
-	SHA256      string `json:"sha256"`
-	Entrypoint  string `json:"entrypoint"`
-	InstalledAt int64  `json:"installed_at"`
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Version         string   `json:"version"`
+	Publisher       string   `json:"publisher"`
+	License         string   `json:"license"`
+	Repository      string   `json:"repository"`
+	ArtifactURL     string   `json:"artifact_url,omitempty"`
+	SHA256          string   `json:"sha256"`
+	Entrypoint      string   `json:"entrypoint"`
+	Actions         []string `json:"actions,omitempty"`
+	ApprovalActions []string `json:"approval_actions,omitempty"`
+	InstalledAt     int64    `json:"installed_at"`
 }
 
 type capBuffer struct {
@@ -95,6 +102,7 @@ func decodePluginRequest(body map[string]any) (pluginRequest, error) {
 	}
 	req.Operation = strings.TrimSpace(req.Operation)
 	req.PluginID = strings.TrimSpace(req.PluginID)
+	req.Action = strings.TrimSpace(req.Action)
 	return req, nil
 }
 
@@ -113,8 +121,20 @@ func pluginConsentText(req pluginRequest) string {
 			CWD            string `json:"cwd"`
 			Prompt         string `json:"prompt"`
 			PermissionMode string `json:"permission_mode"`
+			Path           string `json:"path"`
+			Directory      string `json:"directory"`
+			Name           string `json:"name"`
+			Peer           string `json:"peer"`
+			Size           int64  `json:"size"`
 		}
 		_ = json.Unmarshal(req.Input, &input)
+		if req.PluginID == "fleet.transfer" && req.Action == "prepare_source" {
+			return fmt.Sprintf("send file %q to %q", input.Path, input.Peer)
+		}
+		if req.PluginID == "fleet.transfer" && req.Action == "prepare_target" {
+			target := filepath.Join(input.Directory, input.Name)
+			return fmt.Sprintf("receive %d bytes from %q into %q (will not overwrite)", input.Size, input.Peer, target)
+		}
 		if req.Action == "configure" && strings.TrimSpace(input.Command) != "" {
 			return fmt.Sprintf("plugin %s configure command: %s", req.PluginID, clip(input.Command, 80))
 		}
@@ -133,6 +153,14 @@ func pluginConsentText(req pluginRequest) string {
 
 func pluginSoftwareChange(operation string) bool {
 	return operation == "install" || operation == "uninstall"
+}
+
+func pluginActionRequiresApproval(id, action string) (bool, error) {
+	meta, _, err := installedPluginForAction(id, action)
+	if err != nil {
+		return false, err
+	}
+	return containsString(meta.ApprovalActions, action), nil
 }
 
 func pluginAcceptedEnv(corr, status string) Envelope {
@@ -161,10 +189,19 @@ func (a *Agent) handlePlugin(ctx context.Context, sink EnvelopeSink, env Envelop
 		go a.executePlugin(context.Background(), sink, env.Corr, req)
 		return
 	}
+	alwaysAsk := pluginSoftwareChange(req.Operation)
+	if req.Operation == "invoke" {
+		alwaysAsk, err = pluginActionRequiresApproval(req.PluginID, req.Action)
+		if err != nil {
+			_ = sink(ctx, pluginResultEnv(env.Corr, nil, err))
+			return
+		}
+	}
 	a.mu.Lock()
 	v, msg := a.inputVerdict()
-	// Software changes always require a person at the device, even under permit=allow.
-	if pluginSoftwareChange(req.Operation) && v == permitProceed {
+	// Software changes and manifest-declared sensitive actions always require a
+	// person at the device, even under permit=allow.
+	if alwaysAsk && v == permitProceed {
 		if a.pending != nil {
 			v, msg = permitRefuse, "fleet: another command is waiting for consent"
 		} else {
@@ -201,7 +238,10 @@ func (a *Agent) executePlugin(ctx context.Context, sink EnvelopeSink, corr strin
 		if req.Manifest == nil {
 			err = errors.New("manifest required")
 		} else {
-			result, err = installPlugin(ctx, *req.Manifest)
+			a.mu.Lock()
+			hubInput, hubToken := a.hubInput, a.hubToken
+			a.mu.Unlock()
+			result, err = installPluginFromHub(ctx, *req.Manifest, hubInput, hubToken)
 		}
 	case "uninstall":
 		result, err = uninstallPlugin(req.PluginID)
@@ -218,6 +258,14 @@ func (a *Agent) executePlugin(ctx context.Context, sink EnvelopeSink, corr strin
 		a.log("info", "plugin "+req.Operation+" completed")
 	}
 	a.mu.Unlock()
+	if req.Operation == "install" || req.Operation == "uninstall" {
+		if relay := a.relayEnvelopeSink(); relay != nil {
+			_ = relay(context.Background(), Envelope{
+				V: 1, Type: "ping", ID: fmt.Sprintf("%d", time.Now().UnixNano()), T: time.Now().UnixMilli(),
+				Body: map[string]any{"agent_ver": agentVersion, "caps": agentCaps()},
+			})
+		}
+	}
 	a.pushUI()
 }
 
@@ -236,6 +284,156 @@ func cleanPluginID(id string) (string, error) {
 	return id, nil
 }
 
+func cleanPluginAction(action string) (string, error) {
+	action = strings.TrimSpace(action)
+	if action == "" || len(action) > 80 {
+		return "", errors.New("invalid plugin action")
+	}
+	for _, r := range action {
+		if !(r == '.' || r == '-' || r == '_' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9') {
+			return "", errors.New("invalid plugin action")
+		}
+	}
+	return action, nil
+}
+
+func cleanPluginVersion(version string) (string, error) {
+	version = strings.TrimSpace(version)
+	if version == "" || len(version) > 80 {
+		return "", errors.New("invalid plugin version")
+	}
+	for _, r := range version {
+		if !(r == '.' || r == '-' || r == '_' || r == '+' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+			return "", errors.New("invalid plugin version")
+		}
+	}
+	return version, nil
+}
+
+func cleanPluginEntrypoint(entrypoint string) (string, error) {
+	if entrypoint == "" || entrypoint == "." || entrypoint == ".." || strings.ContainsAny(entrypoint, `/\\`) {
+		return "", errors.New("invalid plugin entrypoint")
+	}
+	return entrypoint, nil
+}
+
+func officialRepositoryPath(raw string) (string, error) {
+	repo, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || repo.Scheme != "https" || repo.Host != "github.com" || repo.User != nil || repo.RawQuery != "" || repo.Fragment != "" {
+		return "", errors.New("untrusted plugin repository")
+	}
+	path := strings.TrimSuffix(repo.Path, "/")
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(parts) != 2 || parts[0] != "TITOCHAN2023" {
+		return "", errors.New("untrusted plugin repository")
+	}
+	if _, err := cleanPluginID(parts[1]); err != nil {
+		return "", errors.New("untrusted plugin repository")
+	}
+	return path, nil
+}
+
+func validateArtifactURL(raw, repository, version string) error {
+	repoPath, err := officialRepositoryPath(repository)
+	if err != nil {
+		return err
+	}
+	version, err = cleanPluginVersion(version)
+	if err != nil {
+		return err
+	}
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "https" || u.Host != "github.com" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("untrusted plugin artifact URL")
+	}
+	prefix := repoPath + "/releases/download/v" + version + "/"
+	name := strings.TrimPrefix(u.Path, prefix)
+	if name == u.Path || name == "" || strings.Contains(name, "/") {
+		return errors.New("plugin artifact does not match repository and version")
+	}
+	return nil
+}
+
+func validatePluginMirrorURL(raw, pluginID, version, osName, arch, hubInput string) error {
+	pluginID, err := cleanPluginID(pluginID)
+	if err != nil {
+		return err
+	}
+	version, err = cleanPluginVersion(version)
+	if err != nil {
+		return err
+	}
+	expectedOrigin := hubOrigin(hubInput)
+	if expectedOrigin == "" {
+		return errors.New("plugin mirror requires the configured hub origin")
+	}
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" ||
+		hubOrigin(u.Scheme+"://"+u.Host) != expectedOrigin {
+		return errors.New("plugin mirror must use the configured hub origin")
+	}
+	expectedPath := "/v1/plugin-artifact/" + pluginID + "/" + version + "/" + osName + "/" + arch
+	if u.Path != expectedPath {
+		return errors.New("invalid plugin mirror path")
+	}
+	return nil
+}
+
+func cleanStringSet(values []string, required bool) ([]string, error) {
+	if required && len(values) == 0 {
+		return nil, errors.New("plugin actions required")
+	}
+	if len(values) > 64 {
+		return nil, errors.New("too many plugin actions")
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value, err := cleanPluginAction(value)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[value]; ok {
+			return nil, fmt.Errorf("duplicate plugin action %q", value)
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out, nil
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func pluginActions(id string, actions, approvalActions []string) ([]string, []string, error) {
+	// fleet.acp predates persisted action metadata. Preserve those installations
+	// with its fixed historical surface instead of turning an absent allowlist
+	// into an allow-all bypass.
+	if len(actions) == 0 && id == "fleet.acp" {
+		actions = []string{"configure", "profiles", "delegate"}
+	}
+	actions, err := cleanStringSet(actions, true)
+	if err != nil {
+		return nil, nil, err
+	}
+	approvalActions, err = cleanStringSet(approvalActions, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, action := range approvalActions {
+		if !containsString(actions, action) {
+			return nil, nil, fmt.Errorf("approval action %q is not declared", action)
+		}
+	}
+	return actions, approvalActions, nil
+}
+
 func pluginDir(id string) (string, error) {
 	id, err := cleanPluginID(id)
 	if err != nil {
@@ -251,20 +449,21 @@ func validateOfficialManifest(m pluginManifest) (pluginArtifact, error) {
 	if _, err := cleanPluginID(m.ID); err != nil {
 		return pluginArtifact{}, err
 	}
-	if strings.TrimSpace(m.Version) == "" {
-		return pluginArtifact{}, errors.New("plugin version required")
+	if _, err := cleanPluginVersion(m.Version); err != nil {
+		return pluginArtifact{}, err
 	}
-	repo, err := url.Parse(m.Repository)
-	if err != nil || repo.Scheme != "https" || repo.Host != "github.com" || !strings.HasPrefix(repo.Path, "/TITOCHAN2023/") {
-		return pluginArtifact{}, errors.New("untrusted plugin repository")
+	if _, err := officialRepositoryPath(m.Repository); err != nil {
+		return pluginArtifact{}, err
+	}
+	if _, _, err := pluginActions(m.ID, m.Actions, m.ApprovalActions); err != nil {
+		return pluginArtifact{}, err
 	}
 	for _, artifact := range m.Artifacts {
 		if artifact.OS != runtime.GOOS || artifact.Arch != runtime.GOARCH {
 			continue
 		}
-		u, err := url.Parse(artifact.URL)
-		if err != nil || u.Scheme != "https" || u.Host != "github.com" || !strings.HasPrefix(u.Path, "/TITOCHAN2023/") || !strings.Contains(u.Path, "/releases/download/") {
-			return pluginArtifact{}, errors.New("untrusted plugin artifact URL")
+		if err := validateArtifactURL(artifact.URL, m.Repository, m.Version); err != nil {
+			return pluginArtifact{}, err
 		}
 		if len(artifact.SHA256) != 64 {
 			return pluginArtifact{}, errors.New("invalid plugin SHA-256")
@@ -272,8 +471,8 @@ func validateOfficialManifest(m pluginManifest) (pluginArtifact, error) {
 		if _, err := hex.DecodeString(artifact.SHA256); err != nil {
 			return pluginArtifact{}, errors.New("invalid plugin SHA-256")
 		}
-		if filepath.Base(artifact.Entrypoint) != artifact.Entrypoint || artifact.Entrypoint == "." {
-			return pluginArtifact{}, errors.New("invalid plugin entrypoint")
+		if _, err := cleanPluginEntrypoint(artifact.Entrypoint); err != nil {
+			return pluginArtifact{}, err
 		}
 		return artifact, nil
 	}
@@ -281,7 +480,15 @@ func validateOfficialManifest(m pluginManifest) (pluginArtifact, error) {
 }
 
 func installPlugin(ctx context.Context, m pluginManifest) (installedPlugin, error) {
+	return installPluginFromHub(ctx, m, "", "")
+}
+
+func installPluginFromHub(ctx context.Context, m pluginManifest, hubInput, hubToken string) (installedPlugin, error) {
 	artifact, err := validateOfficialManifest(m)
+	if err != nil {
+		return installedPlugin{}, err
+	}
+	actions, approvalActions, err := pluginActions(m.ID, m.Actions, m.ApprovalActions)
 	if err != nil {
 		return installedPlugin{}, err
 	}
@@ -292,12 +499,35 @@ func installPlugin(ctx context.Context, m pluginManifest) (installedPlugin, erro
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return installedPlugin{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, artifact.URL, nil)
+	downloadURL := artifact.URL
+	authorization := ""
+	if strings.TrimSpace(artifact.MirrorURL) != "" {
+		if err := validatePluginMirrorURL(artifact.MirrorURL, m.ID, m.Version, artifact.OS, artifact.Arch, hubInput); err != nil {
+			return installedPlugin{}, err
+		}
+		downloadURL = artifact.MirrorURL
+		authorization, err = highSecAuthorization(ctx, hubInput, hubToken)
+		if err != nil {
+			return installedPlugin{}, err
+		}
+		if authorization == "" {
+			return installedPlugin{}, errors.New("plugin mirror requires Hub authentication")
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return installedPlugin{}, err
 	}
 	req.Header.Set("User-Agent", "Fleet-Agent/"+agentVersion)
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
 	client := &http.Client{Timeout: 3 * time.Minute}
+	if strings.TrimSpace(artifact.MirrorURL) != "" {
+		client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
 	res, err := client.Do(req)
 	if err != nil {
 		return installedPlugin{}, err
@@ -346,7 +576,20 @@ func installPlugin(ctx context.Context, m pluginManifest) (installedPlugin, erro
 		_ = os.Rename(backup, target)
 		return installedPlugin{}, err
 	}
-	meta := installedPlugin{ID: m.ID, Name: m.Name, Version: m.Version, Publisher: m.Publisher, License: m.License, Repository: m.Repository, SHA256: strings.ToLower(artifact.SHA256), Entrypoint: artifact.Entrypoint, InstalledAt: time.Now().UnixMilli()}
+	meta := installedPlugin{
+		ID:              m.ID,
+		Name:            m.Name,
+		Version:         m.Version,
+		Publisher:       m.Publisher,
+		License:         m.License,
+		Repository:      m.Repository,
+		ArtifactURL:     artifact.URL,
+		SHA256:          strings.ToLower(artifact.SHA256),
+		Entrypoint:      artifact.Entrypoint,
+		Actions:         actions,
+		ApprovalActions: approvalActions,
+		InstalledAt:     time.Now().UnixMilli(),
+	}
 	if err := writePluginMeta(dir, meta); err != nil {
 		_ = os.Remove(target)
 		_ = os.Rename(backup, target)
@@ -388,7 +631,116 @@ func readPluginMeta(id string) (installedPlugin, string, error) {
 	if meta.ID != id {
 		return meta, "", errors.New("plugin metadata id mismatch")
 	}
+	actions, approvalActions, err := pluginActions(meta.ID, meta.Actions, meta.ApprovalActions)
+	if err != nil {
+		return meta, "", err
+	}
+	meta.Actions = actions
+	meta.ApprovalActions = approvalActions
 	return meta, dir, nil
+}
+
+// installedPluginMetadata returns a detached, read-only view for core handlers.
+// In particular, callers can decide consent policy without parsing metadata.json.
+func installedPluginMetadata(id string) (installedPlugin, error) {
+	meta, _, err := readPluginMeta(id)
+	if err != nil {
+		return installedPlugin{}, err
+	}
+	meta.Actions = append([]string(nil), meta.Actions...)
+	meta.ApprovalActions = append([]string(nil), meta.ApprovalActions...)
+	return meta, nil
+}
+
+func validateInstalledPlugin(meta installedPlugin) error {
+	if _, err := cleanPluginID(meta.ID); err != nil {
+		return err
+	}
+	if meta.Publisher != "Fleet Official" || strings.TrimSpace(meta.License) == "" {
+		return errors.New("untrusted installed plugin")
+	}
+	if _, err := cleanPluginVersion(meta.Version); err != nil {
+		return err
+	}
+	if _, err := officialRepositoryPath(meta.Repository); err != nil {
+		return err
+	}
+	if meta.ArtifactURL == "" {
+		if meta.ID != "fleet.acp" {
+			return errors.New("installed plugin is missing artifact provenance; reinstall it")
+		}
+	} else if err := validateArtifactURL(meta.ArtifactURL, meta.Repository, meta.Version); err != nil {
+		return err
+	}
+	if len(meta.SHA256) != 64 {
+		return errors.New("invalid installed plugin SHA-256")
+	}
+	if _, err := hex.DecodeString(meta.SHA256); err != nil {
+		return errors.New("invalid installed plugin SHA-256")
+	}
+	if _, err := cleanPluginEntrypoint(meta.Entrypoint); err != nil {
+		return err
+	}
+	_, _, err := pluginActions(meta.ID, meta.Actions, meta.ApprovalActions)
+	return err
+}
+
+func verifyPluginBinary(dir string, meta installedPlugin) (string, error) {
+	path := filepath.Join(dir, meta.Entrypoint)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("plugin entrypoint is not a regular file")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	if !strings.EqualFold(got, meta.SHA256) {
+		return "", fmt.Errorf("installed plugin SHA-256 mismatch: got %s", got)
+	}
+	return path, nil
+}
+
+func trustedInstalledPlugin(id string) (installedPlugin, string, string, error) {
+	meta, dir, err := readPluginMeta(id)
+	if err != nil {
+		return installedPlugin{}, "", "", err
+	}
+	if err := validateInstalledPlugin(meta); err != nil {
+		return installedPlugin{}, "", "", err
+	}
+	path, err := verifyPluginBinary(dir, meta)
+	if err != nil {
+		return installedPlugin{}, "", "", err
+	}
+	return meta, dir, path, nil
+}
+
+func installedPluginForAction(id, action string) (installedPlugin, string, error) {
+	action, err := cleanPluginAction(action)
+	if err != nil {
+		return installedPlugin{}, "", err
+	}
+	meta, _, path, err := trustedInstalledPlugin(id)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return installedPlugin{}, "", fmt.Errorf("plugin %s is not installed", id)
+		}
+		return installedPlugin{}, "", err
+	}
+	if !containsString(meta.Actions, action) {
+		return installedPlugin{}, "", fmt.Errorf("plugin %s does not declare action %q", id, action)
+	}
+	return meta, path, nil
 }
 
 func listInstalledPlugins() ([]installedPlugin, error) {
@@ -427,10 +779,11 @@ func uninstallPlugin(id string) (map[string]any, error) {
 }
 
 func invokePlugin(ctx context.Context, req pluginRequest) (any, error) {
-	meta, dir, err := readPluginMeta(req.PluginID)
+	_, path, err := installedPluginForAction(req.PluginID, req.Action)
 	if err != nil {
-		return nil, fmt.Errorf("plugin %s is not installed", req.PluginID)
+		return nil, err
 	}
+	dir := filepath.Dir(path)
 	timeout := req.TimeoutS
 	if timeout <= 0 {
 		timeout = 900
@@ -448,7 +801,7 @@ func invokePlugin(ctx context.Context, req pluginRequest) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(callCtx, filepath.Join(dir, meta.Entrypoint))
+	cmd := exec.CommandContext(callCtx, path)
 	cmd.Env = append(os.Environ(), "FLEET_PLUGIN_DATA_DIR="+filepath.Join(dir, "data"))
 	cmd.Stdin = bytes.NewReader(payload)
 	out := &capBuffer{max: pluginMaxOutput}

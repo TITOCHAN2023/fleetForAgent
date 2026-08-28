@@ -30,12 +30,14 @@ sequenceDiagram
 
 - Tool 不能提交下载 URL、文件路径或 SHA；它只能提交官方插件 id。
 - Hub 从构建时固定的注册表快照注入清单，不在安装时读取 GitHub 的可变内容。
+- 无公网设备可用经过账户鉴权的同源 `/v1/plugin-artifact/<id>/<version>/<os>/<arch>` 镜像。Hub 仍只按固定注册表解析上游 GitHub Release，拒绝客户端 URL 和非精确版本/平台，流式响应上限 100 MiB；`mirror_url` 只注入临时安装清单，不写入公开注册表。Agent 仍须校验固定 SHA-256。
 - 收录不等于可安装；只有 `installable: true` 且包含官方 Release 和 SHA-256 的条目才会进入安装白名单。
-- Agent 只接受 `Fleet Official`、`https://github.com/TITOCHAN2023/*/releases/download/*`，并要求当前 OS/CPU 有精确 artifact。
+- Agent 只接受 `Fleet Official`，artifact 必须来自清单声明的同一个 GitHub 仓库和 `v<version>` Release，并要求当前 OS/CPU 有精确产物。
 - 下载上限 100 MiB，必须通过固定 SHA-256；安装使用同目录临时文件和原子替换。
 - 安装和卸载即使设备设置为 `permit=allow` 也必须在设备端确认。
-- 插件动作遵循设备的 `off / ask / allow`；Hub 不能覆盖。
-- 每个插件只读写 `~/.fleet-agent/plugins/<id>/` 下的程序、元数据和私有数据。
+- Agent 持久化并执行清单的 `actions` 白名单；未声明 action 一律拒绝。`approval_actions` 中的敏感动作即使 `permit=allow` 也必须逐次在设备端确认。
+- 普通插件动作遵循设备的 `off / ask / allow`；Hub 不能覆盖。
+- 插件的程序、元数据和默认私有数据位于 `~/.fleet-agent/plugins/<id>/`，但这**不是 OS 沙箱**。插件继承 Fleet Agent 当前用户的文件权限；因此来源、版本、artifact URL、SHA-256 与执行前二进制哈希都必须匹配。
 
 ## 设备插件协议
 
@@ -52,6 +54,8 @@ Fleet Agent 每次动作启动一次插件进程。请求从 stdin 读取：
 ```
 
 失败时返回 `{"ok":false,"error":"..."}`。stdout 上限 2 MiB，动作最长 1 小时。
+
+大文件不能套进这条 JSON 协议。官方 `fleet.transfer` 使用单独的 streaming ABI：首行控制数据和进度事件仍是有界 JSON，文件字节走进程 pipe，并由 Agent 直接接到专用 WebRTC DataChannel。这个 ABI 只对经过安装和二进制复验的 `fleet.transfer` 开放，不是任意插件获得网络或文件权限的后门。完整约束见 [Fleet 官方文件传输](./FILE_TRANSFER.md)。
 
 ## Fleet ACP
 

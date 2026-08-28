@@ -21,6 +21,7 @@ function installManifest(plugin) {
     description: plugin.description.en,
     repository: plugin.repository,
     actions: plugin.actions,
+    approval_actions: plugin.approval_actions,
     artifacts: plugin.artifacts,
   });
 }
@@ -51,6 +52,7 @@ export function publicOfficialPlugins() {
     descriptions: plugin.description,
     installable: plugin.installable,
     actions: plugin.actions,
+    approval_actions: plugin.approval_actions,
     platforms: plugin.artifacts.map(({ os, arch }) => ({ os, arch })),
   }));
 }
@@ -79,7 +81,7 @@ export function shQuote(value) {
 }
 
 export const MCP_INSTRUCTIONS =
-  "Fleet: remote Windows/Linux/macOS machines via a cloud hub. list_computers, then set_computer (or pass device_id). run waits up to 30s; if the text is still running, call wait — do not run again. Official plugins are installed with install_plugin and always require approval at the device; poll get_plugin_task with its corr. delegate_to_acp uses the official fleet.acp bridge after configure_acp. Hub tokens are flt_1 values minted in website Settings. Stdio uses Fleet-OAEP; remote /mcp uses Streamable HTTP and /mcp/sse keeps classic SSE compatibility.";
+  "Fleet: remote Windows/Linux/macOS machines via a cloud hub. list_computers, then set_computer (or pass device_id). run waits up to 30s; if the text is still running, call wait — do not run again. Official plugins are installed with install_plugin and always require approval at the device; poll get_plugin_task with its corr. start_file_transfer creates direct-only file transfer; Tool endpoints require this local stdio process, while device-to-device also works through remote MCP. Hub tokens are flt_1 values minted in website Settings. Stdio uses Fleet-OAEP; remote /mcp uses Streamable HTTP and /mcp/sse keeps classic SSE compatibility.";
 
 export function buildPrompts() {
   return [
@@ -688,6 +690,53 @@ export function buildTools() {
       },
     },
     {
+      name: "start_file_transfer",
+      description:
+        "Start one direct-only file transfer under this Fleet account. Each endpoint is kind=tool or kind=device. Tool paths belong to this local stdio process; remote Worker MCP only supports device-to-device. Both devices approve locally. File bytes never pass through Worker and a failed direct connection never falls back to relay.",
+      inputSchema: {
+        type: "object",
+        required: ["source", "target"],
+        properties: {
+          source: {
+            type: "object",
+            required: ["kind", "path"],
+            properties: {
+              kind: { type: "string", enum: ["tool", "device"] },
+              device_id: { type: "string", description: "Required when kind=device." },
+              path: { type: "string", description: "Absolute source file path on that endpoint." },
+            },
+          },
+          target: {
+            type: "object",
+            required: ["kind", "directory"],
+            properties: {
+              kind: { type: "string", enum: ["tool", "device"] },
+              device_id: { type: "string", description: "Required when kind=device." },
+              directory: { type: "string", description: "Absolute destination directory on that endpoint. Existing files are never overwritten." },
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "get_file_transfer",
+      description: "Read one file transfer state and byte progress. Does not expose SDP, ICE candidates, paths, IPs, or tickets.",
+      inputSchema: {
+        type: "object",
+        required: ["transfer_id"],
+        properties: { transfer_id: { type: "string" } },
+      },
+    },
+    {
+      name: "cancel_file_transfer",
+      description: "Cancel a file transfer. Explicit cancel removes partial receiver data; a network interruption keeps resumable partial data.",
+      inputSchema: {
+        type: "object",
+        required: ["transfer_id"],
+        properties: { transfer_id: { type: "string" } },
+      },
+    },
+    {
       name: "configure_acp",
       description: "Configure a named local ACP-agent stdio command for the installed fleet.acp plugin. This does not install that third-party ACP agent. Device permit rules apply; returns a corr ticket.",
       inputSchema: {
@@ -760,6 +809,7 @@ function hopStatus(row) {
 
 export function createOperator({
   rpc,
+  fileTransfer,
   env = {},
   state = {},
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -1048,6 +1098,46 @@ export function createOperator({
       if (!corr) throw new Error("corr required");
       const row = await callRpc(trace, "/v1/plugin_result", { device_id: deviceId, corr });
       return withDev(withDevice(row, deviceId), trace);
+    }
+
+    if (name === "start_file_transfer") {
+      const source = args.source && typeof args.source === "object" ? args.source : null;
+      const target = args.target && typeof args.target === "object" ? args.target : null;
+      if (!source || !target) throw new Error("source and target required");
+      if (fileTransfer?.start) return fileTransfer.start({ source, target });
+      if (source.kind === "tool" || target.kind === "tool") {
+        throw new Error("Tool file endpoints require the local Fleet Tool stdio/CLI process");
+      }
+      const sourceId = trimId(source.device_id);
+      const targetId = trimId(target.device_id);
+      const sourcePath = source.path == null ? "" : String(source.path).trim();
+      const targetPath = target.directory == null ? "" : String(target.directory).trim();
+      if (!sourceId || !targetId || !sourcePath || !targetPath) {
+        throw new Error("device source/target require device_id and absolute path/directory");
+      }
+      const row = await callRpc(trace, "/v1/transfer/create", {
+        source: { kind: "device", id: sourceId },
+        target: { kind: "device", id: targetId },
+        source_path: sourcePath,
+        target_path: targetPath,
+      });
+      return withDev(row.transfer ?? row, trace);
+    }
+
+    if (name === "get_file_transfer") {
+      const transferId = trimId(args.transfer_id);
+      if (!transferId) throw new Error("transfer_id required");
+      if (fileTransfer?.status) return fileTransfer.status(transferId);
+      const row = await callRpc(trace, "/v1/transfer/status", { transfer_id: transferId });
+      return withDev(row.transfer ?? row, trace);
+    }
+
+    if (name === "cancel_file_transfer") {
+      const transferId = trimId(args.transfer_id);
+      if (!transferId) throw new Error("transfer_id required");
+      if (fileTransfer?.cancel) return fileTransfer.cancel(transferId);
+      const row = await callRpc(trace, "/v1/transfer/event", { transfer_id: transferId, event: "cancel" });
+      return withDev(row.transfer ?? row, trace);
     }
 
     if (["list_plugins", "install_plugin", "uninstall_plugin", "invoke_plugin", "configure_acp", "delegate_to_acp"].includes(name)) {

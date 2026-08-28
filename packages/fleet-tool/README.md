@@ -14,6 +14,11 @@ Local checkout (same env names):
 FLEET_URL=http://127.0.0.1:8080 FLEET_TOKEN=flt_... node index.mjs list
 FLEET_URL=http://127.0.0.1:8080 FLEET_TOKEN=flt_... node index.mjs run <device_id> 'uname -a'
 node index.mjs --dev list
+node index.mjs send-file /absolute/local.bin <target_device_id> /absolute/target/directory
+node index.mjs receive-file <source_device_id> /absolute/source.bin /absolute/local/directory
+node index.mjs transfer-file <source_device_id> /absolute/source.bin <target_device_id> /absolute/target/directory
+node index.mjs transfer-status <transfer_id>
+node index.mjs transfer-cancel <transfer_id>
 ```
 
 Cursor / MCP: run `npx -y https://fleet.ginfo.cc/fleet-tool.tgz` with those two env vars, no extra args. `--dev` sets `FLEET_DEV=1` (same as the env) and still starts MCP if there are no other args.
@@ -81,6 +86,10 @@ Existing tools stay. `device_id` is still on every mutating/read schema; it is o
 | `install_plugin` / `uninstall_plugin` | Submit an asynchronous software-change ticket. The Tool accepts an official id, never a URL; the device always asks locally. |
 | `invoke_plugin` / `get_plugin_task` | Invoke an installed plugin and poll the same `corr` until `done`. |
 | `configure_acp` / `delegate_to_acp` | Bind an ACP v1 stdio command on the device, then delegate one prompt through the official `fleet.acp` bridge. |
+| `start_file_transfer` | Start one file between Tool↔device or device↔device endpoints. Source takes an absolute file path; target takes an absolute directory. Existing files are never overwritten. Both devices approve locally. |
+| `get_file_transfer` / `cancel_file_transfer` | Read byte progress or cancel by `transfer_id`. Tool endpoints require the local stdio/CLI process; remote Worker MCP can coordinate device↔device only. |
+
+File transfer deliberately differs from the shell RTC optimization: it is **direct-only**. Worker authenticates both endpoints and carries short-lived SDP/ticket control metadata, but never carries file bytes. If ICE cannot establish the dedicated `fleet-file-v1` DataChannel before transfer starts, the transfer returns `direct_unavailable`; it never falls back to WSS, Durable Object, R2, or another relay. Once transfer has started, an interrupted Tool↔device channel can resume the same transfer from its verified prefix. Every resumed round gets a fresh UUID `sid`, PeerConnection, and signed 60-second ticket; stale-round mailbox entries are discarded. Retries are bounded to three resumed rounds and a 30-minute coordination window. The receiver uses a same-directory `0600` partial file, verified prefix SHA-256 for resume, final SHA-256, fsync, and a no-clobber atomic commit. It opens resumable paths with no-follow semantics where the OS supports them, rechecks the opened file identity before linking, and verifies the published identity (or complete SHA-256 on Windows runtimes without a stable file id). DataChannel control frames are capped at 64 KiB; the inbox is capped at 256 messages and 8 MiB. Explicit cancellation wakes pending reads immediately and removes the private partial and sidecar. See [the protocol and security contract](../../docs/FILE_TRANSFER.md).
 
 Official plugin metadata comes from one Markdown file per plugin in the public [`fleet-plugins`](https://github.com/TITOCHAN2023/fleet-plugins) registry. Fleet Tool and Hub ship the same commit-pinned snapshot; they do not resolve a mutable GitHub manifest during installation. The Agent accepts only Fleet Official GitHub Release artifacts, selects its own OS/architecture, caps the download, verifies the pinned SHA-256, and atomically replaces the old binary. `fleet.acp` is an MIT client bridge; it does not bundle a model, API key, or third-party coding agent. Nested ACP permissions reject by default and can only opt into the protocol's one-shot `allow_once` option.
 

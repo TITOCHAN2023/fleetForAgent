@@ -19,6 +19,7 @@ const source = {
     description: { en: "Delegate to an ACP agent.", zh: "把任务交给 ACP Agent。" },
     installable: true,
     actions: ["delegate"],
+    approval_actions: ["delegate"],
     artifacts: [{
       os: "darwin",
       arch: "amd64",
@@ -36,6 +37,7 @@ test("plugin registry validates curated Markdown output", () => {
   assert.equal(registry.plugins.length, 1);
   assert.equal(registry.plugins[0].id, "fleet.acp");
   assert.equal(registry.plugins[0].artifacts.length, 1);
+  assert.deepEqual(registry.plugins[0].approval_actions, ["delegate"]);
 });
 
 test("public plugin registry omits download URLs but records its source commit", () => {
@@ -51,5 +53,21 @@ test("public plugin registry omits download URLs but records its source commit",
 test("installable registry entries cannot escape the Fleet release trust root", () => {
   const tampered = structuredClone(source);
   tampered.plugins[0].artifacts[0].url = "https://github.com/evil/example/releases/download/v1/payload";
-  assert.throws(() => validateRegistry(tampered), /outside the Fleet release trust root/);
+  assert.throws(() => validateRegistry(tampered), /must come from this plugin repository/);
+});
+
+test("artifact repository, release version, and approval actions are exact", () => {
+  const wrongRepository = structuredClone(source);
+  wrongRepository.plugins[0].artifacts[0].url =
+    "https://github.com/TITOCHAN2023/another-plugin/releases/download/v0.1.0/payload";
+  assert.throws(() => validateRegistry(wrongRepository), /this plugin repository/);
+
+  const wrongVersion = structuredClone(source);
+  wrongVersion.plugins[0].artifacts[0].url =
+    "https://github.com/TITOCHAN2023/fleet-acp-plugin/releases/download/v9.9.9/payload";
+  assert.throws(() => validateRegistry(wrongVersion), /v0.1.0/);
+
+  const undeclaredApproval = structuredClone(source);
+  undeclaredApproval.plugins[0].approval_actions = ["delete_everything"];
+  assert.throws(() => validateRegistry(undeclaredApproval), /members of actions/);
 });

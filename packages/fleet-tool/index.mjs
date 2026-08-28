@@ -28,6 +28,7 @@ import {
   wrapTransportRpc,
 } from "./operator.mjs";
 import { createRtcManager } from "./rtc.mjs";
+import { createFileTransferManager } from "./file-transfer-rtc.mjs";
 import {
   highSecAuthorization,
   verifyFleetStatement,
@@ -104,6 +105,14 @@ const rtcManager = createRtcManager({
   officialPlugin,
 });
 
+const fileTransferManager = createFileTransferManager({
+  hubPost: (path, body) => rawHubRpc(path, body, { timed: false }),
+  token,
+  operatorId: operatorFingerprint,
+  verifyTokenV1,
+  verifyFleetStatement,
+});
+
 async function hubRpc(path, body, { timed = false } = {}) {
   const direct = await rtcManager.tryRpc(path, body);
   if (direct.handled) {
@@ -150,12 +159,74 @@ async function cli(args) {
     console.log(JSON.stringify(await rpc("/v1/read_screen", { device_id: a, corr: rest[0] }), null, 2));
     return;
   }
-  throw new Error("commands: list | run | result | screen");
+  if (cmd === "send-file") {
+    const [deviceId, targetDirectory] = rest;
+    if (!a || !deviceId || !targetDirectory) {
+      throw new Error("usage: send-file <local_source_path> <target_device_id> <target_directory>");
+    }
+    console.log(
+      JSON.stringify(
+        await fileTransferManager.start({
+          source: { kind: "tool", path: a },
+          target: { kind: "device", device_id: deviceId, directory: targetDirectory },
+        }),
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  if (cmd === "receive-file") {
+    const [sourcePath, localDirectory] = rest;
+    if (!a || !sourcePath || !localDirectory) {
+      throw new Error("usage: receive-file <source_device_id> <source_path> <local_directory>");
+    }
+    console.log(
+      JSON.stringify(
+        await fileTransferManager.start({
+          source: { kind: "device", device_id: a, path: sourcePath },
+          target: { kind: "tool", directory: localDirectory },
+        }),
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  if (cmd === "transfer-file") {
+    const [sourcePath, targetDeviceId, targetDirectory] = rest;
+    if (!a || !sourcePath || !targetDeviceId || !targetDirectory) {
+      throw new Error("usage: transfer-file <source_device_id> <source_path> <target_device_id> <target_directory>");
+    }
+    console.log(
+      JSON.stringify(
+        await fileTransferManager.start({
+          source: { kind: "device", device_id: a, path: sourcePath },
+          target: { kind: "device", device_id: targetDeviceId, directory: targetDirectory },
+        }),
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  if (cmd === "transfer-status") {
+    if (!a) throw new Error("usage: transfer-status <transfer_id>");
+    console.log(JSON.stringify(await fileTransferManager.status(a), null, 2));
+    return;
+  }
+  if (cmd === "transfer-cancel") {
+    if (!a) throw new Error("usage: transfer-cancel <transfer_id>");
+    console.log(JSON.stringify(await fileTransferManager.cancel(a), null, 2));
+    return;
+  }
+  throw new Error("commands: list | run | result | screen | send-file | receive-file | transfer-file | transfer-status | transfer-cancel");
 }
 
 function mcp() {
   const { tools, prompts, getPrompt, callTool } = createOperator({
     rpc: (path, body) => hubRpc(path, body, { timed: true }),
+    fileTransfer: fileTransferManager,
     env: process.env,
   });
   const cancelled = new Map();

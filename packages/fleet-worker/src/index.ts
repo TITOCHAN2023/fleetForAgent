@@ -63,6 +63,20 @@ import {
   isMcpSessionExpired,
 } from "./mcp-sse.mjs";
 import {
+  isPluginArtifactPath,
+  serveOfficialPluginArtifact,
+  withPluginArtifactMirrors,
+} from "./plugin-artifact.mjs";
+import {
+  readTransferControlText,
+  TRANSFER_CONTROL_MAX_BYTES,
+  TransferDO,
+  TransferError,
+  signTransferTicket,
+  type TransferEndpoint,
+  type TransferRecord,
+} from "./transfer";
+import {
   audMismatch,
   bearerToken,
   CHALLENGE_TTL_MS,
@@ -86,6 +100,7 @@ export interface Env {
   DEVICE: DurableObjectNamespace;
   FLEET: DurableObjectNamespace;
   MCP: DurableObjectNamespace;
+  TRANSFER: DurableObjectNamespace;
   HUB_TOKEN?: string;
   ADMIN_EMAILS?: string;
   HUB_ORIGIN?: string;
@@ -100,6 +115,8 @@ export interface Env {
   AGENT_UPDATE_SUMS?: string;
   RTC_STUN_URLS?: string;
 }
+
+export { TransferDO };
 
 function updateAdvert(env: Env) {
   return advertisedUpdate({
@@ -365,6 +382,15 @@ async function handleAuthorizedOperatorRequest(
 ): Promise<Response | null> {
   const url = new URL(request.url);
 
+  if (isPluginArtifactPath(url.pathname)) {
+    if (actor.super) return json({ error: "account authentication required" }, 401);
+    return serveOfficialPluginArtifact(request);
+  }
+
+  if (url.pathname.startsWith("/v1/transfer/")) {
+    return handleTransferOperatorRequest(request, env, fleet, actor);
+  }
+
   if (url.pathname === "/v1/rtc/config" && request.method === "POST") {
     const body = (await request.json().catch(() => ({}))) as { device_id?: string };
     if (!actor.kid || actor.super)
@@ -570,7 +596,9 @@ async function handleAuthorizedOperatorRequest(
           action: body.action,
           input: body.input,
           timeout_seconds: body.timeout_seconds,
-          ...(operation === "install" ? { manifest: plugin } : {}),
+          ...(operation === "install"
+            ? { manifest: withPluginArtifactMirrors(plugin, configuredOrigin(env)) }
+            : {}),
         }),
       }),
     );
@@ -672,6 +700,113 @@ async function handleAuthorizedOperatorRequest(
   return null;
 }
 
+async function handleTransferOperatorRequest(
+  request: Request,
+  env: Env,
+  fleet: DurableObjectStub,
+  actor: Actor,
+): Promise<Response> {
+  if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
+  if (!actor.kid || actor.super) {
+    return json({ error: "file transfer requires a per-account Hub token" }, 401);
+  }
+  const operatorId = fingerprintFromHeaders(request.headers);
+  if (!operatorId) return json({ error: "X-Fleet-Operator required" }, 400);
+  const url = new URL(request.url);
+  const action = url.pathname.slice("/v1/transfer/".length);
+  if (!["create", "authorize", "signal", "signal/poll", "status", "event"].includes(action)) {
+    return json({ error: "not found" }, 404);
+  }
+  let rawBody: string;
+  try {
+    rawBody = await readTransferControlText(request, TRANSFER_CONTROL_MAX_BYTES);
+  } catch (error) {
+    if (error instanceof TransferError) return json({ error: error.message }, error.status);
+    return json({ error: "invalid transfer control request" }, 400);
+  }
+  const body = (() => {
+    try {
+      return JSON.parse(rawBody) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  })();
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return json({ error: "JSON object required" }, 400);
+  }
+
+  let transferId: string;
+  let payload: Record<string, unknown>;
+  if (action === "create") {
+    transferId = crypto.randomUUID();
+    let source = transferEndpointFrom(body.source);
+    let target = transferEndpointFrom(body.target);
+    if (!source || !target) return json({ error: "valid source and target required" }, 400);
+    const prepared: TransferEndpoint[] = [];
+    for (const endpoint of [source, target]) {
+      if (endpoint.kind === "tool" && endpoint.id !== operatorId) {
+        return json({ error: "tool endpoint must match X-Fleet-Operator" }, 403);
+      }
+      if (endpoint.kind === "tool") {
+        prepared.push({ ...endpoint, name: "Fleet Tool" });
+        continue;
+      }
+      const catalog = await fleet.fetch(
+        new Request(`https://fleet/device?id=${encodeURIComponent(endpoint.id)}`),
+      );
+      const row = (await catalog.json()) as DeviceRow;
+      if (!row.id || row.userId !== actor.id) return json({ error: "not found" }, 404);
+      if (!row.online) return json({ error: "device offline", code: "OFFLINE" }, 409);
+      if (!normalizeCaps(row.caps).includes("file_transfer_v1")) {
+        return json(
+          {
+            error: "unsupported",
+            code: "UNSUPPORTED_CAP",
+            missing: "file_transfer_v1",
+            agentVer: row.agentVer ?? "",
+            os: row.os ?? "",
+          },
+          409,
+        );
+      }
+      prepared.push({ ...endpoint, name: row.name || endpoint.id });
+    }
+    [source, target] = prepared as [TransferEndpoint, TransferEndpoint];
+    payload = {
+      ...body,
+      source,
+      target,
+      transfer_id: transferId,
+      user_id: actor.id,
+      kid: actor.kid,
+      coordinator_id: operatorId,
+    };
+  } else {
+    transferId = String(body.transfer_id ?? "");
+    if (!validTransferId(transferId)) return json({ error: "valid transfer_id required" }, 400);
+    const { transfer_id: _transferId, ...rest } = body;
+    payload = rest;
+  }
+
+  const headers = new Headers({
+    "content-type": "application/json",
+    "x-fleet-user": actor.id,
+    "x-fleet-kid": actor.kid,
+    "x-transfer-caller-kind": "tool",
+    "x-transfer-caller-id": operatorId,
+  });
+  const response = await env.TRANSFER.get(env.TRANSFER.idFromName(transferId)).fetch(
+    new Request(`https://transfer/${action}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    }),
+  );
+  const responseHeaders = new Headers(response.headers);
+  for (const [key, value] of Object.entries(CORS)) responseHeaders.set(key, value);
+  return new Response(response.body, { status: response.status, headers: responseHeaders });
+}
+
 export class FleetDO implements DurableObject {
   ctx: DurableObjectState;
   env: Env;
@@ -764,6 +899,10 @@ export class FleetDO implements DurableObject {
     if (url.pathname === "/rtc-ticket" && request.method === "POST") {
       const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
       return this.rtcTicket(body);
+    }
+    if (url.pathname === "/transfer-ticket" && request.method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as { record?: TransferRecord };
+      return this.transferTicket(body.record);
     }
     if (url.pathname === "/token-meta") {
       const userId = url.searchParams.get("user") ?? "";
@@ -980,6 +1119,27 @@ export class FleetDO implements DurableObject {
       return json({ error: "invalid RTC ticket" }, 400);
     }
     return json({ statement: await signFleetStatement({ privatePkcs8B64: user.priv, statement }) });
+  }
+
+  async transferTicket(record?: TransferRecord): Promise<Response> {
+    if (!record?.userId || !record.kid) return json({ error: "invalid transfer ticket" }, 400);
+    const user = await this.userById(record.userId);
+    const banned = rejectIfBanned(user);
+    if (banned) return json({ error: banned.error }, banned.status);
+    if (
+      !user?.priv ||
+      user.kid !== record.kid ||
+      !user.tokenHash ||
+      (await this.ctx.storage.get(`revoked:${record.kid}`))
+    ) {
+      return json({ error: "Hub token was reset or revoked" }, 401);
+    }
+    try {
+      const statement = await signTransferTicket({ privatePkcs8B64: user.priv, record });
+      return json({ statement });
+    } catch {
+      return json({ error: "invalid transfer ticket" }, 400);
+    }
   }
 
   async revokeToken(user: UserRow) {
@@ -1386,6 +1546,38 @@ export class DeviceDO implements DurableObject {
       return json({ ok: true });
     }
 
+    if (url.pathname === "/file-transfer-push" && request.method === "POST") {
+      const sockets = this.ctx.getWebSockets();
+      if (sockets.length === 0) return json({ error: "offline" }, 409);
+      const ws = sockets[0]!;
+      const att = (ws.deserializeAttachment() ?? {}) as WsAttachment;
+      if (!normalizeCaps(att.caps).includes("file_transfer_v1")) {
+        return json({ error: "unsupported", code: "UNSUPPORTED_CAP" }, 409);
+      }
+      const push = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      const type = String(push.type ?? "");
+      const body = push.body;
+      if (!["file_prepare", "file_signal", "file_ticket", "file_update"].includes(type)) {
+        return json({ error: "invalid file transfer push" }, 400);
+      }
+      if (
+        String(push.user_id ?? "") !== att.userId ||
+        String(push.kid ?? "") !== att.kid ||
+        String(push.device_id ?? "") !== att.deviceId ||
+        !body ||
+        typeof body !== "object" ||
+        Array.isArray(body)
+      ) {
+        return json({ error: "file transfer owner changed" }, 401);
+      }
+      const encoded = JSON.stringify(body);
+      if (new TextEncoder().encode(encoded).byteLength > RTC_SDP_MAX_BYTES + 8192) {
+        return json({ error: "file transfer control frame too large" }, 413);
+      }
+      ws.send(JSON.stringify(envelope(type, body as Record<string, unknown>)));
+      return json({ ok: true });
+    }
+
     if (request.headers.get("Upgrade") === "websocket") {
       const id = deviceIdFrom(request) ?? "unknown";
       const userId = request.headers.get("x-fleet-user") ?? undefined;
@@ -1720,6 +1912,15 @@ export class DeviceDO implements DurableObject {
       return;
     }
 
+    if (
+      parsed.type === "file_prepared" ||
+      parsed.type === "file_signal" ||
+      parsed.type === "file_event"
+    ) {
+      await this.handleFileTransferMessage(ws, att, parsed);
+      return;
+    }
+
     if (parsed.type === "rtc_claim" && parsed.corr) {
       const operatorId = String(parsed.body?.operator_id ?? "").trim();
       const sid = String(parsed.body?.sid ?? "").trim();
@@ -1883,6 +2084,74 @@ export class DeviceDO implements DurableObject {
 
   private fleet() {
     return this.env.FLEET.get(this.env.FLEET.idFromName("fleet"));
+  }
+
+  private async handleFileTransferMessage(ws: WebSocket, att: WsAttachment, parsed: Envelope) {
+    const transferId = String(parsed.body?.transfer_id ?? "");
+    if (
+      !validTransferId(transferId) ||
+      !att.userId ||
+      !att.kid ||
+      !att.deviceId ||
+      !normalizeCaps(att.caps).includes("file_transfer_v1")
+    ) {
+      ws.send(
+        JSON.stringify(
+          envelope("file_update", {
+            transfer_id: transferId,
+            ok: false,
+            status: 400,
+            error: "invalid file transfer request",
+          }),
+        ),
+      );
+      return;
+    }
+    const action =
+      parsed.type === "file_prepared"
+        ? "authorize"
+        : parsed.type === "file_signal"
+          ? "signal"
+          : "event";
+    const { transfer_id: _transferId, ...payload } = parsed.body;
+    const response = await this.env.TRANSFER.get(this.env.TRANSFER.idFromName(transferId)).fetch(
+      new Request(`https://transfer/${action}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-fleet-user": att.userId,
+          "x-fleet-kid": att.kid,
+          "x-transfer-caller-kind": "device",
+          "x-transfer-caller-id": att.deviceId,
+        },
+        body: JSON.stringify(payload),
+      }),
+    );
+    const value = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    const callerMessages = Array.isArray(value.caller_messages) ? value.caller_messages : [];
+    for (const message of callerMessages) {
+      if (!message || typeof message !== "object" || Array.isArray(message)) continue;
+      const item = message as Record<string, unknown>;
+      const type = String(item.type ?? "");
+      if (type !== "file_ticket" || !item.body || typeof item.body !== "object") continue;
+      ws.send(JSON.stringify(envelope(type, item.body as Record<string, unknown>)));
+    }
+    const { caller_messages: _callerMessages, ...publicValue } = value;
+    const transfer =
+      publicValue.transfer && typeof publicValue.transfer === "object"
+        ? (publicValue.transfer as Record<string, unknown>)
+        : null;
+    ws.send(
+      JSON.stringify(
+        envelope("file_update", {
+          transfer_id: transferId,
+          ok: response.ok,
+          status: response.status,
+          ...(typeof transfer?.phase === "string" ? { phase: transfer.phase } : {}),
+          ...publicValue,
+        }),
+      ),
+    );
   }
 
   private noteBeat() {
@@ -2281,6 +2550,21 @@ async function owns(fleet: DurableObjectStub, actor: Actor, deviceId: string): P
   );
   const row = (await res.json()) as DeviceRow;
   return Boolean(row.id && row.userId === actor.id);
+}
+
+function transferEndpointFrom(value: unknown): TransferEndpoint | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const endpoint = value as Record<string, unknown>;
+  const kind = String(endpoint.kind ?? "");
+  const id = String(endpoint.id ?? "");
+  if ((kind !== "tool" && kind !== "device") || !/^[a-zA-Z0-9._:@-]{1,128}$/.test(id)) {
+    return null;
+  }
+  return { kind, id };
+}
+
+function validTransferId(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function withCookies(res: Response, setCookie?: string): Response {

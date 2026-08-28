@@ -19,7 +19,7 @@ test("Worker routes /mcp to Streamable HTTP before the asset fallback", () => {
 });
 
 test("Streamable HTTP reuses McpDO without a new migration and persists eviction-safe state", () => {
-  assert.equal((wrangler.match(/new_sqlite_classes/g) || []).length, 2);
+  assert.match(wrangler, /tag = "v2"\s+new_sqlite_classes = \["McpDO"\]/);
   assert.match(worker, /const MCP_HTTP_STORAGE_KEY = "http:session"/);
   assert.match(worker, /operatorState: McpOperatorState/);
   assert.match(worker, /this\.httpStored\.operatorState = this\.httpSession\.getState\(\)/);

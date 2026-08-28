@@ -2,7 +2,7 @@
   "schema_version": 1,
   "source": {
     "repository": "https://github.com/TITOCHAN2023/fleet-plugins",
-    "commit": "e20560c97dfa1d439614e7e95ca63758c0b3325d"
+    "commit": "961473489124bb78f461ab98534d9bcc2d8b337d"
   },
   "plugins": [
     {
@@ -125,7 +125,7 @@
         }
       ],
       "source_file": "plugins/fleet-transfer.md",
-      "body": "# Fleet Transfer\n\n`fleet.transfer` is the official file-system adapter for Fleet's direct-only\nfile transfer path. Fleet core authenticates the account and endpoints, signs a\nshort-lived direct-session ticket, and requires one-time approval on both\ndevices. The plugin then reads or writes one regular file through the generic\nbounded `fleet.plugin.peer.v1` ABI.\n\nFile bytes use a dedicated reliable WebRTC DataChannel. The Worker and Durable\nObject carry only authentication, signaling, status, and short-lived tickets.\nIf a direct connection cannot be established, the transfer fails instead of\nfalling back to WebSocket, Worker, R2, TURN, or another relay.\n\nVersion 0.2.1 keeps manifest, chunk/hash, resume, acknowledgement, and commit\ninside the two plugin endpoints' private `fleet.transfer.v2` DATA protocol.\nFleet core preserves opaque DATA frame boundaries and does not understand file\ntransfer. One file, SHA-256 integrity, verified resume checkpoints, safe\ncancellation, no-clobber publication, and idempotent completion retry backed by\na transfer-bound local receipt are supported. Directories, symbolic links,\nspecial files, overwrite, and cross-account transfer remain excluded.",
+      "body": "# Fleet Transfer\n\n`fleet.transfer` is the official file-system adapter for Fleet's direct-only\nfile transfer path. Fleet core authenticates the account and endpoints, signs a\nshort-lived direct-session ticket, and requires one-time approval on both\ndevices. The plugin then reads or writes one regular file through the generic\nbounded `fleet.plugin.peer.v1` ABI.\n\nFile bytes use a dedicated reliable WebRTC DataChannel. The Worker and Durable\nObject carry only authentication, signaling, status, and short-lived tickets.\nIf a direct connection cannot be established, the transfer fails instead of\nfalling back to WebSocket, Worker, R2, TURN, or another relay.\n\nVersion 0.2.1 keeps manifest, chunk/hash, resume, acknowledgement, and commit\ninside the two plugin endpoints' private `fleet.transfer.v2` DATA protocol.\nFleet core preserves opaque DATA frame boundaries and does not understand file\ntransfer. One file, SHA-256 integrity, verified resume checkpoints, safe\ncancellation, no-clobber publication, and idempotent completion retry backed by\na transfer-bound local receipt are supported. Directories, symbolic links,\nspecial files, overwrite, and cross-account transfer remain excluded.\nBoth endpoints enforce a 10 GiB default local file-size limit. The target also\nkeeps 1 GiB free by default and rechecks capacity while receiving; operators\nmay override either byte limit through the plugin process environment.",
       "platforms": [
         {
           "os": "darwin",

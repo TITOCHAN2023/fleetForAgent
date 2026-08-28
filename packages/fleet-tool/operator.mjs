@@ -5,7 +5,7 @@ import { OFFICIAL_PLUGIN_CATALOG as GENERATED_PLUGIN_CATALOG, PLUGIN_REGISTRY_SO
  * Do not write hub_sessions, ~/.fleet, or a workspace file.
  */
 
-export const FLEET_VERSION = "0.5.2";
+export const FLEET_VERSION = "0.6.0";
 
 export { PLUGIN_REGISTRY_SOURCE };
 export const OFFICIAL_PLUGIN_CATALOG = GENERATED_PLUGIN_CATALOG;

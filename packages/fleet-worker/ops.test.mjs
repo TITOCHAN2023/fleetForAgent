@@ -88,12 +88,18 @@ test("HUB_TOKEN super is not an ops admin", async () => {
     adminEmails: "ops@example.com",
   });
   assert.equal(res.status, 404);
-  assert.equal(isOpsAdmin({ id: "*", super: true, email: "ops@example.com" }, "ops@example.com"), false);
+  assert.equal(
+    isOpsAdmin({ id: "*", super: true, email: "ops@example.com" }, "ops@example.com"),
+    false,
+  );
 });
 
 test("id looking like an admin email is not an ops admin", () => {
   assert.equal(isOpsAdmin({ id: "ops@example.com" }, "ops@example.com"), false);
-  assert.equal(isOpsAdmin({ id: "ops@example.com", email: "ada@example.com" }, "ops@example.com"), false);
+  assert.equal(
+    isOpsAdmin({ id: "ops@example.com", email: "ada@example.com" }, "ops@example.com"),
+    false,
+  );
   assert.equal(isOpsAdmin({ id: "user-ops", email: "ops@example.com" }, "ops@example.com"), true);
   assert.equal(isOpsAdmin({ ...OPS, banned: true }, "ops@example.com"), false);
 });
@@ -198,7 +204,9 @@ test("overview JSON never includes name / hostname / ip fields", () => {
   const raw = JSON.stringify(body);
   assert.equal(raw.includes("SECRET-HOSTNAME"), false);
   assert.equal(raw.includes("203.0.113.9"), false);
-  assert.deepEqual(stripSensitive({ name: "x", hostname: "y", ip: "1", id: "dev-1" }), { id: "dev-1" });
+  assert.deepEqual(stripSensitive({ name: "x", hostname: "y", ip: "1", id: "dev-1" }), {
+    id: "dev-1",
+  });
 });
 
 test("banned 403 still works on login/invoke after ops sets the flag", () => {
@@ -288,7 +296,10 @@ test("ops banned sets the flag and does not run, type, or kick", async () => {
   assert.deepEqual(await res.json(), { ok: true, id: "user-ada", banned: true });
   assert.deepEqual(calls, [{ id: "user-ada", banned: true }]);
 
-  const bannedFn = worker.slice(worker.indexOf("async setUserBanned"), worker.indexOf("async register"));
+  const bannedFn = worker.slice(
+    worker.indexOf("async setUserBanned"),
+    worker.indexOf("async register"),
+  );
   assert.equal(bannedFn.includes("kickUserDevices"), false);
   assert.equal(bannedFn.includes("/run"), false);
   assert.equal(bannedFn.includes("/type"), false);
@@ -348,7 +359,7 @@ test("worker gates /ops before assets and /v1/ops before the catch-all actor", (
   const assets = worker.indexOf("env.ASSETS.fetch");
   const overview = worker.indexOf('url.pathname === "/v1/ops/overview"');
   const catchAll = worker.search(
-    /^    const resolved = await resolveActor\(request, env, fleet\);\r?\n    if \(!resolved\.actor\) return deny\(resolved\);/m,
+    /^\s{4}const resolved = await resolveActor\(request, env, fleet\);\r?\n\s{4}if \(!resolved\.actor\) return deny\(resolved\);/m,
   );
   assert.ok(ops !== -1 && ops < assets);
   assert.ok(overview !== -1 && overview < catchAll);
@@ -356,8 +367,15 @@ test("worker gates /ops before assets and /v1/ops before the catch-all actor", (
   assert.match(worker, /archFromBody/);
   assert.match(worker, /ADMIN_EMAILS/);
   assert.match(worker, /ops: isOpsAdmin\(resolved\.actor, env\.ADMIN_EMAILS\)/);
-  const me = worker.slice(worker.indexOf('url.pathname === "/v1/me"'), worker.indexOf('url.pathname === "/v1/hub_token"'));
-  assert.equal((me.match(/resolveSession/g) || []).length, 0, "/v1/me must reuse its resolved actor");
+  const me = worker.slice(
+    worker.indexOf('url.pathname === "/v1/me"'),
+    worker.indexOf('url.pathname === "/v1/hub_token"'),
+  );
+  assert.equal(
+    (me.match(/resolveSession/g) || []).length,
+    0,
+    "/v1/me must reuse its resolved actor",
+  );
 });
 
 test("dispatchOps uses the cookie session and ignores Authorization", () => {

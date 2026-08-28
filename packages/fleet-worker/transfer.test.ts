@@ -155,7 +155,7 @@ test("source and target own immutable preparation fields", () => {
       ),
     (error: unknown) => error instanceof TransferError && error.code === "SOURCE_NOT_PREPARED",
   );
-  let next = authorizeTransfer(
+  const next = authorizeTransfer(
     record(),
     sender,
     "source",

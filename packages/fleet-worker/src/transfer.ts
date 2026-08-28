@@ -509,8 +509,7 @@ export function validateTransferTicketStatement(
   if (typeof iat !== "number" || typeof exp !== "number") return null;
   if (!Number.isSafeInteger(iat) || !Number.isSafeInteger(exp)) return null;
   if (iat > now + 30_000 || exp <= now) return null;
-  if (exp <= iat || exp - iat > TRANSFER_TICKET_TTL_MS)
-    return null;
+  if (exp <= iat || exp - iat > TRANSFER_TICKET_TTL_MS) return null;
   if (exp > expected.expiresAt) return null;
   return { ...exact, iat, exp };
 }
@@ -570,7 +569,7 @@ export function parseTransferSignal(input: unknown): TransferSignal {
     }
     rejectRelay(candidate);
     const sdpMid = String(value.sdp_mid ?? "");
-    if (sdpMid.length > 128 || /[\u0000-\u001f\u007f]/.test(sdpMid)) {
+    if (sdpMid.length > 128 || hasASCIIControl(sdpMid)) {
       bad("INVALID_SIGNAL", "invalid sdp_mid");
     }
     const sdpMLineIndex = safeInt(value.sdp_mline_index, "sdp_mline_index", 0, 65_535);
@@ -1002,7 +1001,7 @@ function endpoint(input: unknown, field: string): TransferEndpoint {
   const kind = String(value.kind ?? "");
   if (kind !== "tool" && kind !== "device") bad("INVALID_ENDPOINT", `${field}.kind is invalid`);
   const name = String(value.name ?? "");
-  if (name.length > 255 || /[\u0000-\u001f\u007f]/.test(name)) {
+  if (name.length > 255 || hasASCIIControl(name)) {
     bad("INVALID_ENDPOINT", `${field}.name is invalid`);
   }
   return { kind, id: requiredId(value.id, `${field}.id`), ...(name ? { name } : {}) };
@@ -1014,7 +1013,13 @@ function prepareSource(record: TransferRecord, input: unknown): TransferRecord {
   const fileBody = object(preparation.file, "file");
   strictKeys(fileBody, ["name", "size", "sha256", "chunk_size"]);
   const name = String(fileBody.name ?? "");
-  if (!name || name.length > 255 || /[\\/\u0000-\u001f\u007f]/.test(name)) {
+  if (
+    !name ||
+    name.length > 255 ||
+    name.includes("/") ||
+    name.includes("\\") ||
+    hasASCIIControl(name)
+  ) {
     bad("INVALID_FILE", "file.name must be a plain basename");
   }
   const size = safeInt(fileBody.size, "file.size", 0, Number.MAX_SAFE_INTEGER);
@@ -1098,7 +1103,7 @@ function pathHint(value: unknown, field: string, required: boolean): string {
   const path = String(value ?? "");
   if (!path && !required) return "";
   const absolute = path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\");
-  if (!absolute || path.length > 4096 || /[\u0000-\u001f\u007f]/.test(path)) {
+  if (!absolute || path.length > 4096 || hasASCIIControl(path)) {
     bad("INVALID_PATH_HINT", `${field} is invalid`);
   }
   return path;
@@ -1110,6 +1115,14 @@ function transferStunURLs(raw: string | undefined): string[] {
     .map((value) => value.trim())
     .filter((value) => value.startsWith("stun:") && value.length <= 512)
     .slice(0, 4);
+}
+
+function hasASCIIControl(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code <= 31 || code === 127) return true;
+  }
+  return false;
 }
 
 function safeInt(value: unknown, field: string, min: number, max: number): number {

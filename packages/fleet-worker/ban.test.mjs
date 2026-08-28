@@ -3,7 +3,13 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { applyBanFields, applyBannedState, isBanned, oauthCallbackFail, rejectIfBanned } from "./src/ban.mjs";
+import {
+  applyBanFields,
+  applyBannedState,
+  isBanned,
+  oauthCallbackFail,
+  rejectIfBanned,
+} from "./src/ban.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -82,7 +88,7 @@ test("login and authenticated reads return 403 when the row is banned", () => {
     "explicit OAEP auth must not pay for an empty cookie-session lookup",
   );
   const catchAll = worker.search(
-    /^    const resolved = await resolveActor\(request, env, fleet\);\r?\n    if \(!resolved\.actor\) return deny\(resolved\);/m,
+    /^\s{4}const resolved = await resolveActor\(request, env, fleet\);\r?\n\s{4}if \(!resolved\.actor\) return deny\(resolved\);/m,
   );
   assert.notEqual(catchAll, -1);
   assert.ok(worker.indexOf('url.pathname === "/v1/run"') > catchAll);
@@ -94,13 +100,20 @@ test("login and authenticated reads return 403 when the row is banned", () => {
 
 test("banned OAuth callback is HTML fail, not raw JSON", () => {
   assert.deepEqual(oauthCallbackFail({ error: "banned" }), { message: "账号已停用", status: 403 });
-  assert.deepEqual(oauthCallbackFail({ error: "email required" }), { message: "email required", status: 400 });
+  assert.deepEqual(oauthCallbackFail({ error: "email required" }), {
+    message: "email required",
+    status: 400,
+  });
   assert.deepEqual(oauthCallbackFail({}), { message: "oauth failed", status: 400 });
   assert.deepEqual(oauthCallbackFail(null), { message: "oauth failed", status: 400 });
 });
 
 test("applyBannedState can clear the flag without touching machines", () => {
-  const user = applyBannedState({ id: "user-ada", email: "ada@example.com" }, true, 1_700_000_000_000);
+  const user = applyBannedState(
+    { id: "user-ada", email: "ada@example.com" },
+    true,
+    1_700_000_000_000,
+  );
   assert.equal(user.banned, true);
   applyBannedState(user, false);
   assert.equal(user.banned, false);

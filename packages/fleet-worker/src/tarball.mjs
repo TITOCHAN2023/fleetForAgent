@@ -10,6 +10,11 @@ export function isFleetToolTgzPath(path) {
 }
 
 export function serveFleetToolTgz(assetRes) {
+  const ct = (assetRes.headers.get("content-type") || "").toLowerCase();
+  if (ct.includes("text/html")) {
+    return new Response("fleet-tool tarball missing", { status: 404 });
+  }
+
   if (assetRes.status === 304) {
     return new Response(null, {
       status: assetRes.status,
@@ -18,8 +23,15 @@ export function serveFleetToolTgz(assetRes) {
     });
   }
 
-  const ct = (assetRes.headers.get("content-type") || "").toLowerCase();
-  if (!assetRes.ok || ct.includes("text/html")) {
+  if (assetRes.status === 416) {
+    return new Response(assetRes.body, {
+      status: assetRes.status,
+      statusText: assetRes.statusText,
+      headers: assetRes.headers,
+    });
+  }
+
+  if (!assetRes.ok) {
     return new Response("fleet-tool tarball missing", { status: 404 });
   }
   const headers = new Headers(assetRes.headers);

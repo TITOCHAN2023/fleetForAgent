@@ -185,6 +185,14 @@ test("Worker serves /fleet-tool.tgz without hiding asset response semantics", as
   assert.equal(notModified.headers.get("etag"), '"fleet-tool-v1"');
   assert.equal(await notModified.text(), "");
 
+  const cachedHtml = serveFleetToolTgz(
+    new Response(null, {
+      status: 304,
+      headers: { "content-type": "text/html; charset=utf-8" },
+    }),
+  );
+  assert.equal(cachedHtml.status, 404);
+
   const partial = serveFleetToolTgz(
     new Response("bytes", {
       status: 206,
@@ -198,6 +206,16 @@ test("Worker serves /fleet-tool.tgz without hiding asset response semantics", as
   assert.equal(partial.headers.get("content-range"), "bytes 0-4/100");
   assert.equal(partial.headers.get("content-type"), FLEET_TOOL_TGZ_TYPE);
   assert.equal(await partial.text(), "bytes");
+
+  const unsatisfiedRange = serveFleetToolTgz(
+    new Response("range unavailable", {
+      status: 416,
+      headers: { "content-range": "bytes */100" },
+    }),
+  );
+  assert.equal(unsatisfiedRange.status, 416);
+  assert.equal(unsatisfiedRange.headers.get("content-range"), "bytes */100");
+  assert.equal(await unsatisfiedRange.text(), "range unavailable");
 });
 
 test("wrangler keeps SPA fallback, explicit DO migrations, and token vars secret", () => {

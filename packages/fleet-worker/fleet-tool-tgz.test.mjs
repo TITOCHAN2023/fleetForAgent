@@ -153,7 +153,7 @@ test("Help and Settings snippets use npx, not a repo clone", () => {
   assert.doesNotMatch(html, /git clone/);
 });
 
-test("Worker refuses an HTML SPA fallback for /fleet-tool.tgz", async () => {
+test("Worker serves /fleet-tool.tgz without hiding asset response semantics", async () => {
   assert.equal(isFleetToolTgzPath("/fleet-tool.tgz"), true);
   assert.equal(isFleetToolTgzPath("/help"), false);
   const htmlRes = serveFleetToolTgz(
@@ -174,6 +174,30 @@ test("Worker refuses an HTML SPA fallback for /fleet-tool.tgz", async () => {
   const body = Buffer.from(await ok.arrayBuffer());
   assert.equal(body[0], 0x1f);
   assert.equal(body[1], 0x8b);
+
+  const notModified = serveFleetToolTgz(
+    new Response(null, {
+      status: 304,
+      headers: { etag: '"fleet-tool-v1"' },
+    }),
+  );
+  assert.equal(notModified.status, 304);
+  assert.equal(notModified.headers.get("etag"), '"fleet-tool-v1"');
+  assert.equal(await notModified.text(), "");
+
+  const partial = serveFleetToolTgz(
+    new Response("bytes", {
+      status: 206,
+      headers: {
+        "content-range": "bytes 0-4/100",
+        "content-type": "application/gzip",
+      },
+    }),
+  );
+  assert.equal(partial.status, 206);
+  assert.equal(partial.headers.get("content-range"), "bytes 0-4/100");
+  assert.equal(partial.headers.get("content-type"), FLEET_TOOL_TGZ_TYPE);
+  assert.equal(await partial.text(), "bytes");
 });
 
 test("wrangler keeps SPA fallback, explicit DO migrations, and token vars secret", () => {

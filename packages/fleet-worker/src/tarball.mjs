@@ -10,11 +10,23 @@ export function isFleetToolTgzPath(path) {
 }
 
 export function serveFleetToolTgz(assetRes) {
+  if (assetRes.status === 304) {
+    return new Response(null, {
+      status: assetRes.status,
+      statusText: assetRes.statusText,
+      headers: assetRes.headers,
+    });
+  }
+
   const ct = (assetRes.headers.get("content-type") || "").toLowerCase();
   if (!assetRes.ok || ct.includes("text/html")) {
     return new Response("fleet-tool tarball missing", { status: 404 });
   }
   const headers = new Headers(assetRes.headers);
   headers.set("content-type", FLEET_TOOL_TGZ_TYPE);
-  return new Response(assetRes.body, { status: 200, headers });
+  return new Response(assetRes.body, {
+    status: assetRes.status,
+    statusText: assetRes.statusText,
+    headers,
+  });
 }

@@ -505,9 +505,10 @@ export class PeerSessionDO implements DurableObject {
         const roundId = uuid(body.round_id, "round_id");
         const event = String(body.event ?? "");
         const next = await this.mutate(caller, (record, outbox, now) => {
-          assertRound(record, roundId);
           const side = participant(record, caller);
           const coordinator = same(record.coordinator, caller);
+          // An endpoint failure terminates the session even if an interrupt already rotated rounds.
+          if (event !== "fail") assertRound(record, roundId);
           if (!side && !coordinator) fail(403, "NOT_PARTICIPANT", "not in peer session");
           if (event === "cancel") {
             if (terminal(record.phase)) return record;

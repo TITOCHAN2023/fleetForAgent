@@ -892,7 +892,7 @@ test("body parsing precedes the state transaction so a delayed signal cannot res
   assert.equal(state.value<PeerSessionRecord>("session")?.phase, "cancelled");
 });
 
-test("interrupt generates a server round and rejects every old-round callback", async () => {
+test("interrupt generates a server round and rejects old-round round-scoped callbacks", async () => {
   const state = fakeState();
   const control = new PeerSessionDO(state as unknown as DurableObjectState, env());
   const oldRound = await createAndAuthorize(control, state);
@@ -937,6 +937,79 @@ test("interrupt generates a server round and rejects every old-round callback", 
     );
     assert.equal(response.status, 409, `old-round ${event} must fail`);
     assert.equal(((await response.json()) as { code: string }).code, "STALE_ROUND");
+  }
+});
+
+test("an endpoint failure from the interrupted round terminates the replacement round", async () => {
+  const state = fakeState();
+  const control = new PeerSessionDO(state as unknown as DurableObjectState, env());
+  const oldRound = await createAndAuthorize(control, state);
+  await signal(control, "device-a", "initiator", offer(1), oldRound);
+  await signal(control, "device-b", "responder", answer(1), oldRound);
+  assert.equal(
+    (
+      await control.fetch(
+        req("/event", "device", "device-a", { round_id: oldRound, event: "interrupt" }),
+      )
+    ).status,
+    200,
+  );
+  const replacementRound = state.value<PeerSessionRecord>("session")!.round.id;
+  assert.notEqual(replacementRound, oldRound);
+
+  for (const [kind, id] of [
+    ["tool", "operator-a"],
+    ["device", "device-c"],
+  ] as const) {
+    const unauthorized = await control.fetch(
+      req("/event", kind, id, {
+        round_id: oldRound,
+        event: "fail",
+        failure_code: "TARGET_EXISTS",
+      }),
+    );
+    assert.equal(unauthorized.status, 403);
+  }
+  const malformed = await control.fetch(
+    req("/event", "device", "device-b", {
+      round_id: oldRound,
+      event: "fail",
+      failure_code: "not-valid",
+    }),
+  );
+  assert.equal(malformed.status, 400);
+  assert.equal(state.value<PeerSessionRecord>("session")!.phase, "waiting_approval");
+
+  const failedResponse = await control.fetch(
+    req("/event", "device", "device-b", {
+      round_id: oldRound,
+      event: "fail",
+      failure_code: "TARGET_EXISTS",
+    }),
+  );
+  assert.equal(failedResponse.status, 200);
+  const failed = state.value<PeerSessionRecord>("session")!;
+  assert.equal(failed.round.id, replacementRound);
+  assert.equal(failed.phase, "failed");
+  assert.equal(failed.failureCode, "TARGET_EXISTS");
+  const outbox = state.value<
+    Array<{
+      kind: string;
+      side: string;
+      envelope: {
+        type: string;
+        body: { phase: string; session: { round: { id: string }; failure_code: string } };
+      };
+    }>
+  >("outbox")!;
+  assert.equal(outbox.length, 2);
+  assert.deepEqual(new Set(outbox.map((entry) => entry.side)), new Set(["source", "target"]));
+  for (const entry of outbox) {
+    assert.equal(entry.kind, "deliver");
+    assert.equal(entry.envelope.type, "peer_session_update");
+    assert.equal(entry.envelope.body.phase, "failed");
+    assert.equal(entry.envelope.body.session.round.id, replacementRound);
+    assert.equal(entry.envelope.body.session.failure_code, "TARGET_EXISTS");
   }
 });
 

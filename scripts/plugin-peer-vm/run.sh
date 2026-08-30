@@ -192,6 +192,7 @@ docker run -d \
   "$IMAGE" /opt/fleet-agent >"$VM_RUN_ROOT/logs/agent-b-container.txt"
 
 mkdir -p "$VM_RUN_ROOT/tool/data/control"
+mkdir -p "$VM_RUN_ROOT/tool/plugins/fleet.transfer/data"
 printf '%s\n' \
   'FLEET_URL=http://fleet-hub.test:8787' \
   "FLEET_TOKEN=$FLEET_TOKEN" \
@@ -206,6 +207,7 @@ docker run -d \
   --env-file "$VM_RUN_ROOT/tool.env" \
   -v "$ROOT:/workspace:ro" \
   -v "$VM_RUN_ROOT/tool/plugins:/plugins:ro" \
+  -v "$VM_RUN_ROOT/tool/plugins/fleet.transfer/data:/plugins/fleet.transfer/data:rw" \
   -v "$VM_RUN_ROOT/tool/data:/tool-data:rw" \
   -w /workspace \
   "$IMAGE" sleep infinity >"$VM_RUN_ROOT/logs/tool-container.txt"

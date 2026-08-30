@@ -16,7 +16,7 @@ The first constraint was simple. RTC would not get its own remote execution prot
 
 The Agent keeps one business entry point as well. WSS messages go to `dispatchEnvelope`. DataChannel messages go there too. Commands, panes, desktop control, and plugins all reply through the same `EnvelopeSink`.
 
-This decision is deliberately unexciting. Plugin installation still needs approval beside the device. Dangerous commands still meet the device policy. A second set of RTC handlers would eventually miss one of those checks.
+This decision is deliberately unexciting. Plugin installation still follows the device permit: Off refuses, Ask waits for someone beside the device, and Allow runs unattended without a second plugin prompt. Dangerous commands still meet the device policy. A second set of RTC handlers would eventually miss one of those checks.
 
 ```mermaid
 flowchart LR
@@ -25,7 +25,7 @@ flowchart LR
   W["WSS Envelope"] --> D["One dispatchEnvelope"]
   R["RTC Envelope"] --> D
   D --> S["Shell and panes"]
-  D --> P["Plugins and local approval"]
+  D --> P["Plugins and device permit"]
   D --> C["Desktop control"]
 ```
 

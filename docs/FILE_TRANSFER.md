@@ -32,8 +32,8 @@ flowchart LR
 
 | 组件 | 负责 | 禁止负责 |
 |---|---|---|
-| Worker / `PeerSessionDO` | 账户、端点、固定目录声明、批准状态、round、SDP、票据、持久 outbox | 文件字段、路径、manifest、chunk、进度字节、数据中继 |
-| Agent / Tool peer core | 启动固定插件、SHA-256 复验、本机确认、WebRTC、nonce handshake、背压、取消 | 解释 manifest、offset、ACK、resume、commit |
+| Worker / `PeerSessionDO` | 账户、端点、固定目录声明、端点授权状态、round、SDP、票据、持久 outbox | 文件字段、路径、manifest、chunk、进度字节、数据中继 |
+| Agent / Tool peer core | 启动固定插件、SHA-256 复验、本地授权决策、WebRTC、nonce handshake、背压、取消 | 解释 manifest、offset、ACK、resume、commit |
 | `fleet.transfer` | 安全文件 I/O、私有 DATA 协议、哈希、续传、no-clobber 提交 | Hub Token、账户、设备目录、SDP、网络回退 |
 | Tool 文件 facade | 把 CLI/MCP 参数变成固定插件的 opaque input，展示状态 | 复制实现文件协议或绕过插件 |
 
@@ -68,6 +68,8 @@ flowchart LR
 }
 ```
 
+`approval_actions` 只保留为 schema v1 兼容元数据，不能覆盖 Agent permit。`both_once` 表示 source 与 target 每端在整个 session 内各做一次本地授权决策，不表示 `permit=allow` 时仍要强制点击；新 round 复用这次决定。
+
 Tool 和 Worker 使用固定 registry commit。Agent/Tool 选择本机 OS/arch artifact，要求 URL 属于同一官方仓库的 `v0.2.1` Release，下载有硬上限，并在安装和每次执行前复验固定 SHA-256。客户端不能提交 URL、可执行路径或 SHA。
 
 ## 会话与 round
@@ -89,7 +91,7 @@ stateDiagram-v2
   active --> failed
 ```
 
-每个 session 只进行一次本机批准（`both_once`）。每次重连由 DO 生成新的 `round_id`；两端 Core 生成新的随机 round nonce，重新建 PeerConnection、重新验票，并用原有 opaque action input 重启插件进程。插件通过自己的 manifest/resume 握手恢复，Core 不计算文件 offset。
+`waiting_approval` 是兼容的控制面状态：Agent 端 `permit=allow` 会自动完成授权并推进，`permit=ask` 才等待本机点击，`permit=off` 直接拒绝。每个 session 的每个端点只进行一次本地授权决策（`both_once`）；本地 Tool 端的显式发起调用就是它的授权决策。每次重连由 DO 生成新的 `round_id`；两端 Core 生成新的随机 round nonce，重新建 PeerConnection、重新验票，并用原有 opaque action input 重启插件进程。插件通过自己的 manifest/resume 握手恢复，Core 不计算文件 offset。
 
 短期票据绑定：
 
@@ -182,11 +184,12 @@ Target：
 
 ## 本机授权
 
-- 安装、卸载和两个 peer action 都是设备端敏感动作；
-- `permit=allow` 不能跳过首次 source/target 确认；
-- Core 显示固定插件、action、对端和 bounded opaque input；不得相信远端提供的伪造“友好说明”；
-- source 侧确认可见的是固定 metadata、`prepare_source`、对端和 canonical input（包括本机 source path/chunk size）；target 侧可见的是 `prepare_target`、对端和 canonical input（包括本机 directory/name、transfer id 与不透明 source digest）；
-- 文件大小和完整 SHA-256 要到批准后由 source 插件计算，并经私有 manifest 交给 target，批准对话框不得声称用户已经看见或批准这两个字段；
+- Agent 端安装、卸载和两个 peer action 统一服从设备 permit：`off` 拒绝，`ask` 等待本机点击，`allow` 自动授权且没有第二次插件确认；
+- permit 只决定是否授权。固定插件来源、版本、平台、action/runtime、artifact 与执行时 SHA-256、票据、nonce、路径安全和 no-clobber 等硬校验始终生效；
+- `permit=ask` 时，Core 显示固定插件、action、对端和 bounded opaque input；不得相信远端提供的伪造“友好说明”；
+- source 侧提示可见的是固定 metadata、`prepare_source`、对端和 canonical input（包括本机 source path/chunk size）；target 侧可见的是 `prepare_target`、对端和 canonical input（包括本机 directory/name、transfer id 与不透明 source digest）；
+- 文件大小和完整 SHA-256 要到授权后由 source 插件计算，并经私有 manifest 交给 target；`ask` 的对话框不得声称用户已经看见或批准这两个字段；
+- `both_once` 是每端一次本地授权决策，不是每个 round 再问一次；
 - 插件不是 OS 沙箱，它继承 Agent/Tool 当前用户的文件权限；
 - Hub Token 重置、控制 WSS 失效、设备切 Off 或用户取消会关闭所有当前 peer round。
 

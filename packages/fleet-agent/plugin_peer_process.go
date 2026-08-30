@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,22 +22,32 @@ type pluginPeerIO interface {
 	WriteData([]byte) error
 	ReadRecord() (pluginPeerRecord, error)
 	Wait() error
-	Cancel()
+	Cancel() bool
 	Abort()
 }
 
+type pluginProcessTree interface {
+	terminate(force bool)
+	close()
+}
+
 type processPluginPeer struct {
-	cmd     *exec.Cmd
-	ctx     context.Context
-	stdin   ioWriteCloser
-	stdout  *bufio.Reader
-	stderr  *capBuffer
-	writeMu sync.Mutex
-	wait    sync.Once
-	stop    sync.Once
-	done    chan struct{}
-	waitErr error
-	waitFn  func() error
+	cmd           *exec.Cmd
+	tree          pluginProcessTree
+	ctx           context.Context
+	stdin         ioWriteCloser
+	stdout        *bufio.Reader
+	stderr        *capBuffer
+	writeMu       sync.Mutex
+	wait          sync.Once
+	stop          sync.Once
+	done          chan struct{}
+	waitErr       error
+	waitFn        func() error
+	stopMode      string
+	cancelApplied bool
+	cancelSeen    atomic.Bool
+	cancelDrain   sync.Once
 }
 
 // ioWriteCloser is intentionally smaller than io.WriteCloser so fake peers do
@@ -52,7 +63,6 @@ func startPluginPeerProcess(ctx context.Context, pluginID, protocol, role, actio
 		return installedPlugin{}, nil, err
 	}
 	cmd := exec.Command(path)
-	configurePluginProcess(cmd)
 	dir := filepath.Dir(path)
 	cmd.Env = append(os.Environ(),
 		"FLEET_PLUGIN_DATA_DIR="+filepath.Join(dir, "data"),
@@ -75,10 +85,12 @@ func startPluginPeerProcess(ctx context.Context, pluginID, protocol, role, actio
 		done:   make(chan struct{}),
 	}
 	cmd.Stderr = peer.stderr
-	if err := cmd.Start(); err != nil {
+	tree, err := startPluginProcess(cmd)
+	if err != nil {
 		_ = stdin.Close()
 		return installedPlugin{}, nil, err
 	}
+	peer.tree = tree
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -102,7 +114,26 @@ func (p *processPluginPeer) WriteData(value []byte) error {
 }
 
 func (p *processPluginPeer) ReadRecord() (pluginPeerRecord, error) {
-	return readPluginPeerRecord(p.stdout)
+	record, err := readPluginPeerRecord(p.stdout)
+	if err == nil && record.Kind == pluginPeerRecordJSON {
+		control, controlErr := decodePluginPeerControl(record.Payload)
+		if controlErr == nil && control.Type == "status" && control.Status == "canceled" {
+			p.cancelSeen.Store(true)
+		}
+	}
+	return record, err
+}
+
+func (p *processPluginPeer) drainCancellationStatus() {
+	p.cancelDrain.Do(func() {
+		go func() {
+			for !p.cancelSeen.Load() {
+				if _, err := p.ReadRecord(); err != nil {
+					return
+				}
+			}
+		}()
+	})
 }
 
 func (p *processPluginPeer) Wait() error {
@@ -121,6 +152,9 @@ func (p *processPluginPeer) startWait() {
 				wait = p.cmd.Wait
 			}
 			err := wait()
+			if p.tree != nil {
+				p.tree.close()
+			}
 			if err == nil {
 				return
 			}
@@ -150,38 +184,71 @@ func (p *processPluginPeer) waitForExit(timeout time.Duration) bool {
 	}
 }
 
-func (p *processPluginPeer) Cancel() {
-	p.cancelWithin(500*time.Millisecond, 250*time.Millisecond, pluginPeerProcessWaitMax)
+func (p *processPluginPeer) Cancel() bool {
+	p.stop.Do(func() {
+		p.stopMode = "cancel"
+		p.cancelApplied = p.cancelWithin(500*time.Millisecond, 250*time.Millisecond, pluginPeerProcessWaitMax)
+	})
+	return p.stopMode == "cancel" && p.cancelApplied
 }
 
-func (p *processPluginPeer) cancelWithin(gracefulWait, terminateWait, forceWait time.Duration) {
-	p.stop.Do(func() {
-		// A plugin can stop reading stdin while another DATA write owns writeMu.
-		// Cancellation must still reach the process-tree kill path on schedule.
-		go func() { _ = p.WriteControl(map[string]any{"v": 1, "type": "cancel"}) }()
-		if p.waitForExit(gracefulWait) {
-			return
-		}
+func (p *processPluginPeer) cancelWithin(gracefulWait, terminateWait, forceWait time.Duration) bool {
+	// A plugin can stop reading stdin while another DATA write owns writeMu.
+	// Cancellation must still reach the process-tree kill path on schedule. A
+	// forced stop is cleanup, not proof that the FLPP cancel frame was applied.
+	writeDone := make(chan error, 1)
+	go func() { writeDone <- p.WriteControl(map[string]any{"v": 1, "type": "cancel"}) }()
+	graceful := p.waitForExit(gracefulWait)
+	cleanExit := graceful && p.waitErr == nil
+	if !graceful {
 		_ = p.stdin.Close()
-		terminatePluginProcessTree(p.cmd, false)
-		if p.waitForExit(terminateWait) {
-			return
+		if p.tree != nil {
+			p.tree.terminate(false)
 		}
-		terminatePluginProcessTree(p.cmd, true)
-		_ = p.waitForExit(forceWait)
-	})
+		if !p.waitForExit(terminateWait) {
+			if p.tree != nil {
+				p.tree.terminate(true)
+			}
+			_ = p.waitForExit(forceWait)
+		}
+	}
+	// The plugin contract owns one process tree, not only its group leader.
+	// A leader may exit cleanly after acknowledging cancel while leaving helpers
+	// behind. Sweep the group regardless of the leader's exit status; this is
+	// cleanup only and does not turn a forced/non-zero exit into a receipt.
+	if p.tree != nil {
+		p.tree.terminate(true)
+	}
+	writeTimer := time.NewTimer(terminateWait)
+	defer writeTimer.Stop()
+	select {
+	case err := <-writeDone:
+		if err != nil || !cleanExit {
+			return false
+		}
+		deadline := time.Now().Add(50 * time.Millisecond)
+		for !p.cancelSeen.Load() && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		return p.cancelSeen.Load()
+	case <-writeTimer.C:
+		return false
+	}
 }
 
 func (p *processPluginPeer) Abort() {
-	p.abortWithin(pluginPeerProcessWaitMax)
+	p.stop.Do(func() {
+		p.stopMode = "abort"
+		p.abortWithin(pluginPeerProcessWaitMax)
+	})
 }
 
 func (p *processPluginPeer) abortWithin(forceWait time.Duration) {
-	p.stop.Do(func() {
-		_ = p.stdin.Close()
-		terminatePluginProcessTree(p.cmd, true)
-		_ = p.waitForExit(forceWait)
-	})
+	_ = p.stdin.Close()
+	if p.tree != nil {
+		p.tree.terminate(true)
+	}
+	_ = p.waitForExit(forceWait)
 }
 
 func pluginPeerOpen(action string, input json.RawMessage, peer pluginPeerEndpoint) map[string]any {

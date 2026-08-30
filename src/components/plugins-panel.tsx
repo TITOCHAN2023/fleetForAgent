@@ -107,7 +107,7 @@ export function PluginsPanel() {
           </Button>
         </div>
         <div className="mt-6 flex flex-wrap gap-x-5 gap-y-2 border-t border-border pt-5 text-xs text-subtle">
-          <span className="flex items-center gap-2"><ShieldCheck className="size-4" />{zh ? "设备端确认" : "Device approval"}</span>
+          <span className="flex items-center gap-2"><ShieldCheck className="size-4" />{zh ? "遵循设备权限" : "Follows device permit"}</span>
           <span className="flex items-center gap-2"><PackageCheck className="size-4" />Release + SHA-256</span>
           <span className="font-mono">{pluginRegistrySource.commit.slice(0, 12)}</span>
         </div>

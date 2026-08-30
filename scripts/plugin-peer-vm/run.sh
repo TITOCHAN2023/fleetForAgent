@@ -222,20 +222,19 @@ agent_status() {
   docker exec "$container" /opt/fleet-agent status --json >"$VM_RUN_ROOT/logs/$label-${container}.json" 2>/dev/null
 }
 
-approve_once() {
+assert_no_pending_once() {
   local container=$1
   local label=$2
   local status_file="$VM_RUN_ROOT/logs/$label-${container}.json"
-  if agent_status "$container" "$label" && node "$HELPER" pending "$status_file"; then
-    docker exec "$container" /opt/fleet-agent approve >/dev/null
-  fi
+  agent_status "$container" "$label"
+  node "$HELPER" allow-without-pending "$status_file"
 }
 
-approve_all() {
+assert_all_no_pending() {
   local label=$1
   shift
   local container
-  for container in "$@"; do approve_once "$container" "$label"; done
+  for container in "$@"; do assert_no_pending_once "$container" "$label"; done
 }
 
 echo "[6/9] Waiting for both exact devices to advertise the generic peer capability"
@@ -248,6 +247,7 @@ for _ in $(seq 1 240); do
 done
 tool list >"$VM_RUN_ROOT/logs/list.json" 2>"$VM_RUN_ROOT/logs/list.err"
 node "$HELPER" online "$VM_RUN_ROOT/logs/list.json"
+assert_all_no_pending online "$AGENT_A" "$AGENT_B"
 
 start_transfer() {
   local label=$1
@@ -268,7 +268,7 @@ wait_transfer() {
   shift 2
   local deadline=$((SECONDS + 900))
   while kill -0 "$TRANSFER_PID" 2>/dev/null; do
-    approve_all "$TRANSFER_LABEL" "$@"
+    assert_all_no_pending "$TRANSFER_LABEL" "$@"
     if ((SECONDS >= deadline)); then
       echo "$TRANSFER_LABEL timed out" >&2
       return 1
@@ -303,7 +303,7 @@ wait_session_id() {
   while [[ -z "$id" ]] && kill -0 "$TRANSFER_PID" 2>/dev/null; do
     id=$(node "$HELPER" session "$TRANSFER_PROGRESS" 2>/dev/null || true)
     [[ -n "$id" ]] && break
-    approve_all "$TRANSFER_LABEL" "$@"
+    assert_all_no_pending "$TRANSFER_LABEL" "$@"
     if ((SECONDS >= deadline)); then break; fi
     sleep 0.05
   done
@@ -317,7 +317,7 @@ wait_verified_offset() {
   shift 2
   local deadline=$((SECONDS + 300))
   while kill -0 "$TRANSFER_PID" 2>/dev/null; do
-    approve_all "$TRANSFER_LABEL" "$@"
+    assert_all_no_pending "$TRANSFER_LABEL" "$@"
     local size
     size=$(node "$HELPER" verified-offset "$directory")
     if ((size >= minimum)); then return 0; fi

@@ -446,6 +446,16 @@ async function pending(file) {
   process.exitCode = command ? 0 : 1;
 }
 
+async function allowWithoutPending(file) {
+  const state = await jsonFile(file);
+  if (state?.permit !== "allow") {
+    fail(`Agent permit changed from allow: ${String(state?.permit ?? "missing")}`);
+  }
+  if (state?.pending) {
+    fail(`permit=allow unexpectedly requested approval: ${String(state.pending.command ?? "unknown")}`);
+  }
+}
+
 async function terminal(file, wanted) {
   const value = await jsonFile(file);
   // Tool success output is the session itself. The VM status route wraps the
@@ -918,6 +928,7 @@ async function main() {
   if (command === "seed-field") return seedField(args[0], args[1]);
   if (command === "online") return online(args[0]);
   if (command === "pending") return pending(args[0]);
+  if (command === "allow-without-pending") return allowWithoutPending(args[0]);
   if (command === "terminal") return terminal(args[0], args[1]);
   if (command === "session") return sessionFromLog(args[0]);
   if (command === "verified-offset") return verifiedOffset(args[0]);

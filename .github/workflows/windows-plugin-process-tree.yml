@@ -1,0 +1,49 @@
+name: Windows plugin process tree
+
+on:
+  push:
+    branches:
+      - main
+      - codex/file-transfer-plugin
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-plugin-process-tree:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/fleet-tool/windows-job-host/go.mod
+          cache-dependency-path: |
+            packages/fleet-agent/go.sum
+            packages/fleet-tool/windows-job-host/go.sum
+
+      - name: Test Agent Windows process ownership
+        working-directory: packages/fleet-agent
+        run: go test ./...
+
+      - name: Test Tool Windows Job host and cancellation
+        run: node --test packages/fleet-tool/plugin-peer-plugin.test.mjs
+
+      - name: Vet Windows Job host
+        working-directory: packages/fleet-tool/windows-job-host
+        run: go vet ./...
+
+      - name: Rebuild and verify the published Tool archive
+        env:
+          npm_config_cache: ${{ runner.temp }}\npm-cache
+        run: node --test packages/fleet-worker/fleet-tool-tgz.test.mjs

@@ -176,8 +176,9 @@ connect.
   sync; do not weaken the check.
 - Agent never appears in `logs/list.json`: inspect `logs/agent-*.log` and
   `logs/wrangler.log`.
-- Approval timeout: inspect `logs/*-fleet-peer-*.json`; the harness refuses to
-  approve any prompt that is not exactly a `fleet.transfer 0.2.1` peer action.
+- Unexpected approval: inspect `logs/*-fleet-peer-*.json`; both Agents run with
+  `permit=allow`, the harness never calls `fleet approve`, and any pending
+  prompt fails the run immediately.
 - Direct connection failure: inspect both Agent logs and the session progress
   NDJSON. The test has no TURN, WebSocket-byte, Worker-byte, or R2 fallback.
 - Resume failure: keep the run directory. A failed/interrupted target may retain

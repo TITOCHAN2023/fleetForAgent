@@ -1,6 +1,6 @@
 # Fleet 通用插件运行时
 
-状态：`v0.6.0` 的设计与交接基线。后续 Agent 即使没有本次对话上下文，也必须先读本文，再修改插件链路。
+状态：`v0.6.1` 的设计与交接基线。后续 Agent 即使没有本次对话上下文，也必须先读本文，再修改插件链路。
 
 ## 核心判断
 
@@ -30,7 +30,7 @@ flowchart LR
 |---|---|---|
 | 账户、设备、operator、插件版本、协议声明 | Fleet Core | 能，只做身份和能力校验 |
 | 会话 phase、round、SDP/ICE、DTLS fingerprint、短期票据 | `PeerSessionDO` / peer runtime | 能，只做控制面 |
-| 本机批准、插件安装状态、插件二进制 SHA-256 | Fleet Agent | 能，只做执行授权 |
+| 本机 permit 决策、插件安装状态、插件二进制 SHA-256 | Fleet Agent | 能，只做执行授权 |
 | 文件名、路径、manifest、offset、chunk、ACK、哈希、续传 | `fleet.transfer` | 不能 |
 | ACP profile、prompt、method、permission、stream update | `fleet.acp` | 只能作为有界 task JSON 转发，不能解释 |
 | peer DATA（包括文件字节） | 两端 peer 插件 | 不能读取、缓存或中继 |
@@ -74,6 +74,10 @@ Peer 插件额外声明协议和角色。Core 只比较精确声明，不解释�
   }]
 }
 ```
+
+`approval_actions` 保留为 schema v1 兼容元数据：旧 Agent、Tool 和 Worker 可以继续读取、转发和持久化它，但它不能覆盖设备 permit，也不能制造第二套批准规则。安装、卸载、task action 和 peer action 统一服从端点 Agent 的 `off / ask / allow`：`off` 拒绝，`ask` 等待本机点击，`allow` 自动授权且不再弹出插件确认。permit 只回答“本机是否授权执行”；官方来源、平台、action/runtime、下载上限、artifact 与执行时 SHA-256，以及适用的危险策略等硬校验始终生效。
+
+peer 的 `approval: "both_once"` 也不表示“两端各点一次”。它表示每个端点在一个 session 内各完成一次本地授权决策：`ask` 需要点击，`allow` 自动通过，`off` 拒绝；后续新 round 复用该决定，不重复授权。
 
 目录校验必须保证：
 
@@ -135,7 +139,7 @@ sequenceDiagram
     Tool->>Hub: HTTPS invoke(plugin_id, action, input, corr)
     Hub->>Agent: WSS 固定 manifest + request
   end
-  Agent->>Agent: action 白名单 + 本机授权 + SHA-256
+  Agent->>Agent: permit 决策 + action/runtime 白名单 + SHA-256
   Agent->>Plugin: JSON request
   Plugin-->>Agent: JSON result
   alt RTC 结果得到 Tool ACK
@@ -158,7 +162,7 @@ task 分发必须复核 action 的最终 runtime；声明为 peer 的 action 不
 
 Worker 暴露统一 `/v1/plugin-peer-session/*` API。创建请求包含 endpoint、plugin、version、protocol、role，以及每端不超过 8 KiB 的 opaque action input。Core 只做 JSON/字节上限和目录声明校验，不检查 input 内的文件或 ACP 字段。input 只进入首次 prepare outbox，投递成功即删除；持久 session record 和票据都不保存它。
 
-设备本机确认必须从已安装且复验过 SHA-256 的 metadata 生成，显示 plugin id/version、action、对端以及 canonical bounded input（超长时安全截断）。Agent 不解释 input 的文件字段，也不得采用 Worker 或对端传来的“友好说明”；否则攻击者可以用无害文案遮蔽实际 action/input。
+设备本机授权必须由 Agent 的 permit 决定：`off` 拒绝，`ask` 才显示本机确认，`allow` 自动授权且不打开确认页面。`ask` 的提示必须从已安装且复验过 SHA-256 的 metadata 生成，显示 plugin id/version、action、对端以及 canonical bounded input（超长时安全截断）。Agent 不解释 input 的文件字段，也不得采用 Worker 或对端传来的“友好说明”；否则攻击者可以用无害文案遮蔽实际 action/input。
 
 ```mermaid
 stateDiagram-v2
@@ -179,11 +183,13 @@ stateDiagram-v2
   failed --> [*]
 ```
 
+`waiting_approval` 是兼容的控制面状态，不等于“正在等人点击”。`allow` 可以自动完成端点授权并立即推进，只有 `ask` 才等待本机操作；`off` 必须拒绝会话。
+
 每次重连都是新的、服务端生成的 `round_id`。旧 round 的 SDP、票据、回调和错误不得修改新 round。设备身份必须来自已认证 WSS attachment 或账户设备目录，不能信任请求正文冒充设备。
 
 ### Worker 持久状态与 outbox
 
-`PeerSessionDO` 持久化账户、operator、kid、两端 endpoint/plugin/version/role、protocol、capability digest、批准状态、phase、round、签票 job 和过期时间。
+`PeerSessionDO` 持久化账户、operator、kid、两端 endpoint/plugin/version/role、protocol、capability digest、端点授权状态、phase、round、签票 job 和过期时间。
 
 状态变化和 `OutboxEntry` 必须在同一 SQLite transaction 中写入；向 DeviceDO/FleetDO 投递只能发生在 transaction 之外。失败重试复用稳定 `delivery_id`，不能因为一次网络失败把状态提交成“已投递”。端点 Core 为 session 和每个 round 生成 32-byte 随机 nonce；原文只留在端点内存，DO 只持久化 SHA-256。
 
@@ -238,7 +244,7 @@ payload  length bytes
 - Core 原样转发 DATA，不窥视、不修改、不重组业务协议；
 - 插件自己定义 DATA 中的文件帧或 ACP 消息；
 - 所有队列有硬上限，背压不能随文件大小线性增长内存；
-- cancel/close 有硬超时，超时后终止整个插件进程组。
+- cancel/close 有硬超时，超时后终止整个插件进程组；但强制终止不算取消成功。
 
 ```mermaid
 sequenceDiagram
@@ -256,9 +262,11 @@ sequenceDiagram
   R->>Q: DATA opaque
 ```
 
-插件成功时返回 `status=complete`，显式取消使用 `CONTROL cancel`，失败使用 `status=error`。网络中断后 Core 终止旧插件进程，以同一份 bounded opaque input 启动新进程，并为新 round 生成新的 nonce；业务插件通过自己的 DATA 握手决定如何恢复。插件作者不需要实现 Fleet 的 WebRTC round 状态机。
+插件成功时返回 `status=complete`，显式取消使用 `CONTROL cancel`，失败使用 `status=error`。取消回执不是“进程已经没了”：Core 只有在本次 `cancel` 写入成功、收到合法的 FLPP v1 `status=canceled`，并确认插件自主以 0 退出后，才把 Worker 的 durable `cancelled` 投递 ACK。超时、强杀、信号退出、非零退出或缺少/伪造状态都保持未 ACK，等待恢复或人工处理。
 
-本机批准页面虽然只监听 loopback，也必须按浏览器攻击面处理：只接受 loopback `Host`，拒绝跨站 `Origin` / `Sec-Fetch-Site`，所有变更接口固定为 `POST application/json`。CLI 可以省略浏览器来源头，但不能绕过方法和 Content-Type 门禁。禁止恢复 GET 批准或表单 POST，否则恶意网页和 DNS rebinding 可以代替用户点击批准。
+普通网络中断使用 `Abort` 终止旧进程并保留插件自己的 checkpoint，同时留下一个有界的 cancellation recovery owner。之后若收到 durable `cancelled`，或本机进入 `permit=off`、认证撤销/Token 重置，Agent 会用原来的不可变插件身份和 bounded opaque input 重开插件，先发送 `open`，再发送 `cancel`；拿到上述真实回执后才清除恢复记录并 ACK。若 Hub 重放 `prepare`，这份清理义务会在 ACK 前原子转给新 session，不能被“新 session 还没启动”这个窗口吞掉。正常新 round 仍使用新的 nonce，业务插件通过自己的 DATA 握手决定如何恢复；插件作者不需要实现 Fleet 的 WebRTC round 状态机。
+
+只有 `permit=ask` 才使用本机批准页面；`permit=allow` 必须直接完成授权决策，不能再调用或等待这个页面。页面虽然只监听 loopback，也必须按浏览器攻击面处理：只接受 loopback `Host`，拒绝跨站 `Origin` / `Sec-Fetch-Site`，所有变更接口固定为 `POST application/json`。CLI 可以省略浏览器来源头，但不能绕过方法和 Content-Type 门禁。禁止恢复 GET 批准或表单 POST，否则恶意网页和 DNS rebinding 可以代替用户点击批准。
 
 ### 不可变 round
 
@@ -288,6 +296,7 @@ ACP 插件拥有 profile 配置、ACP stdio 子进程、`initialize`、`session/
 - 任一端不支持精确 peer 能力时明确返回 `unsupported`，会话创建后禁止静默降级；
 - peer 固定 `direct_only`，直连失败返回 `direct_unavailable`，不得把 DATA 降级到 Worker/WSS/R2；
 - 新目录字段保持可选，旧消费者继续按 task 读取；
+- `approval_actions` 和 `both_once` 的 wire/schema 取值保持不变；新 Agent 按统一 permit 语义解释，旧 Agent 仍可按旧逻辑运行；
 - 发布顺序固定为：插件 Release → 目录固定 SHA/commit → 主仓同步快照 → Agent/Tool/Worker 发布。
 
 ## 已知后续项

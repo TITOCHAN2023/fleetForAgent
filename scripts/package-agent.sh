@@ -9,7 +9,7 @@ OUT="$ROOT/public/dl"
 mkdir -p "$OUT" "$SRC/dist"
 cd "$SRC"
 go mod tidy
-VERSION="${VERSION:-0.6.0}"
+VERSION="${VERSION:-0.6.1}"
 LDFLAGS="-s -w -X main.agentVersion=${VERSION}"
 
 build() {

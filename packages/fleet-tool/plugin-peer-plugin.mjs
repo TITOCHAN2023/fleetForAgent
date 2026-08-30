@@ -4,6 +4,7 @@ import { constants as fsConstants } from "node:fs";
 import { chmod, lstat, mkdir, open, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const FLPP_MAGIC = Buffer.from("FLPP");
 const FLPP_HEADER_BYTES = 12;
@@ -15,7 +16,7 @@ const PLUGIN_DOWNLOAD_MAX = 100 << 20;
 const PLUGIN_DOWNLOAD_TIMEOUT_MS = 30_000;
 const PLUGIN_WRITE_TIMEOUT_MS = 10_000;
 const PLUGIN_CANCEL_WRITE_TIMEOUT_MS = 250;
-const PROCESS_TREE_SIGNAL_TIMEOUT_MS = 1_000;
+const PLUGIN_STDOUT_DRAIN_TIMEOUT_MS = 500;
 
 function peerError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -396,45 +397,89 @@ function waitMilliseconds(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function runTaskkill(pid) {
-  const root = process.env.SystemRoot || "C:\\Windows";
-  const executable = path.join(root, "System32", "taskkill.exe");
-  await new Promise((resolve) => {
-    let settled = false;
-    const killer = spawn(executable, ["/PID", String(pid), "/T", "/F"], {
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    const done = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve();
-    };
-    const timer = setTimeout(() => {
-      killer.kill?.();
-      done();
-    }, PROCESS_TREE_SIGNAL_TIMEOUT_MS);
-    killer.once("error", done);
-    killer.once("exit", done);
-  });
+function windowsJobHostPath({ arch = process.arch, env = process.env, moduleUrl = import.meta.url } = {}) {
+  const override = String(env.FLEET_WINDOWS_JOB_HOST || "").trim();
+  if (override) return path.resolve(override);
+  const normalizedArch = arch === "x64" ? "amd64" : arch;
+  if (normalizedArch !== "amd64" && normalizedArch !== "arm64") {
+    throw peerError("plugin_unavailable", `Fleet Tool has no Windows process host for ${arch}`);
+  }
+  return fileURLToPath(new URL(`./bin/fleet-tool-windows-job-host-${normalizedArch}.exe`, moduleUrl));
 }
 
-async function signalProcessTree(child, signal) {
+function pluginSpawnSpec(executable, {
+  platform = process.platform,
+  arch = process.arch,
+  env = process.env,
+  moduleUrl = import.meta.url,
+  parentPID = process.pid,
+} = {}) {
+  if (platform === "win32") {
+    return {
+      command: windowsJobHostPath({ arch, env, moduleUrl }),
+      args: ["--parent-pid", String(parentPID), "--", executable],
+      detached: false,
+    };
+  }
+  return { command: executable, args: [], detached: true };
+}
+
+async function signalUnixProcessTree(child, signal) {
   const pid = Number(child?.pid || 0);
   if (!pid) {
-    child?.kill?.(signal);
-    return;
-  }
-  if (process.platform === "win32") {
-    await runTaskkill(pid);
+    if (child?.exitCode != null || child?.signalCode != null) return;
+    if (!child?.kill?.(signal)) throw peerError("plugin_cleanup", "plugin process has no killable PID");
     return;
   }
   try {
     process.kill(-pid, signal);
-  } catch {
-    child.kill?.(signal);
+  } catch (groupError) {
+    if (child?.exitCode != null || child?.signalCode != null) return;
+    try {
+      if (child.kill?.(signal)) return;
+    } catch (leaderError) {
+      throw peerError(
+        "plugin_cleanup",
+        `plugin process-group signal failed: ${leaderError?.message || groupError?.message || leaderError || groupError}`,
+      );
+    }
+    throw peerError(
+      "plugin_cleanup",
+      `plugin process-group signal failed: ${groupError?.message || groupError}`,
+    );
   }
+}
+
+function createProcessTreeController(child, { platform = process.platform } = {}) {
+  return {
+    async leaderExited() {
+      // On Windows the observed child is the Job Object host. A natural host
+      // exit follows its ActiveProcesses==0 check; a forced host exit instead
+      // triggers KILL_ON_JOB_CLOSE and is never accepted as a clean receipt.
+      // POSIX still needs a final group sweep because the observed child is the
+      // plugin group leader itself.
+      if (platform !== "win32") await signalUnixProcessTree(child, "SIGKILL");
+    },
+    async terminate(signal) {
+      if (platform !== "win32") {
+        await signalUnixProcessTree(child, signal);
+        return;
+      }
+      // Terminating the host closes its KILL_ON_JOB_CLOSE handle in the kernel.
+      // Never fall back to taskkill by PID: a dead/reused leader PID is not a
+      // process-tree identity and cannot produce an authoritative receipt.
+      if (child?.exitCode != null || child?.signalCode != null) return;
+      let sent;
+      try {
+        sent = child?.kill?.(signal);
+      } catch (error) {
+        throw peerError("plugin_cleanup", `Windows plugin Job host termination failed: ${error?.message || error}`);
+      }
+      if (!sent && child?.exitCode == null && child?.signalCode == null) {
+        throw peerError("plugin_cleanup", "Windows plugin Job host rejected termination");
+      }
+    },
+  };
 }
 
 export function launchPluginPeerProcess({
@@ -446,10 +491,13 @@ export function launchPluginPeerProcess({
   peer,
   signal,
   spawnImpl = spawn,
+  processTreeFactory = createProcessTreeController,
   writeTimeoutMs = PLUGIN_WRITE_TIMEOUT_MS,
   cancelWriteTimeoutMs = PLUGIN_CANCEL_WRITE_TIMEOUT_MS,
 }) {
-  const child = spawnImpl(executable, [], {
+  throwIfAborted(signal);
+  const spec = pluginSpawnSpec(executable);
+  const child = spawnImpl(spec.command, spec.args, {
     stdio: ["pipe", "pipe", "pipe"],
     env: {
       ...process.env,
@@ -457,14 +505,33 @@ export function launchPluginPeerProcess({
       FLEET_PLUGIN_ID: String(pluginId || ""),
       FLEET_PLUGIN_DATA_DIR: dataDir ? path.resolve(dataDir) : "",
     },
-    detached: true,
+    detached: spec.detached,
     windowsHide: true,
   });
+  const processTree = processTreeFactory(child);
   const queue = new RecordQueue();
   let buffer = Buffer.alloc(0);
   let stderr = Buffer.alloc(0);
   let closed = false;
   let stopping;
+  let stopMode = "";
+  let cancelRequested = false;
+  let cancelConfirmed = false;
+  let exitStatus = null;
+  let treeCleanup = Promise.resolve();
+  let treeCleanupError;
+  let stdoutIsDrained = !child.stdout;
+  let noteStdoutDrained;
+  let stdoutDrainWait;
+  const stdoutDrained = new Promise((resolve) => {
+    noteStdoutDrained = resolve;
+    if (stdoutIsDrained) resolve();
+  });
+  const markStdoutDrained = () => {
+    if (stdoutIsDrained) return;
+    stdoutIsDrained = true;
+    noteStdoutDrained();
+  };
   let noteExit;
   const exited = new Promise((resolve) => {
     noteExit = resolve;
@@ -472,10 +539,13 @@ export function launchPluginPeerProcess({
   child.stderr?.on("data", (chunk) => {
     if (stderr.length < 256 << 10) stderr = Buffer.concat([stderr, Buffer.from(chunk)]).subarray(0, 256 << 10);
   });
+  child.stdout?.once("end", markStdoutDrained);
+  child.stdout?.once("close", markStdoutDrained);
+  child.once("close", markStdoutDrained);
   child.stdin?.on("error", (error) => {
     if (stopping) return;
     queue.fail(peerError("plugin_protocol", `plugin stdin failed: ${error?.message || error}`), true);
-    void abort();
+    void abort().catch(() => {});
   });
   child.stdout?.on("data", (chunk) => {
     buffer = Buffer.concat([buffer, Buffer.from(chunk)]);
@@ -486,7 +556,7 @@ export function launchPluginPeerProcess({
       const limit = kind === FLPP_CONTROL ? FLPP_CONTROL_MAX : kind === FLPP_DATA ? FLPP_DATA_MAX : -1;
       if (!buffer.subarray(0, 4).equals(FLPP_MAGIC) || buffer.readUInt8(4) !== 1 || buffer.readUInt16BE(6) !== 0 || limit < 0 || length > limit) {
         queue.fail(peerError("plugin_protocol", "invalid FLPP record header"), true);
-        void abort();
+        void abort().catch(() => {});
         return;
       }
       if (buffer.length < FLPP_HEADER_BYTES + length) return;
@@ -498,61 +568,99 @@ export function launchPluginPeerProcess({
           control = JSON.parse(payload.toString("utf8"));
         } catch {
           queue.fail(peerError("plugin_protocol", "invalid FLPP JSON control"), true);
-          void abort();
+          void abort().catch(() => {});
           return;
         }
         if (control?.v !== 1 || control?.type !== "status") {
           queue.fail(peerError("plugin_protocol", "invalid FLPP status"), true);
-          void abort();
+          void abort().catch(() => {});
           return;
         }
-        if (!queue.push({ kind: "control", control }, payload.length)) void abort();
+        if (cancelRequested && control.status === "canceled") cancelConfirmed = true;
+        if (!queue.push({ kind: "control", control }, payload.length)) void abort().catch(() => {});
       } else {
-        if (!queue.push({ kind: "data", data: Buffer.from(payload) }, payload.length)) void abort();
+        if (!queue.push({ kind: "data", data: Buffer.from(payload) }, payload.length)) void abort().catch(() => {});
       }
     }
   });
-  child.on("error", (error) => queue.fail(error, true));
-  child.on("exit", (code, childSignal) => {
-    closed = true;
-    child.stdin?.destroy?.();
-    noteExit();
-    // A plugin is one process tree, not one PID. A misbehaving plugin must not
-    // orphan helpers merely by exiting its group leader first.
-    void signalProcessTree(child, "SIGKILL");
-    if (stopping || signal?.aborted) {
-      queue.fail(peerError("cancelled", "plugin peer cancelled"), true);
-    } else if (code !== 0) {
-      queue.fail(peerError("plugin_failed", stderr.toString("utf8").trim() || `plugin exited ${code ?? childSignal}`));
-    } else {
-      queue.fail(peerError("plugin_closed", "plugin process closed"));
+  child.on("error", (error) => {
+    queue.fail(error, true);
+    if (!child.pid && !closed) {
+      closed = true;
+      exitStatus = { code: null, signal: null, error };
+      noteExit(exitStatus);
     }
   });
+  child.on("exit", (code, childSignal) => {
+    closed = true;
+    exitStatus = { code, signal: childSignal };
+    child.stdin?.destroy?.();
+    treeCleanup = Promise.resolve()
+      .then(() => processTree.leaderExited())
+      .catch((error) => { treeCleanupError = error; });
+    noteExit(exitStatus);
+    void Promise.all([waitForTreeCleanup(), waitForStdoutDrain()]).then(
+      () => {
+        if (stopping || signal?.aborted) {
+          queue.fail(peerError("cancelled", "plugin peer cancelled"), true);
+        } else if (code !== 0) {
+          queue.fail(peerError("plugin_failed", stderr.toString("utf8").trim() || `plugin exited ${code ?? childSignal}`));
+        } else {
+          queue.fail(peerError("plugin_closed", "plugin process closed"));
+        }
+      },
+      (error) => queue.fail(error, true),
+    );
+  });
+  function waitForStdoutDrain() {
+    if (stdoutIsDrained) return Promise.resolve();
+    if (!stdoutDrainWait) {
+      stdoutDrainWait = new Promise((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(peerError("plugin_cleanup", "plugin stdout did not close after process exit")),
+          PLUGIN_STDOUT_DRAIN_TIMEOUT_MS,
+        );
+        stdoutDrained.then(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    }
+    return stdoutDrainWait;
+  }
+  async function waitForTreeCleanup() {
+    await treeCleanup;
+    if (treeCleanupError) throw treeCleanupError;
+  }
   async function abort() {
     if (stopping) return stopping;
+    stopMode = "abort";
     stopping = (async () => {
       child.stdin?.destroy?.();
-      await signalProcessTree(child, "SIGKILL");
+      if (!closed) await processTree.terminate("SIGKILL");
       await Promise.race([exited, waitMilliseconds(250)]);
+      if (!closed) throw peerError("plugin_cleanup", "plugin process tree did not stop after forced termination");
+      if (closed) await waitForTreeCleanup();
     })();
     queue.fail(peerError("cancelled", "plugin peer cancelled"), true);
     return stopping;
   }
   const onAbort = () => {
-    void abort();
+    void abort().catch(() => {});
   };
   signal?.addEventListener("abort", onAbort, { once: true });
   async function writeRecord(kind, value) {
     try {
       await writeStream(child.stdin, encodeRecord(kind, value), { signal, timeoutMs: writeTimeoutMs });
     } catch (error) {
-      if (!stopping) void abort();
+      if (!stopping) void abort().catch(() => {});
       throw error;
     }
   }
   const api = {
-    async open() {
+    async open(onOpenWritten) {
       await api.writeControl({ v: 1, type: "open", action, input: input ?? {}, peer });
+      await onOpenWritten?.();
       const record = await api.next(signal);
       if (record.kind === "control" && record.control.status === "error") {
         throw peerError(
@@ -569,25 +677,82 @@ export function launchPluginPeerProcess({
     writeData: (value) => writeRecord(FLPP_DATA, value),
     abort,
     async cancel() {
-      if (stopping) return stopping;
+      if (stopping) {
+        if (stopMode !== "cancel") {
+          throw peerError("cancel_unapplied", "plugin process was aborted before FLPP cancel");
+        }
+        return stopping;
+      }
+      if (closed) {
+        throw peerError("cancel_unapplied", "plugin process exited before FLPP cancel");
+      }
+      stopMode = "cancel";
       stopping = (async () => {
         let cancelWritten = false;
+        let cancelWriteError;
+        let forcedStop = false;
+        let cleanupError;
+        cancelRequested = true;
         if (!closed) {
-          await writeStream(
-            child.stdin,
-            encodeRecord(FLPP_CONTROL, JSON.stringify({ v: 1, type: "cancel" })),
-            { timeoutMs: cancelWriteTimeoutMs },
-          ).then(() => { cancelWritten = true; }, () => {});
+          try {
+            await writeStream(
+              child.stdin,
+              encodeRecord(FLPP_CONTROL, JSON.stringify({ v: 1, type: "cancel" })),
+              { timeoutMs: cancelWriteTimeoutMs },
+            );
+            cancelWritten = true;
+          } catch (error) {
+            cancelWriteError = error;
+          }
         }
         if (cancelWritten) await Promise.race([exited, waitMilliseconds(500)]);
-        child.stdin?.destroy?.();
         if (!closed) {
-          await signalProcessTree(child, "SIGTERM");
+          forcedStop = true;
+          child.stdin?.destroy?.();
+          try {
+            await processTree.terminate("SIGTERM");
+          } catch (error) {
+            cleanupError = error;
+          }
           await Promise.race([exited, waitMilliseconds(250)]);
         }
-        await signalProcessTree(child, "SIGKILL");
-        await Promise.race([exited, waitMilliseconds(250)]);
+        if (!closed) {
+          try {
+            await processTree.terminate("SIGKILL");
+          } catch (error) {
+            cleanupError = cleanupError || error;
+          }
+          await Promise.race([exited, waitMilliseconds(250)]);
+        }
+        if (!closed) {
+          cleanupError = cleanupError || peerError(
+            "plugin_cleanup",
+            "plugin process tree did not stop after forced termination",
+          );
+        }
+        if (closed) {
+          try {
+            await Promise.all([waitForTreeCleanup(), waitForStdoutDrain()]);
+          } catch (error) {
+            cleanupError = cleanupError || error;
+          }
+        }
         queue.fail(peerError("cancelled", "plugin peer cancelled"), true);
+        const cleanExit = !forcedStop && exitStatus?.code === 0 && !exitStatus?.signal;
+        if (!cancelWritten || !cancelConfirmed || !cleanExit || cleanupError) {
+          throw peerError(
+            "cancel_unapplied",
+            cleanupError
+              ? `plugin process tree cleanup failed: ${cleanupError?.message || cleanupError}`
+              : !cancelWritten
+              ? `FLPP cancel control was not written: ${cancelWriteError?.message || "plugin stdin was closed"}`
+              : !cancelConfirmed
+                ? "plugin exited without confirming FLPP cancellation"
+                : forcedStop
+                  ? "plugin did not exit cleanly after confirming FLPP cancellation"
+                  : `plugin cancellation exited ${exitStatus?.code ?? exitStatus?.signal ?? "without status"}`,
+          );
+        }
       })();
       return stopping;
     },
@@ -597,13 +762,15 @@ export function launchPluginPeerProcess({
 
 export function createPluginPeerLauncher({ resolve, spawnImpl } = {}) {
   if (typeof resolve !== "function") throw new TypeError("plugin resolver is required");
-  return async ({ pluginId, protocol, role, input, peer, signal }) => {
+  return async ({ pluginId, protocol, role, input, peer, signal, onProcess }) => {
     const declaration = await resolve(pluginId, protocol, role, { signal });
+    throwIfAborted(signal);
     if (!declaration?.dataDir) {
       throw peerError("plugin_unavailable", "plugin resolver did not provide a stable data directory");
     }
     await mkdir(declaration.dataDir, { recursive: true, mode: 0o700 });
     if (process.platform !== "win32") await chmod(declaration.dataDir, 0o700);
+    throwIfAborted(signal);
     const pluginProcess = launchPluginPeerProcess({
       path: declaration.path,
       pluginId,
@@ -614,18 +781,27 @@ export function createPluginPeerLauncher({ resolve, spawnImpl } = {}) {
       signal,
       spawnImpl,
     });
+    const launched = { ...pluginProcess, declaration };
+    let owned = false;
     try {
-      await pluginProcess.open();
+      await launched.open(typeof onProcess === "function" ? async () => {
+        owned = true;
+        await onProcess(launched);
+      } : undefined);
     } catch (error) {
-      await pluginProcess.abort().catch(() => {});
+      if (!owned) await launched.abort().catch(() => {});
       throw error;
     }
-    return { ...pluginProcess, declaration };
+    return launched;
   };
 }
 
 export const pluginPeerPluginInternals = Object.freeze({
+  createProcessTreeController,
+  pluginSpawnSpec,
   writeStream,
+  windowsJobHostPath,
   PLUGIN_CANCEL_WRITE_TIMEOUT_MS,
+  PLUGIN_STDOUT_DRAIN_TIMEOUT_MS,
   PLUGIN_WRITE_TIMEOUT_MS,
 });

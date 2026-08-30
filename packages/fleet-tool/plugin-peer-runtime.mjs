@@ -580,6 +580,20 @@ export function createPluginPeerManager({
     throw lastError || peerError("ack_unconfirmed", "Hub did not confirm plugin peer delivery ACK");
   }
 
+  async function ackTerminalDelivery(row, item) {
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(peerError("ack_timeout", "terminal plugin peer ACK timed out")),
+      cancelMs,
+    );
+    timer.unref?.();
+    try {
+      await ackDelivery(row, item, controller.signal);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   function sessionStateError(remote, expectedRound, { acceptInterrupted = false } = {}) {
     const phase = String(remote?.phase || "");
     const currentRound = roundID(remote);
@@ -600,13 +614,63 @@ export function createPluginPeerManager({
     return null;
   }
 
+  function rememberRemoteTerminal(row, error) {
+    if (["cancelled", "failed", "expired", "peer_protocol"].includes(String(error?.code || ""))) {
+      row.remoteTerminalError ||= error;
+    }
+  }
+
   async function consumeSessionUpdate(row, item, expectedRound, options = {}) {
     if (item.body.session_id !== row.sessionId) {
       throw peerError("invalid_response", "Hub delivered an update for another plugin peer session");
     }
     const error = sessionStateError(sessionValue(item.body), expectedRound, options);
+    rememberRemoteTerminal(row, error);
+    if (error?.code === "cancelled") {
+      row.terminalUpdatePending = true;
+      row.phase = "cancelled";
+      row.cancelEventSent = true;
+      await cancelRowPlugins(row);
+      await ackTerminalDelivery(row, item);
+      row.abort.abort();
+      throw error;
+    }
+    if (["failed", "expired", "peer_protocol"].includes(String(error?.code || ""))) {
+      row.terminalUpdatePending = true;
+      await abortRowPlugins(row);
+      await ackTerminalDelivery(row, item);
+      throw error;
+    }
     await ackDelivery(row, item, options.signal);
     if (error) throw error;
+  }
+
+  async function drainTerminalDeliveries(row, cleanupMode) {
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(peerError("ack_timeout", "terminal plugin peer drain timed out")),
+      cancelMs,
+    );
+    timer.unref?.();
+    try {
+      await poll(row, controller.signal);
+      for (const item of [...row.pending.values()]) {
+        if (item.type !== "peer_session_update") continue;
+        const phase = String(sessionValue(item.body)?.phase || "");
+        if (!TERMINAL_PHASES.has(phase)) continue;
+        // A cancelled delivery means more than "the process stopped": FLPP
+        // Cancel must have run so resumable plugin state is deleted. Abort is
+        // intentionally weaker and may preserve a partial checkpoint. Never
+        // acknowledge cancellation after taking only that weaker path.
+        if (phase === "cancelled" && cleanupMode !== "cancel") continue;
+        await ackDelivery(row, item, controller.signal);
+      }
+    } catch {
+      // The durable mailbox retries on the next status/wait operation. Local
+      // cleanup has already completed and never depends on this best effort.
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async function takeDelivery(row, matcher, { expectedRound = row.roundId, acceptInterrupted = false } = {}) {
@@ -902,21 +966,24 @@ export function createPluginPeerManager({
     );
   }
 
-  async function watchHub(row, round, signal = round.signal) {
+  async function watchHub(row, round, signal = round.signal, { acceptInterrupted = false } = {}) {
     let lastError;
     while (now() < row.deadline) {
       try {
         await poll(row, signal);
         for (const item of row.pending.values()) {
           if (item.type !== "peer_session_update") continue;
-          await consumeSessionUpdate(row, item, round.roundId, { signal });
+          await consumeSessionUpdate(row, item, round.roundId, { signal, acceptInterrupted });
         }
         const remote = await remoteStatus(row.sessionId, { signal });
-        const stateError = sessionStateError(remote, round.roundId);
-        if (stateError) throw stateError;
+        const stateError = sessionStateError(remote, round.roundId, { acceptInterrupted });
+        if (stateError) {
+          rememberRemoteTerminal(row, stateError);
+          throw stateError;
+        }
         lastError = undefined;
       } catch (error) {
-        if (["interrupted", "cancelled", "failed", "expired", "peer_protocol", "invalid_response"].includes(String(error?.code || ""))) {
+        if (["interrupted", "cancelled", "cancel_unapplied", "failed", "expired", "peer_protocol", "invalid_response"].includes(String(error?.code || ""))) {
           throw error;
         }
         lastError = error;
@@ -926,15 +993,20 @@ export function createPluginPeerManager({
     throw lastError || peerError("timeout", "plugin peer Hub watcher timed out");
   }
 
-  async function raceHub(row, round, operation) {
+  async function raceHub(row, round, operation, options = {}) {
     const stop = new AbortController();
     const abort = () => stop.abort();
     round.signal?.addEventListener("abort", abort, { once: true });
     if (round.signal?.aborted) stop.abort();
-    const watcher = watchHub(row, round, stop.signal);
+    const watcher = watchHub(row, round, stop.signal, options);
     void watcher.catch(() => {});
+    const guardedOperation = Promise.resolve(operation).then(
+      (value) => row.terminalUpdatePending ? watcher : value,
+      (error) => row.terminalUpdatePending ? watcher : Promise.reject(error),
+    );
+    void guardedOperation.catch(() => {});
     try {
-      return await Promise.race([operation, watcher]);
+      return await Promise.race([guardedOperation, watcher]);
     } finally {
       stop.abort();
       round.signal?.removeEventListener("abort", abort);
@@ -948,36 +1020,229 @@ export function createPluginPeerManager({
     );
   }
 
-  async function cancelPluginOnce(row, plugin) {
-    if (!plugin || row.cancelledPlugins.has(plugin)) return;
-    row.cancelledPlugins.add(plugin);
-    const gracefulMs = Math.max(1, cancelMs - Math.min(1_000, Math.floor(cancelMs / 4)));
-    let graceful;
-    try {
-      // Invoke synchronously so launchPluginPeerProcess installs its graceful
-      // stopping promise before row.abort can trigger the force-abort listener.
-      graceful = plugin.cancel?.();
-    } catch {
-      graceful = undefined;
+  function stopPluginOnce(row, plugin, mode) {
+    if (!plugin) return Promise.resolve();
+    const existing = row.pluginStops.get(plugin);
+    if (existing) {
+      if (mode === "cancel" && existing.mode !== "cancel") {
+        return existing.promise.then(
+          () => { throw peerError("cancel_unapplied", "plugin was already aborted before graceful cancellation"); },
+          () => { throw peerError("cancel_unapplied", "plugin was already aborted before graceful cancellation"); },
+        );
+      }
+      return existing.promise;
     }
-    await bounded(
-      graceful,
-      gracefulMs,
-      "cancel_timeout",
-      "plugin did not finish graceful cancellation",
-    ).catch(() => {});
-    let forced;
-    try {
-      forced = plugin.abort?.();
-    } catch {
-      forced = undefined;
+    const stopping = (async () => {
+      if (mode === "cancel") {
+        const gracefulMs = Math.max(1, cancelMs - Math.min(1_000, Math.floor(cancelMs / 4)));
+        let graceful;
+        let cancelError;
+        try {
+          // Invoke synchronously before any row AbortSignal can select the
+          // destructive process-kill path.
+          if (typeof plugin.cancel !== "function") {
+            throw peerError("cancel_unapplied", "plugin does not implement graceful cancellation");
+          }
+          graceful = plugin.cancel();
+        } catch (error) {
+          cancelError = error;
+        }
+        if (!cancelError) {
+          try {
+            await bounded(
+              graceful,
+              gracefulMs,
+              "cancel_timeout",
+              "plugin did not finish graceful cancellation",
+            );
+          } catch (error) {
+            cancelError = error;
+          }
+        }
+        let forced;
+        try {
+          forced = plugin.abort?.();
+        } catch {
+          forced = undefined;
+        }
+        await bounded(
+          forced,
+          Math.max(1, cancelMs - gracefulMs),
+          "cancel_timeout",
+          "plugin process tree did not stop",
+        ).catch(() => {});
+        if (cancelError) {
+          if (cancelError?.code === "cancel_unapplied") throw cancelError;
+          throw peerError(
+            "cancel_unapplied",
+            `plugin graceful cancellation was not applied: ${cancelError?.message || cancelError}`,
+          );
+        }
+        return;
+      }
+      let forced;
+      try {
+        forced = plugin.abort?.();
+      } catch {
+        forced = undefined;
+      }
+      await bounded(
+        forced,
+        cancelMs,
+        "cancel_timeout",
+        "plugin process tree did not stop",
+      ).catch(() => {});
+    })();
+    const entry = { mode, promise: stopping };
+    row.pluginStops.set(plugin, entry);
+    return stopping;
+  }
+
+  function cancelPluginOnce(row, plugin) {
+    return stopPluginOnce(row, plugin, "cancel");
+  }
+
+  function abortPluginOnce(row, plugin) {
+    return stopPluginOnce(row, plugin, "abort");
+  }
+
+  function rowPluginProcesses(row) {
+    return [...new Set([row.pluginProcess, row.interruptedPluginProcess].filter(Boolean))];
+  }
+
+  async function waitPluginTransition(row) {
+    const transition = row.pluginTransition;
+    if (transition) await transition.catch(() => {});
+  }
+
+  async function cancelPluginsSettled(row, plugins) {
+    const unique = [...new Set(plugins.filter(Boolean))];
+    const results = await Promise.allSettled(unique.map((plugin) => cancelPluginOnce(row, plugin)));
+    return {
+      plugins: unique,
+      failure: results.find((result) => result.status === "rejected")?.reason,
+    };
+  }
+
+  function clearRowPlugins(row, plugins) {
+    for (const plugin of plugins) {
+      if (row.pluginProcess === plugin) row.pluginProcess = null;
+      if (row.interruptedPluginProcess === plugin) row.interruptedPluginProcess = null;
     }
-    await bounded(
-      forced,
-      Math.max(1, cancelMs - gracefulMs),
-      "cancel_timeout",
-      "plugin process tree did not stop",
-    ).catch(() => {});
+  }
+
+  function rememberCancelFailure(row, error, message) {
+    const failure = error?.code === "cancel_unapplied"
+      ? error
+      : peerError("cancel_unapplied", `${message}: ${error?.message || error}`);
+    row.cancelFailure ||= failure;
+    return row.cancelFailure;
+  }
+
+  async function cancelRowPlugins(row) {
+    row.cancelRequested = true;
+    if (row.cancelFailure) throw row.cancelFailure;
+    const transition = row.pluginTransition;
+    const retiring = transition ? row.pluginTransitionRetained : null;
+    const provisional = transition ? row.pluginProvisional : null;
+    const initial = rowPluginProcesses(row);
+    const initialResult = await cancelPluginsSettled(row, initial);
+
+    if (retiring) {
+      // The old process deliberately receives Abort while a fresh round is
+      // being prepared. A concurrent Hub cancel must not abort that transition
+      // before the replacement has written FLPP open and transferred process
+      // ownership to us. Cancel on that replacement is the authoritative
+      // deletion receipt for the shared resumable checkpoint.
+      let replacement;
+      let replacementFailure;
+      try {
+        replacement = await bounded(
+          provisional,
+          cancelMs,
+          "cancel_timeout",
+          "replacement plugin did not transfer cancellation ownership",
+        );
+        if (!replacement) {
+          throw peerError("cancel_unapplied", "replacement plugin exited before FLPP open ownership transfer");
+        }
+        await cancelPluginOnce(row, replacement);
+      } catch (error) {
+        replacementFailure = error;
+      }
+      if (!row.abort.signal.aborted) row.abort.abort();
+      await bounded(
+        transition,
+        cancelMs,
+        "cancel_timeout",
+        "replacement plugin transition did not stop",
+      ).catch(() => {});
+      const plugins = [...new Set([...initialResult.plugins, ...rowPluginProcesses(row), replacement].filter(Boolean))];
+      if (replacementFailure) {
+        const failure = rememberCancelFailure(
+          row,
+          replacementFailure,
+          "replacement plugin cancellation was not applied",
+        );
+        clearRowPlugins(row, plugins);
+        throw failure;
+      }
+      clearRowPlugins(row, plugins);
+      return;
+    }
+
+    // With no provisional process, abort the resolver/download before yielding
+    // so it cannot spawn into the gap. With a process, cancel established FLPP
+    // state first, then stop the remaining control-plane work.
+    if (!row.abort.signal.aborted) row.abort.abort();
+    await waitPluginTransition(row);
+    const finalResult = await cancelPluginsSettled(row, [...initialResult.plugins, ...rowPluginProcesses(row)]);
+    const failure = initialResult.failure || finalResult.failure;
+    if (failure) {
+      const remembered = rememberCancelFailure(row, failure, "plugin cancellation was not applied");
+      clearRowPlugins(row, finalResult.plugins);
+      throw remembered;
+    }
+    clearRowPlugins(row, finalResult.plugins);
+  }
+
+  async function abortRowPlugins(row) {
+    const transition = row.pluginTransition;
+    const initial = rowPluginProcesses(row);
+    // Abort ownership is weaker than Cancel: it carries no durable deletion
+    // receipt, so there is no reason to wait for ready. Claim every process
+    // already exposed by onProcess before aborting the launch signal.
+    const initialCleanup = Promise.allSettled(initial.map((plugin) => abortPluginOnce(row, plugin)));
+    if (!row.io.signal.aborted) {
+      row.io.abort(peerError("peer_terminal", "plugin peer entered terminal cleanup"));
+    }
+    await initialCleanup;
+    if (transition) {
+      await bounded(
+        transition,
+        cancelMs,
+        "cancel_timeout",
+        "plugin transition did not stop after terminal abort",
+      ).catch(() => {});
+    }
+    const plugins = [...new Set([...initial, ...rowPluginProcesses(row)])];
+    await Promise.allSettled(plugins.map((plugin) => abortPluginOnce(row, plugin)));
+    clearRowPlugins(row, plugins);
+  }
+
+  function drainInterruptedPlugin(row, plugin) {
+    if (!plugin || row.pluginDrains.has(plugin)) return;
+    const draining = (async () => {
+      for (;;) {
+        try {
+          await plugin.next();
+        } catch {
+          return;
+        }
+      }
+    })();
+    row.pluginDrains.set(plugin, draining);
+    void draining.catch(() => {});
   }
 
   async function bridge(row, round, plugin, channel, inbox) {
@@ -1094,14 +1359,20 @@ export function createPluginPeerManager({
             ...extra,
           }, { signal }));
           if (eventReceipt(event, remote, row, round)) return remote;
+          const stateError = sessionStateError(remote, round.roundId, { acceptInterrupted: event === "interrupt" });
+          if (stateError) throw stateError;
         } catch (error) {
           lastError = error;
+          if (["cancelled", "cancel_unapplied", "failed", "expired", "peer_protocol"].includes(String(error?.code || ""))) throw error;
         }
         try {
           const remote = await remoteStatus(row.sessionId, { signal });
           if (eventReceipt(event, remote, row, round)) return remote;
+          const stateError = sessionStateError(remote, round.roundId, { acceptInterrupted: event === "interrupt" });
+          if (stateError) throw stateError;
         } catch (error) {
           lastError = error;
+          if (["cancelled", "cancel_unapplied", "failed", "expired", "peer_protocol"].includes(String(error?.code || ""))) throw error;
         }
         await sleep(Math.min(1000, 100 * 2 ** attempt), signal);
       }
@@ -1118,16 +1389,58 @@ export function createPluginPeerManager({
     row.abort.signal.addEventListener("abort", abort, { once: true });
     row.timeout.signal.addEventListener("abort", abort, { once: true });
     let plugin;
+    let roundError;
     try {
-      plugin = await launchPlugin({
-        pluginId: row.local.plugin_id,
-        protocol: row.protocol.id,
-        role: row.role,
-        input: row.input,
-        peer: pluginPeerContext(row.peer),
-        signal: controller.signal,
-      });
-      row.pluginProcess = plugin;
+      const retained = row.interruptedPluginProcess;
+      let provisionalSettled = false;
+      let settleProvisional;
+      const provisional = new Promise((resolve) => { settleProvisional = resolve; });
+      const exposeProvisional = (process) => {
+        if (provisionalSettled) return;
+        provisionalSettled = true;
+        settleProvisional(process || null);
+      };
+      row.pluginTransitionRetained = retained;
+      row.pluginProvisional = provisional;
+      const transition = (async () => {
+        if (retained) {
+          await abortPluginOnce(row, retained);
+          if (row.interruptedPluginProcess === retained) row.interruptedPluginProcess = null;
+        }
+        const launched = await launchPlugin({
+          pluginId: row.local.plugin_id,
+          protocol: row.protocol.id,
+          role: row.role,
+          input: row.input,
+          peer: pluginPeerContext(row.peer),
+          // Transport rounds may be replaced while the plugin is retained for
+          // an authoritative Hub decision. Only the whole-session signal owns
+          // the process lifetime.
+          signal: row.io.signal,
+          onProcess: async (process) => {
+            row.pluginProcess = process;
+            exposeProvisional(process);
+            if (row.cancelRequested) await cancelPluginOnce(row, process);
+          },
+        });
+        row.pluginProcess = launched;
+        exposeProvisional(launched);
+        return launched;
+      })();
+      void transition.then(
+        () => exposeProvisional(null),
+        () => exposeProvisional(null),
+      );
+      row.pluginTransition = transition;
+      try {
+        plugin = await raceHub(row, round, transition, { acceptInterrupted: row.roundNo > 1 });
+      } finally {
+        if (row.pluginTransition === transition) {
+          row.pluginTransition = null;
+          row.pluginTransitionRetained = null;
+          row.pluginProvisional = null;
+        }
+      }
       await api.authorize({
         session_id: row.sessionId,
         round_id: round.roundId,
@@ -1150,17 +1463,31 @@ export function createPluginPeerManager({
       } finally {
         inbox.dispose();
       }
+    } catch (error) {
+      roundError = error;
+      if (error?.code === "cancelled" && !row.timeout.signal.aborted) {
+        row.cancelRequested = true;
+        await cancelPluginOnce(row, plugin);
+      }
+      throw error;
     } finally {
       row.abort.signal.removeEventListener("abort", abort);
       row.timeout.signal.removeEventListener("abort", abort);
       controller.abort();
-      await bounded(
-        Promise.resolve().then(() => plugin?.abort?.()),
-        cancelMs,
-        "cancel_timeout",
-        "plugin process tree did not stop",
-      ).catch(() => {});
-      if (row.pluginProcess === plugin) row.pluginProcess = null;
+      const interrupted = round.active && ["interrupted", "direct_unavailable"].includes(String(roundError?.code || ""));
+      const retain = plugin && interrupted && !row.cancelRequested &&
+        !row.abort.signal.aborted && !row.timeout.signal.aborted && !row.pluginStops.has(plugin);
+      const deferTerminalCleanup = plugin && roundError && !interrupted &&
+        !row.timeout.signal.aborted && !row.pluginStops.has(plugin);
+      if (retain) {
+        if (row.pluginProcess === plugin) row.pluginProcess = null;
+        row.interruptedPluginProcess = plugin;
+        drainInterruptedPlugin(row, plugin);
+      } else if (!deferTerminalCleanup) {
+        await abortPluginOnce(row, plugin);
+        if (row.pluginProcess === plugin) row.pluginProcess = null;
+        if (row.interruptedPluginProcess === plugin) row.interruptedPluginProcess = null;
+      }
       if (row.activeRound === round) {
         row.activeRound = null;
         row.channel = null;
@@ -1205,24 +1532,52 @@ export function createPluginPeerManager({
       }
     } catch (error) {
       const locallyStopped = row.timeout.signal.aborted;
-      const cancelled = !locallyStopped && (row.abort.signal.aborted || error?.code === "cancelled");
+      let terminalError = error?.code === "cancel_unapplied"
+        ? error
+        : row.remoteTerminalError || error;
+      let cancelled = !locallyStopped && (
+        row.cancelRequested || row.abort.signal.aborted || terminalError?.code === "cancelled"
+      );
+      let failureReported = false;
+      const round = { roundId: row.roundId };
+      if (!locallyStopped && !cancelled) {
+        // Resolve the Hub terminal race while the FLPP process is still
+        // available. If cancellation already won, the stronger graceful
+        // cleanup must happen before any durable cancelled delivery is ACKed.
+        try {
+          await reportEvent(row, round, "fail", {
+            failure_code: String(error?.code || "PEER_FAILED").toUpperCase(),
+          }, null);
+          failureReported = true;
+        } catch (reportError) {
+          if (["cancelled", "cancel_unapplied"].includes(String(reportError?.code || ""))) {
+            cancelled = true;
+            terminalError = reportError;
+            rememberRemoteTerminal(row, reportError);
+            row.cancelEventSent = true;
+          } else if (["failed", "expired", "peer_protocol"].includes(String(reportError?.code || ""))) {
+            failureReported = true;
+          }
+        }
+      }
       row.phase = cancelled ? "cancelled" : "failed";
       row.error = locallyStopped
         ? row.localFailureCode === "LOCAL_SHUTDOWN"
           ? "plugin peer runtime shut down"
           : "plugin peer session timed out"
-        : error?.message || String(error);
+        : terminalError?.message || String(terminalError);
       row.failureCode = locallyStopped
         ? row.localFailureCode || "TIMEOUT"
-        : String(error?.code || (cancelled ? "CANCELLED" : "PEER_FAILED")).toUpperCase();
+        : String(terminalError?.code || (cancelled ? "CANCELLED" : "PEER_FAILED")).toUpperCase();
+      if (cancelled) await cancelRowPlugins(row);
+      else await abortRowPlugins(row);
+      if (!locallyStopped) await drainTerminalDeliveries(row, cancelled ? "cancel" : "abort");
       if (cancelled && !row.cancelEventSent) {
-        const round = { roundId: row.roundId };
         await reportEvent(row, round, "cancel", {}, null).then(
           () => { row.cancelEventSent = true; },
           () => {},
         );
-      } else if (!cancelled) {
-        const round = { roundId: row.roundId };
+      } else if (!cancelled && !failureReported) {
         await reportEvent(row, round, "fail", { failure_code: row.failureCode }, null).catch(() => {});
       }
     } finally {
@@ -1301,10 +1656,19 @@ export function createPluginPeerManager({
       acked: new Set(),
       ackPending: new Set(),
       reportedInterrupts: new Set(),
-      cancelledPlugins: new WeakSet(),
+      pluginStops: new WeakMap(),
+      pluginDrains: new WeakMap(),
       cancelEventSent: false,
+      cancelRequested: false,
+      cancelFailure: null,
+      terminalUpdatePending: false,
+      remoteTerminalError: null,
       cancelPromise: null,
       pluginProcess: null,
+      interruptedPluginProcess: null,
+      pluginTransition: null,
+      pluginTransitionRetained: null,
+      pluginProvisional: null,
       peerConnection: null,
       peerConnectionRound: null,
       channel: null,
@@ -1412,6 +1776,10 @@ export function createPluginPeerManager({
         let localCleanup = Promise.resolve();
         if (row) {
           row.phase = "cancelled";
+          // Start FLPP cleanup before any network or AbortSignal side effect.
+          // cancelRowPlugins also waits for an in-flight round transition and
+          // then cancels the process that owns the durable checkpoint.
+          const pluginCancellation = cancelRowPlugins(row).finally(() => row.abort.abort());
           if (row.channel?.readyState === "open" && row.activeRound) {
             try {
               sendChannel(row.channel, controlEnvelope("peer_cancel", row.sessionId, row.activeRound.roundId, { code: "CANCELLED" }));
@@ -1422,8 +1790,6 @@ export function createPluginPeerManager({
           const peerConnection = row.peerConnection;
           row.peerConnection = null;
           row.peerConnectionRound = null;
-          const pluginCancellation = cancelPluginOnce(row, row.pluginProcess);
-          row.abort.abort();
           const peerCancellation = bounded(
             Promise.resolve().then(() => peerConnection?.close?.()),
             Math.max(1, Math.floor(cancelMs / 4)),
@@ -1458,9 +1824,10 @@ export function createPluginPeerManager({
   async function shutdown() {
     const pending = [];
     for (const row of rows.values()) {
-      if (TERMINAL_PHASES.has(row.phase)) continue;
-      row.localFailureCode = "LOCAL_SHUTDOWN";
-      row.timeout.abort();
+      if (!TERMINAL_PHASES.has(row.phase)) {
+        row.localFailureCode = "LOCAL_SHUTDOWN";
+        row.timeout.abort();
+      }
       pending.push(row.done);
     }
     await bounded(

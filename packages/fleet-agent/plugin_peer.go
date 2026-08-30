@@ -29,6 +29,9 @@ const (
 	pluginPeerSendWindow    = 4 << 20
 	pluginPeerNonceBytes    = 32
 	pluginPeerHalfCloseWait = 30 * time.Second
+	pluginPeerNoticeWait    = time.Second
+	pluginPeerControlWait   = 2 * time.Second
+	pluginPeerCleanupWait   = 5 * time.Second
 )
 
 var (
@@ -151,22 +154,25 @@ type pluginPeerIncoming struct {
 // timer and RTC callback captures this pointer. Pointer identity, never a
 // mutable round field, decides whether asynchronous work may mutate a session.
 type pluginPeerEpoch struct {
-	generation    uint64
-	roundID       string
-	nonce         string
-	ctx           context.Context
-	cancel        context.CancelFunc
-	plugin        pluginPeerIO
-	ready         bool
-	authorized    bool
-	signaling     bool
-	interrupted   bool
-	queuedOffer   string
-	round         *pluginPeerRound
-	pendingData   [][]byte
-	pendingBytes  int
-	flushing      bool
-	localComplete bool
+	generation      uint64
+	roundID         string
+	nonce           string
+	ctx             context.Context
+	cancel          context.CancelFunc
+	plugin          pluginPeerIO
+	openApplied     bool
+	cancelAttempted bool
+	cancelApplied   bool
+	ready           bool
+	authorized      bool
+	signaling       bool
+	interrupted     bool
+	queuedOffer     string
+	round           *pluginPeerRound
+	pendingData     [][]byte
+	pendingBytes    int
+	flushing        bool
+	localComplete   bool
 }
 
 type pluginPeerRound struct {
@@ -203,9 +209,10 @@ type pluginPeerRound struct {
 }
 
 type pluginPeerSession struct {
-	mu        sync.Mutex
-	sendMu    sync.Mutex
-	closeOnce sync.Once
+	mu            sync.Mutex
+	sendMu        sync.Mutex
+	cancelRetryMu sync.Mutex
+	closeOnce     sync.Once
 
 	agent         *Agent
 	ctx           context.Context
@@ -229,13 +236,22 @@ type pluginPeerSession struct {
 	approval      string
 	halfCloseWait time.Duration
 
-	approved       bool
-	closed         bool
-	completed      bool
-	nextGeneration uint64
-	roundNo        int
-	epoch          *pluginPeerEpoch
-	usedRounds     map[string]int
+	approved              bool
+	closed                bool
+	terminal              bool
+	nextGeneration        uint64
+	roundNo               int
+	epoch                 *pluginPeerEpoch
+	retiringEpoch         *pluginPeerEpoch
+	usedRounds            map[string]int
+	pluginGuard           *sync.RWMutex
+	pluginOps             sync.WaitGroup
+	cleanupClaimed        bool
+	cleanupCancel         bool
+	cleanupDone           chan struct{}
+	cancelRequired        bool
+	cancelApplied         bool
+	cancelRecoveryRunning bool
 }
 
 var openPluginPeer = startPluginPeerProcess
@@ -446,8 +462,42 @@ func (a *Agent) handlePluginPeerPrepare(ctx context.Context, sink EnvelopeSink, 
 		a.sendPluginPeerFailure(ctx, sink, fmt.Sprint(env.Body["session_id"]), fmt.Sprint(env.Body["round_id"]), "INVALID_PREPARE")
 		return false
 	}
-	meta, _, err := resolveInstalledPluginPeerAction(req.Plugin.ID, req.Protocol.ID, req.Side, req.Plugin.Action)
-	if err != nil || meta.Version != req.Plugin.Version {
+	// Existing prepares are idempotent, including while their original request
+	// is waiting for consent. New work gets a cheap device-policy gate before
+	// any plugin binary is hashed.
+	a.mu.Lock()
+	if a.authRevoked || !a.enabled || a.permit == PermitOff {
+		a.mu.Unlock()
+		a.sendPluginPeerFailure(ctx, sink, req.SessionID, req.RoundID, "DEVICE_DISABLED")
+		return false
+	}
+	if existing := a.peerSessions[req.SessionID]; existing != nil {
+		a.mu.Unlock()
+		return existing.matchesPrepare(req)
+	}
+	if len(a.peerSessions) >= pluginPeerSessionMax {
+		a.mu.Unlock()
+		a.sendPluginPeerFailure(ctx, sink, req.SessionID, req.RoundID, "SESSION_LIMIT")
+		return false
+	}
+	if v, _ := a.inputVerdict(); v == permitRefuse {
+		a.mu.Unlock()
+		a.sendPluginPeerFailure(ctx, sink, req.SessionID, req.RoundID, "SESSION_LIMIT")
+		return false
+	}
+	a.mu.Unlock()
+
+	var meta installedPlugin
+	_, err = withPluginReadLock(req.Plugin.ID, func() (any, error) {
+		resolved, _, resolveErr := resolveInstalledPluginPeerAction(req.Plugin.ID, req.Protocol.ID, req.Side, req.Plugin.Action)
+		meta = resolved
+		return nil, resolveErr
+	})
+	if err != nil {
+		a.sendPluginPeerFailure(ctx, sink, req.SessionID, req.RoundID, "PLUGIN_UNAVAILABLE")
+		return false
+	}
+	if meta.Version != req.Plugin.Version {
 		a.sendPluginPeerFailure(ctx, sink, req.SessionID, req.RoundID, "PLUGIN_UNAVAILABLE")
 		return false
 	}
@@ -456,6 +506,12 @@ func (a *Agent) handlePluginPeerPrepare(ctx context.Context, sink EnvelopeSink, 
 		a.sendPluginPeerFailure(ctx, sink, req.SessionID, req.RoundID, "RANDOM_UNAVAILABLE")
 		return false
 	}
+	inserted := false
+	defer func() {
+		if !inserted {
+			s.cancel()
+		}
+	}()
 	a.mu.Lock()
 	if a.authRevoked || !a.enabled || a.permit == PermitOff {
 		a.mu.Unlock()
@@ -469,12 +525,33 @@ func (a *Agent) handlePluginPeerPrepare(ctx context.Context, sink EnvelopeSink, 
 		a.mu.Unlock()
 		return existing.matchesPrepare(req)
 	}
-	if len(a.peerSessions) >= pluginPeerSessionMax || a.pending != nil {
+	if len(a.peerSessions) >= pluginPeerSessionMax {
 		a.mu.Unlock()
 		a.sendPluginPeerFailure(ctx, sink, req.SessionID, req.RoundID, "SESSION_LIMIT")
 		return false
 	}
+	v, _ := a.inputVerdict()
+	if v == permitRefuse {
+		code := "SESSION_LIMIT"
+		if !a.enabled || a.permit == PermitOff {
+			code = "DEVICE_DISABLED"
+		}
+		a.mu.Unlock()
+		a.sendPluginPeerFailure(ctx, sink, req.SessionID, req.RoundID, code)
+		return false
+	}
+	if !a.transferPluginPeerCancelRecoveryLocked(req, s) {
+		a.mu.Unlock()
+		return false
+	}
 	a.peerSessions[req.SessionID] = s
+	inserted = true
+	if v == permitProceed {
+		a.mu.Unlock()
+		s.approve(req.RoundID)
+		a.pushUI()
+		return true
+	}
 	label := a.queuePluginPeerApprovalLocked(s, env.Corr, req.RoundID)
 	a.mu.Unlock()
 	notifyConsent(label)
@@ -485,13 +562,50 @@ func (a *Agent) handlePluginPeerPrepare(ctx context.Context, sink EnvelopeSink, 
 func (s *pluginPeerSession) matchesPrepare(req pluginPeerPrepareRequest) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return !s.closed && s.matchesPrepareLocked(req)
+}
+
+func (s *pluginPeerSession) matchesPrepareLocked(req pluginPeerPrepareRequest) bool {
 	_, knownRound := s.usedRounds[req.RoundID]
-	return !s.closed && knownRound && s.sessionID == req.SessionID && s.role == req.Side &&
+	return knownRound && s.sessionID == req.SessionID && s.role == req.Side &&
 		s.signalRole == req.SignalRole && s.protocol == req.Protocol.ID && s.abi == req.Protocol.ABI &&
 		s.transport == req.Protocol.Transport && s.approval == req.Protocol.Approval &&
 		s.pluginID == req.Plugin.ID && s.pluginVer == req.Plugin.Version && s.action == req.Plugin.Action &&
 		s.operatorID == req.OperatorID && s.userID == req.UserID && s.peer == req.Peer &&
 		string(s.input) == string(req.Input) && slices.Equal(s.stunURLs, req.STUNURLs)
+}
+
+// transferPluginPeerCancelRecoveryLocked moves the cleanup debt left by an
+// offline Abort to the replayed prepare before that prepare can be ACKed. The
+// old recovery mutex is claimed without waiting: a recovery already running is
+// still the sole cleanup owner, so the durable prepare must simply retry.
+// a.mu must be held by the caller.
+func (a *Agent) transferPluginPeerCancelRecoveryLocked(req pluginPeerPrepareRequest, next *pluginPeerSession) bool {
+	previous := a.peerCancelRecovery[req.SessionID]
+	if previous == nil {
+		return true
+	}
+	if !previous.cancelRetryMu.TryLock() {
+		return false
+	}
+	defer previous.cancelRetryMu.Unlock()
+
+	previous.mu.Lock()
+	defer previous.mu.Unlock()
+	if previous.cancelRecoveryRunning || !previous.matchesPrepareLocked(req) {
+		return false
+	}
+	if previous.cancelRequired && !previous.cancelApplied {
+		next.cancelRequired = true
+		next.cancelApplied = false
+	}
+	// No future retry may claim the old owner after the obligation has moved.
+	previous.cancelRequired = false
+	previous.cancelApplied = true
+	if a.peerCancelRecovery[req.SessionID] == previous {
+		a.deletePluginPeerCancelRecoveryLocked(req.SessionID)
+	}
+	return true
 }
 
 func (a *Agent) queuePluginPeerApprovalLocked(s *pluginPeerSession, corr, roundID string) string {
@@ -555,6 +669,26 @@ func (s *pluginPeerSession) startEpoch(roundID string) {
 	s.epoch = e
 	s.mu.Unlock()
 
+	startGuard, localGuard, ok := s.acquirePluginStartGuard(e)
+	if !ok {
+		return
+	}
+	// Fresh starts reuse the session-owned RLock. If a hostile plugin blocks
+	// its first control write, ownership can be transferred to a waiter below
+	// without releasing the lock early.
+	opOwned := true
+	defer func() {
+		if opOwned {
+			s.pluginOps.Done()
+		}
+	}()
+	guardOwned := localGuard
+	defer func() {
+		if guardOwned {
+			startGuard.RUnlock()
+		}
+	}()
+
 	meta, plugin, err := openPluginPeer(e.ctx, s.pluginID, s.protocol, s.role, s.action)
 	if err != nil {
 		s.failEpoch(e, "PLUGIN_UNAVAILABLE", err)
@@ -562,35 +696,157 @@ func (s *pluginPeerSession) startEpoch(roundID string) {
 	}
 	declaration, err := pluginPeerAction(meta, s.protocol, s.role, s.action)
 	if err != nil {
-		plugin.Abort()
+		s.stopUncommittedPlugin(plugin, false)
 		s.failEpoch(e, "PLUGIN_UNAVAILABLE", err)
 		return
 	}
 	s.mu.Lock()
 	if s.closed || s.epoch != e {
 		s.mu.Unlock()
-		plugin.Abort()
+		s.stopUncommittedPlugin(plugin, false)
 		return
 	}
 	if declaration.ABI != s.abi || declaration.Transport != s.transport || declaration.Approval != s.approval {
 		s.mu.Unlock()
-		plugin.Abort()
+		s.stopUncommittedPlugin(plugin, false)
 		s.failEpoch(e, "PLUGIN_CHANGED", errors.New("installed plugin declaration does not match prepared protocol"))
 		return
 	}
 	if s.pluginVer != meta.Version || s.abi != declaration.ABI || s.transport != declaration.Transport || s.approval != declaration.Approval {
 		s.mu.Unlock()
-		plugin.Abort()
+		s.stopUncommittedPlugin(plugin, false)
 		s.failEpoch(e, "PLUGIN_CHANGED", errors.New("plugin declaration changed during peer session"))
 		return
 	}
 	e.plugin = plugin
 	s.mu.Unlock()
-	if err := plugin.WriteControl(pluginPeerOpen(s.action, s.input, s.peer)); err != nil {
+	pendingWrite, err := writePluginPeerControlBounded(e.ctx, plugin, pluginPeerOpen(s.action, s.input, s.peer))
+	if pendingWrite != nil {
+		if guardOwned {
+			guardOwned = false
+			opOwned = false
+			go func() {
+				writeErr := <-pendingWrite
+				s.notePluginPeerOpenResult(e, writeErr)
+				startGuard.RUnlock()
+				s.pluginOps.Done()
+			}()
+		} else if opOwned {
+			opOwned = false
+			go func() {
+				writeErr := <-pendingWrite
+				s.notePluginPeerOpenResult(e, writeErr)
+				s.pluginOps.Done()
+			}()
+		}
+	}
+	if err != nil {
 		s.failEpoch(e, "PLUGIN_PROTOCOL", err)
 		return
 	}
+	s.mu.Lock()
+	s.notePluginPeerOpenAppliedLocked(e)
+	if s.closed || s.epoch != e || e.plugin != plugin {
+		s.mu.Unlock()
+		s.stopUncommittedPlugin(plugin, true)
+		return
+	}
+	if s.pluginGuard == nil {
+		// Transfer the initial RLock only after startup is fully committed.
+		// Until then the local defer keeps install/uninstall out even if a
+		// concurrent close has already detached the session.
+		s.pluginGuard = startGuard
+		guardOwned = false
+	}
+	s.mu.Unlock()
+	if s.agent != nil {
+		s.agent.clearPluginPeerCancelRecovery(s.sessionID)
+	}
 	go s.readPlugin(e, plugin)
+}
+
+func (s *pluginPeerSession) stopUncommittedPlugin(plugin pluginPeerIO, openApplied bool) {
+	s.mu.Lock()
+	graceful := s.cleanupClaimed && s.cleanupCancel
+	if openApplied && !s.terminal {
+		s.cancelRequired = true
+	}
+	s.mu.Unlock()
+	if graceful {
+		applied := plugin.Cancel()
+		if openApplied && applied {
+			s.mu.Lock()
+			s.cancelApplied = true
+			s.mu.Unlock()
+		}
+		return
+	}
+	plugin.Abort()
+}
+
+func (s *pluginPeerSession) notePluginPeerOpenResult(e *pluginPeerEpoch, err error) {
+	if err != nil || e == nil {
+		return
+	}
+	s.mu.Lock()
+	s.notePluginPeerOpenAppliedLocked(e)
+	s.mu.Unlock()
+}
+
+// notePluginPeerOpenAppliedLocked commits the only fact that matters for
+// cleanup: the plugin accepted Open. A close may already have detached this
+// epoch while the control write was returning, so a non-terminal closed
+// session must retain cancellation debt for recovery.
+func (s *pluginPeerSession) notePluginPeerOpenAppliedLocked(e *pluginPeerEpoch) {
+	e.openApplied = true
+	if e.cancelAttempted || (s.closed && !s.terminal) {
+		s.cancelRequired = true
+	}
+	if e.cancelAttempted && e.cancelApplied {
+		s.cancelApplied = true
+	}
+}
+
+func writePluginPeerControlBounded(ctx context.Context, plugin pluginPeerIO, value any) (<-chan error, error) {
+	done := make(chan error, 1)
+	go func() { done <- plugin.WriteControl(value) }()
+	timer := time.NewTimer(pluginPeerControlWait)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return nil, err
+	case <-ctx.Done():
+		return done, ctx.Err()
+	case <-timer.C:
+		return done, errors.New("plugin peer control write timed out")
+	}
+}
+
+func (s *pluginPeerSession) acquirePluginStartGuard(e *pluginPeerEpoch) (*sync.RWMutex, bool, bool) {
+	s.mu.Lock()
+	if s.closed || s.epoch != e {
+		s.mu.Unlock()
+		return nil, false, false
+	}
+	if s.pluginGuard != nil {
+		s.pluginOps.Add(1)
+		guard := s.pluginGuard
+		s.mu.Unlock()
+		return guard, false, true
+	}
+	s.mu.Unlock()
+
+	guard := pluginOperationLock(s.pluginID)
+	guard.RLock()
+	s.mu.Lock()
+	if s.closed || s.epoch != e {
+		s.mu.Unlock()
+		guard.RUnlock()
+		return nil, false, false
+	}
+	s.pluginOps.Add(1)
+	s.mu.Unlock()
+	return guard, true, true
 }
 
 func (s *pluginPeerSession) readPlugin(e *pluginPeerEpoch, plugin pluginPeerIO) {
@@ -598,12 +854,20 @@ func (s *pluginPeerSession) readPlugin(e *pluginPeerEpoch, plugin pluginPeerIO) 
 		record, err := plugin.ReadRecord()
 		if err != nil {
 			s.mu.Lock()
-			current := !s.closed && s.epoch == e && e.plugin == plugin
+			current := !s.closed && s.epoch == e && e.plugin == plugin && !e.interrupted
 			s.mu.Unlock()
 			if current && !errors.Is(err, context.Canceled) {
 				s.failEpoch(e, "PLUGIN_PROTOCOL", err)
 			}
 			return
+		}
+		s.mu.Lock()
+		interrupted := !s.closed && s.epoch == e && e.plugin == plugin && e.interrupted
+		s.mu.Unlock()
+		if interrupted {
+			// Drain every old-epoch record, including malformed control, while
+			// retaining the process for a possible authoritative cancel.
+			continue
 		}
 		if record.Kind == pluginPeerRecordData {
 			s.sendPluginData(e, plugin, record.Payload)
@@ -629,6 +893,14 @@ func (s *pluginPeerSession) handlePluginStatus(e *pluginPeerEpoch, plugin plugin
 	if s.closed || s.epoch != e || e.plugin != plugin {
 		s.mu.Unlock()
 		return false
+	}
+	if e.interrupted {
+		// The old process remains alive only so an authoritative Hub cancel can
+		// still deliver FLPP cancel and remove resumable state. Drain and ignore
+		// its output until the Hub either supplies a fresh round or terminates the
+		// session.
+		s.mu.Unlock()
+		return true
 	}
 	switch control.Status {
 	case "ready":
@@ -673,10 +945,12 @@ func (s *pluginPeerSession) handlePluginStatus(e *pluginPeerEpoch, plugin plugin
 		// Claim the terminal transition while this epoch is still current. A
 		// concurrent RTC failure must not install a replacement epoch between
 		// this check and close(), only to have this old plugin callback kill it.
-		s.closed = true
+		s.claimPluginPeerCloseLocked(true)
 		s.mu.Unlock()
-		s.sendEvent(e.roundID, "cancel", normalizePluginPeerFailureCode(control.Code, "CANCELLED"))
-		s.close()
+		s.closeClaimed(true)
+		ctx, cancel := context.WithTimeout(context.Background(), pluginPeerNoticeWait)
+		defer cancel()
+		_ = s.sendEventContext(ctx, e.roundID, "cancel", normalizePluginPeerFailureCode(control.Code, "CANCELLED"))
 		return false
 	case "error":
 		s.mu.Unlock()
@@ -708,11 +982,18 @@ func (s *pluginPeerSession) sendAuthorized(e *pluginPeerEpoch) {
 }
 
 func (s *pluginPeerSession) sendEvent(roundID, event, code string) error {
+	return s.sendEventContext(s.ctx, roundID, event, code)
+}
+
+func (s *pluginPeerSession) sendEventContext(ctx context.Context, roundID, event, code string) error {
 	body := map[string]any{"session_id": s.sessionID, "round_id": roundID, "event": event}
 	if code != "" {
 		body["failure_code"] = normalizePluginPeerFailureCode(code, "PLUGIN_PEER_FAILED")
 	}
-	return s.sendControl(Envelope{V: 1, Type: "peer_session_event", ID: newPluginPeerMessageID(), T: time.Now().UnixMilli(), Body: body})
+	if s.sink == nil {
+		return errors.New("plugin peer control channel unavailable")
+	}
+	return s.sink(ctx, Envelope{V: 1, Type: "peer_session_event", ID: newPluginPeerMessageID(), T: time.Now().UnixMilli(), Body: body})
 }
 
 func (s *pluginPeerSession) sendControl(env Envelope) error {
@@ -740,6 +1021,18 @@ func (a *Agent) handlePluginPeerDelivery(ctx context.Context, sink EnvelopeSink,
 	a.mu.Lock()
 	_, duplicate := a.peerDeliveries[deliveryID]
 	a.mu.Unlock()
+	if duplicate && !a.pluginPeerDeliveryReplaySafe(sessionID, env) {
+		// A delivery applied by a session whose teardown has now finished is
+		// replayable even while unrelated sessions remain live. The old global
+		// dedupe entry must not pin this session until the whole Agent is idle.
+		// A closed owner stays in peerSessions until cleanup publishes its
+		// receipt/recovery state, so only release the entry after that owner is
+		// actually gone.
+		if !a.releasePluginPeerDeliveryForReplay(sessionID, deliveryID) {
+			return
+		}
+		duplicate = false
+	}
 	handled := duplicate
 	if !duplicate {
 		switch env.Type {
@@ -775,6 +1068,55 @@ func (a *Agent) handlePluginPeerDelivery(ctx context.Context, sink EnvelopeSink,
 	_ = sink(ctx, Envelope{V: 1, Type: "peer_session_ack", ID: newPluginPeerMessageID(), T: time.Now().UnixMilli(), Body: map[string]any{
 		"session_id": sessionID, "delivery_id": deliveryID,
 	}})
+}
+
+func (a *Agent) releasePluginPeerDeliveryForReplay(sessionID, deliveryID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.peerSessions[sessionID] != nil {
+		return false
+	}
+	delete(a.peerDeliveries, deliveryID)
+	for i := 0; i < len(a.peerDeliveryOrder); {
+		if a.peerDeliveryOrder[i] != deliveryID {
+			i++
+			continue
+		}
+		a.peerDeliveryOrder = append(a.peerDeliveryOrder[:i], a.peerDeliveryOrder[i+1:]...)
+	}
+	return true
+}
+
+func (a *Agent) pluginPeerDeliveryReplaySafe(sessionID string, env Envelope) bool {
+	a.mu.Lock()
+	s := a.peerSessions[sessionID]
+	_, cancelReceipt := a.peerCancelReceipts[sessionID]
+	a.mu.Unlock()
+	if s != nil {
+		s.mu.Lock()
+		live := !s.closed
+		s.mu.Unlock()
+		if live {
+			return true
+		}
+	}
+	if env.Type != "peer_session_update" {
+		return false
+	}
+	phase, _ := env.Body["phase"].(string)
+	if raw, ok := env.Body["session"].(map[string]any); ok {
+		if nested, _ := raw["phase"].(string); nested != "" {
+			phase = nested
+		}
+	}
+	switch phase {
+	case "completed", "failed", "expired":
+		return true
+	case "cancelled":
+		return cancelReceipt
+	default:
+		return false
+	}
 }
 
 func newPluginPeerMessageID() string { return fmt.Sprintf("%d", time.Now().UnixNano()) }
@@ -1350,6 +1692,13 @@ func (s *pluginPeerSession) sendPluginData(e *pluginPeerEpoch, plugin pluginPeer
 		s.failEpoch(e, "PLUGIN_PROTOCOL", errors.New("plugin emitted DATA outside its ready lifetime"))
 		return
 	}
+	if e.interrupted {
+		// Keep draining the retained process without buffering bytes that belong
+		// to a dead transport round. A fresh round restarts from durable plugin
+		// state; a terminal cancel still reaches this process.
+		s.mu.Unlock()
+		return
+	}
 	if !s.roundCurrentLocked(r) || !r.dataOpen || e.flushing {
 		if len(e.pendingData) >= pluginPeerInboxMax || e.pendingBytes+len(data) > pluginPeerInboxBytesMax {
 			s.mu.Unlock()
@@ -1560,37 +1909,51 @@ func (s *pluginPeerSession) cancelFromPeer(r *pluginPeerRound, code string) {
 	// Claim the whole-session cancellation before leaving the lock. Otherwise
 	// an old DataChannel callback can race beginNextRound and close the fresh
 	// plugin epoch.
-	s.closed = true
+	s.claimPluginPeerCloseLocked(true)
 	s.mu.Unlock()
-	s.sendEvent(r.epoch.roundID, "cancel", normalizePluginPeerFailureCode(code, "CANCELLED"))
-	s.cancelPluginAndClose()
+	// The direct peer is only a notification source. Tear down the local
+	// process and DataChannel before touching the Hub so a stalled socket can
+	// never keep a cancelled transfer alive.
+	s.closeClaimed(true)
+	ctx, cancel := context.WithTimeout(context.Background(), pluginPeerNoticeWait)
+	defer cancel()
+	_ = s.sendEventContext(ctx, r.epoch.roundID, "cancel", normalizePluginPeerFailureCode(code, "CANCELLED"))
 }
 
-func (s *pluginPeerSession) cancelFromHub() {
-	s.mu.Lock()
-	r := (*pluginPeerRound)(nil)
-	if s.epoch != nil {
-		r = s.epoch.round
+func (s *pluginPeerSession) cancelFromHub() bool {
+	// A Hub cancellation is already delivered independently to both
+	// endpoints. Re-sending it over the DataChannel is redundant and, worse,
+	// can block local cleanup behind an in-flight DATA write.
+	applied := make(chan bool, 1)
+	go func() {
+		graceful, done := s.cancelPluginAndClose()
+		if !graceful {
+			applied <- false
+			return
+		}
+		<-done
+		s.mu.Lock()
+		receipt := !s.cancelRequired || s.cancelApplied
+		s.mu.Unlock()
+		applied <- receipt
+	}()
+	timer := time.NewTimer(pluginPeerCleanupWait)
+	defer timer.Stop()
+	select {
+	case graceful := <-applied:
+		return graceful
+	case <-timer.C:
+		// Keep the durable item unacknowledged. The in-flight cleanup continues,
+		// and a later replay can observe its actual terminal mode.
+		return false
 	}
-	s.mu.Unlock()
-	if r != nil {
-		_ = s.sendPeerControl(r, "peer_cancel", "CANCELLED", nil)
-	}
-	s.cancelPluginAndClose()
 }
 
-func (s *pluginPeerSession) cancelPluginAndClose() {
-	s.mu.Lock()
-	var plugin pluginPeerIO
-	if s.epoch != nil {
-		plugin = s.epoch.plugin
-		s.epoch.plugin = nil
-	}
-	s.mu.Unlock()
-	if plugin != nil {
-		plugin.Cancel()
-	}
-	s.close()
+func (s *pluginPeerSession) cancelPluginAndClose() (bool, <-chan struct{}) {
+	// closed means the terminal state was claimed; closeOnce is the authority
+	// for whether teardown actually ran. A higher-priority permit/auth revoke
+	// must still be able to finish cleanup after another path claimed closed.
+	return s.closeClaimed(true)
 }
 
 func (s *pluginPeerSession) dataChannelFailure(r *pluginPeerRound, dc pluginPeerDataChannel, err error) {
@@ -1763,15 +2126,34 @@ func (a *Agent) handlePluginPeerUpdate(env Envelope) bool {
 	if json.Unmarshal(b, &update) != nil || !rtcSIDPattern.MatchString(update.SessionID) {
 		return false
 	}
-	a.mu.Lock()
-	s := a.peerSessions[update.SessionID]
-	a.mu.Unlock()
-	if s == nil {
-		return true
-	}
 	phase := update.Session.Phase
 	if phase == "" {
 		phase = update.Phase
+	}
+	a.mu.Lock()
+	s := a.peerSessions[update.SessionID]
+	_, cancelledBefore := a.peerCancelReceipts[update.SessionID]
+	recovery := a.peerCancelRecovery[update.SessionID]
+	a.mu.Unlock()
+	if s == nil {
+		// Cancellation is not idempotently "applied" merely because the
+		// in-memory session is absent. A disconnected Agent may have aborted
+		// the FLPP process while deliberately preserving its checkpoint. Keep
+		// the durable item until prepare replay rebuilds an owner that can run
+		// the required graceful Cancel.
+		if phase != "cancelled" {
+			if recovery != nil {
+				a.removePluginPeerCancelRecovery(update.SessionID, recovery)
+			}
+			return true
+		}
+		if cancelledBefore {
+			return true
+		}
+		if recovery != nil {
+			recovery.startPluginPeerCancelRecovery()
+		}
+		return false
 	}
 	roundID := update.Session.Round.ID
 	switch phase {
@@ -1798,17 +2180,25 @@ func (a *Agent) handlePluginPeerUpdate(env Envelope) bool {
 		return true
 	case "completed":
 		s.mu.Lock()
+		s.terminal = true
 		if s.epoch != nil && s.epoch.round != nil {
 			s.epoch.round.completeAck = true
 		}
 		s.mu.Unlock()
 		s.close()
+		a.clearPluginPeerCancelRecovery(update.SessionID)
 		return true
 	case "cancelled":
-		go s.cancelFromHub()
-		return true
+		// Do not ACK the durable delivery until the local FLPP process has seen
+		// cancel and the session has been detached. Otherwise the Hub may drop
+		// its only retry while a blocked DataChannel leaves partial files behind.
+		return s.cancelFromHub()
 	case "failed", "expired":
+		s.mu.Lock()
+		s.terminal = true
+		s.mu.Unlock()
 		s.close()
+		a.clearPluginPeerCancelRecovery(update.SessionID)
 		return true
 	}
 	return false
@@ -1866,11 +2256,37 @@ func (s *pluginPeerSession) beginNextRound(roundID string, roundNo int, side, si
 		return false
 	}
 	s.epoch = &pluginPeerEpoch{roundID: roundID}
+	s.retiringEpoch = old
+	// Add under s.mu before a terminal close can begin Wait. The existing
+	// session RLock must cover the old process until its fresh-round Abort has
+	// actually returned.
+	s.pluginOps.Add(1)
 	s.roundNo = roundNo
 	s.usedRounds[roundID] = roundNo
 	s.mu.Unlock()
-	stopPluginPeerEpoch(old, false)
-	go s.startEpoch(roundID)
+	s.mu.Lock()
+	if s.closed || s.retiringEpoch != old {
+		s.mu.Unlock()
+		s.pluginOps.Done()
+		return true
+	}
+	// Claim ownership of the old epoch. A terminal close that won the lock
+	// above took retiringEpoch instead and will Cancel it, never Abort it.
+	s.retiringEpoch = nil
+	if old.plugin != nil {
+		// Abort deliberately preserves the resumable checkpoint. A later Hub
+		// cancellation may be acknowledged only after a replacement process that
+		// has received Open also receives FLPP Cancel.
+		s.cancelRequired = true
+		s.cancelApplied = false
+	}
+	s.mu.Unlock()
+	s.stopPluginPeerEpoch(old, false)
+	s.pluginOps.Done()
+	// Delivery processing is serialized. Commit the replacement plugin before
+	// ACKing round_prepare so a following Hub cancel always has a live FLPP
+	// owner to clean the checkpoint it just resumed.
+	s.startEpoch(roundID)
 	return true
 }
 
@@ -1884,13 +2300,15 @@ func (s *pluginPeerSession) interruptRound(r *pluginPeerRound, err error) {
 	e := r.epoch
 	e.interrupted = true
 	e.round = nil
-	plugin := e.plugin
-	e.plugin = nil
+	e.pendingData = nil
+	e.pendingBytes = 0
+	e.flushing = false
 	s.mu.Unlock()
 	closePluginPeerRound(r)
-	if plugin != nil {
-		go plugin.Abort()
-	}
+	// Do not Abort or detach the plugin yet. Abort preserves resumable state,
+	// so doing it here races a following authoritative cancel and can leave a
+	// .part checkpoint forever. The fresh-round path aborts this epoch; every
+	// terminal path cancels or aborts it according to the Hub decision.
 	s.sendEvent(e.roundID, "interrupt", "DIRECT_INTERRUPTED")
 }
 
@@ -1914,11 +2332,15 @@ func (s *pluginPeerSession) failEpoch(e *pluginPeerEpoch, code string, err error
 	// Terminal transitions are claims, not observations. Marking the session
 	// closed under the same lock that validates the epoch prevents a stale
 	// failure from racing a replacement round into existence.
-	s.closed = true
+	s.claimPluginPeerCloseLocked(false)
 	s.mu.Unlock()
 	code = normalizePluginPeerFailureCode(code, "PLUGIN_PEER_FAILED")
-	s.sendEvent(e.roundID, "fail", code)
-	s.close()
+	// Local terminal cleanup is authoritative. Network notice is bounded and
+	// happens afterwards so a stuck sink cannot keep the plugin or RTC alive.
+	s.closeClaimed(false)
+	ctx, cancel := context.WithTimeout(context.Background(), pluginPeerNoticeWait)
+	defer cancel()
+	_ = s.sendEventContext(ctx, e.roundID, "fail", code)
 }
 
 func normalizePluginPeerFailureCode(code, fallback string) string {
@@ -1950,40 +2372,333 @@ func closePluginPeerRound(r *pluginPeerRound) {
 	}
 }
 
-func stopPluginPeerEpoch(e *pluginPeerEpoch, sendCancel bool) {
+func (s *pluginPeerSession) stopPluginPeerEpoch(e *pluginPeerEpoch, sendCancel bool) {
 	if e == nil {
 		return
-	}
-	if e.cancel != nil {
-		e.cancel()
 	}
 	closePluginPeerRound(e.round)
 	if e.plugin != nil {
 		if sendCancel {
-			e.plugin.Cancel()
+			applied := e.plugin.Cancel()
+			s.mu.Lock()
+			e.cancelAttempted = true
+			e.cancelApplied = applied
+			if e.openApplied {
+				s.cancelRequired = true
+				if applied {
+					s.cancelApplied = true
+				}
+			}
+			s.mu.Unlock()
 		} else {
+			s.mu.Lock()
+			if !s.terminal && (e.openApplied || e.ready || e.interrupted || e.round != nil) {
+				s.cancelRequired = true
+				s.cancelApplied = false
+			}
+			s.mu.Unlock()
 			e.plugin.Abort()
 		}
 	}
+	if e.cancel != nil {
+		e.cancel()
+	}
+}
+
+func (s *pluginPeerSession) stopPluginPeerEpochs(sendCancel bool, epochs ...*pluginPeerEpoch) {
+	unique := make([]*pluginPeerEpoch, 0, len(epochs))
+	for _, epoch := range epochs {
+		if epoch == nil || slices.Contains(unique, epoch) {
+			continue
+		}
+		unique = append(unique, epoch)
+	}
+	var wait sync.WaitGroup
+	wait.Add(len(unique))
+	for _, epoch := range unique {
+		go func() {
+			defer wait.Done()
+			s.stopPluginPeerEpoch(epoch, sendCancel)
+		}()
+	}
+	wait.Wait()
 }
 
 func (s *pluginPeerSession) close() {
+	s.closeClaimed(false)
+}
+
+func (s *pluginPeerSession) rejectAndClose(code string) <-chan struct{} {
+	s.mu.Lock()
+	// takePluginPeersLocked marks the owner closed before dropping a.mu so a
+	// duplicate prepare cannot be ACKed in the take-to-close gap. Cleanup, not
+	// the closed bit, tells us whether another terminal path already won.
+	claimed := !s.cleanupClaimed
+	s.claimPluginPeerCloseLocked(true)
+	roundID := ""
+	if s.epoch != nil {
+		roundID = s.epoch.roundID
+	}
+	s.mu.Unlock()
+	if !claimed {
+		// Another terminal path may have claimed closed but be blocked before
+		// teardown. Permit=off and auth revocation still force local cleanup.
+		_, done := s.closeClaimed(true)
+		return done
+	}
+	_, done := s.closeClaimedWithNotice(true, func() {
+		if roundID == "" {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), pluginPeerNoticeWait)
+		defer cancel()
+		_ = s.sendEventContext(ctx, roundID, "fail", code)
+	})
+	return done
+}
+
+func (s *pluginPeerSession) claimPluginPeerCloseLocked(sendCancel bool) {
+	s.closed = true
+	if s.cleanupClaimed {
+		return
+	}
+	s.cleanupClaimed = true
+	s.cleanupCancel = sendCancel
+	s.cleanupDone = make(chan struct{})
+}
+
+func (s *pluginPeerSession) closeClaimed(sendCancel bool) (bool, <-chan struct{}) {
+	return s.closeClaimedWithNotice(sendCancel, nil)
+}
+
+func (s *pluginPeerSession) closeClaimedWithNotice(sendCancel bool, notice func()) (bool, <-chan struct{}) {
+	s.mu.Lock()
+	s.claimPluginPeerCloseLocked(sendCancel)
+	graceful := s.cleanupCancel
+	done := s.cleanupDone
+	s.mu.Unlock()
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
-		s.closed = true
 		e := s.epoch
 		s.epoch = nil
+		retiring := s.retiringEpoch
+		s.retiringEpoch = nil
+		guard := s.pluginGuard
+		s.pluginGuard = nil
 		s.mu.Unlock()
+		s.stopPluginPeerEpochs(graceful, e, retiring)
+		// Initial and fresh-round opens both contribute to pluginOps before a
+		// close can claim the session. Permit changes do not wait here, while a
+		// durable Hub cancellation can wait on cleanupDone before acknowledging.
+		go func() {
+			s.pluginOps.Wait()
+			if graceful {
+				s.retryPluginPeerCancel(guard)
+				guard = nil
+			}
+			receipt := s.pluginPeerCancelReceipt(graceful)
+			recovery := s.pluginPeerCancelRecoveryNeeded()
+			if guard != nil {
+				guard.RUnlock()
+			}
+			if receipt && s.agent != nil {
+				s.agent.recordPluginPeerCancelReceipt(s.sessionID)
+				s.agent.removePluginPeerCancelRecovery(s.sessionID, s)
+			} else if recovery && s.agent != nil {
+				s.agent.recordPluginPeerCancelRecovery(s.sessionID, s)
+			}
+			if s.agent != nil {
+				s.agent.dropPluginPeer(s.sessionID, s)
+			}
+			close(done)
+		}()
+		if notice != nil {
+			notice()
+		}
 		s.cancel()
-		stopPluginPeerEpoch(e, false)
-		s.agent.dropPluginPeer(s.sessionID, s)
 	})
+	if sendCancel && !graceful {
+		go s.retryPluginPeerCancelAfter(done)
+	}
+	return graceful, done
+}
+
+func (s *pluginPeerSession) retryPluginPeerCancelAfter(done <-chan struct{}) {
+	<-done
+	s.startPluginPeerCancelRecovery()
+}
+
+func (s *pluginPeerSession) pluginPeerCancelReceipt(graceful bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return graceful && (!s.cancelRequired || s.cancelApplied)
+}
+
+func (s *pluginPeerSession) pluginPeerCancelRecoveryNeeded() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.terminal && s.cancelRequired && !s.cancelApplied
+}
+
+func (s *pluginPeerSession) startPluginPeerCancelRecovery() {
+	s.mu.Lock()
+	if s.cancelRecoveryRunning || s.cancelApplied {
+		s.mu.Unlock()
+		return
+	}
+	s.cancelRecoveryRunning = true
+	s.mu.Unlock()
+	go func() {
+		applied := s.retryPluginPeerCancel(nil)
+		s.mu.Lock()
+		s.cancelRecoveryRunning = false
+		s.mu.Unlock()
+		if !applied || s.agent == nil {
+			return
+		}
+		s.agent.recordPluginPeerCancelReceipt(s.sessionID)
+		s.agent.removePluginPeerCancelRecovery(s.sessionID, s)
+	}()
+}
+
+func (s *pluginPeerSession) retryPluginPeerCancel(guard *sync.RWMutex) bool {
+	s.cancelRetryMu.Lock()
+	defer s.cancelRetryMu.Unlock()
+	s.mu.Lock()
+	retry := s.cancelRequired && !s.cancelApplied
+	s.mu.Unlock()
+	if !retry {
+		if guard != nil {
+			guard.RUnlock()
+		}
+		return true
+	}
+	if guard == nil {
+		guard = pluginOperationLock(s.pluginID)
+		guard.RLock()
+	}
+	guardOwned := true
+	defer func() {
+		if guardOwned {
+			guard.RUnlock()
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), pluginPeerCleanupWait)
+	defer cancel()
+	meta, plugin, err := openPluginPeer(ctx, s.pluginID, s.protocol, s.role, s.action)
+	if err != nil {
+		return false
+	}
+	declaration, declarationErr := pluginPeerAction(meta, s.protocol, s.role, s.action)
+	if declarationErr != nil || meta.Version != s.pluginVer || declaration.ABI != s.abi ||
+		declaration.Transport != s.transport || declaration.Approval != s.approval {
+		plugin.Abort()
+		return false
+	}
+	pendingWrite, writeErr := writePluginPeerControlBounded(ctx, plugin, pluginPeerOpen(s.action, s.input, s.peer))
+	if pendingWrite != nil {
+		plugin.Abort()
+		guardOwned = false
+		go func() {
+			<-pendingWrite
+			guard.RUnlock()
+		}()
+		return false
+	}
+	if writeErr != nil {
+		plugin.Abort()
+		return false
+	}
+	if drainer, ok := plugin.(interface{ drainCancellationStatus() }); ok {
+		drainer.drainCancellationStatus()
+	}
+	applied := plugin.Cancel()
+	s.mu.Lock()
+	if applied {
+		s.cancelApplied = true
+	}
+	s.mu.Unlock()
+	return applied
+}
+
+func (a *Agent) recordPluginPeerCancelReceipt(sessionID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.deletePluginPeerCancelRecoveryLocked(sessionID)
+	if a.peerCancelReceipts == nil {
+		a.peerCancelReceipts = make(map[string]struct{})
+	}
+	if _, exists := a.peerCancelReceipts[sessionID]; exists {
+		return
+	}
+	a.peerCancelReceipts[sessionID] = struct{}{}
+	a.peerCancelOrder = append(a.peerCancelOrder, sessionID)
+	if len(a.peerCancelOrder) > 256 {
+		oldest := a.peerCancelOrder[0]
+		a.peerCancelOrder = a.peerCancelOrder[1:]
+		delete(a.peerCancelReceipts, oldest)
+	}
+}
+
+func (a *Agent) recordPluginPeerCancelRecovery(sessionID string, s *pluginPeerSession) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.peerCancelRecovery == nil {
+		a.peerCancelRecovery = make(map[string]*pluginPeerSession)
+	}
+	if _, exists := a.peerCancelRecovery[sessionID]; !exists {
+		a.peerRecoveryOrder = append(a.peerRecoveryOrder, sessionID)
+	}
+	a.peerCancelRecovery[sessionID] = s
+	for len(a.peerRecoveryOrder) > 256 {
+		oldest := a.peerRecoveryOrder[0]
+		a.peerRecoveryOrder = a.peerRecoveryOrder[1:]
+		delete(a.peerCancelRecovery, oldest)
+	}
+}
+
+func (a *Agent) removePluginPeerCancelRecovery(sessionID string, s *pluginPeerSession) {
+	a.mu.Lock()
+	if a.peerCancelRecovery[sessionID] == s {
+		a.deletePluginPeerCancelRecoveryLocked(sessionID)
+	}
+	a.mu.Unlock()
+}
+
+func (a *Agent) clearPluginPeerCancelRecovery(sessionID string) {
+	a.mu.Lock()
+	a.deletePluginPeerCancelRecoveryLocked(sessionID)
+	a.mu.Unlock()
+}
+
+// deletePluginPeerCancelRecoveryLocked keeps the bounded FIFO index in step
+// with the map. Leaving stale duplicate IDs here can evict a newly recorded
+// recovery after enough reconnects of the same session.
+func (a *Agent) deletePluginPeerCancelRecoveryLocked(sessionID string) {
+	delete(a.peerCancelRecovery, sessionID)
+	for i := 0; i < len(a.peerRecoveryOrder); {
+		if a.peerRecoveryOrder[i] != sessionID {
+			i++
+			continue
+		}
+		a.peerRecoveryOrder = append(a.peerRecoveryOrder[:i], a.peerRecoveryOrder[i+1:]...)
+	}
+	if len(a.peerRecoveryOrder) == 0 {
+		a.peerRecoveryOrder = nil
+	}
 }
 
 func (a *Agent) dropPluginPeer(sessionID string, s *pluginPeerSession) {
 	a.mu.Lock()
 	if a.peerSessions[sessionID] == s {
 		delete(a.peerSessions, sessionID)
+		if len(a.peerSessions) == 0 {
+			// Delivery IDs only prove that the current in-memory sessions
+			// applied their outbox items. Clear them when the last owner has
+			// completed teardown so replay can rebuild state after reconnect.
+			a.peerDeliveries = nil
+			a.peerDeliveryOrder = nil
+		}
 	}
 	if a.pending != nil && a.pending.Peer != nil && a.pending.Kind == pendingKindPluginPeer && a.pending.Peer.session == s {
 		a.pending = nil
@@ -1992,16 +2707,29 @@ func (a *Agent) dropPluginPeer(sessionID string, s *pluginPeerSession) {
 }
 
 func (a *Agent) takePluginPeersLocked() []*pluginPeerSession {
-	out := make([]*pluginPeerSession, 0, len(a.peerSessions))
+	out := make([]*pluginPeerSession, 0, len(a.peerSessions)+len(a.peerCancelRecovery))
+	seen := make(map[*pluginPeerSession]struct{}, cap(out))
 	for _, session := range a.peerSessions {
+		session.mu.Lock()
+		session.closed = true
+		session.mu.Unlock()
+		out = append(out, session)
+		seen[session] = struct{}{}
+	}
+	for _, session := range a.peerCancelRecovery {
+		if _, exists := seen[session]; exists {
+			continue
+		}
 		out = append(out, session)
 	}
-	a.peerSessions = nil
-	// Delivery IDs only prove that the current in-memory session applied an
-	// outbox item. Once those sessions are gone, a replay must rebuild state
-	// before it is acknowledged.
-	a.peerDeliveries = nil
-	a.peerDeliveryOrder = nil
+	// Keep sessions addressable until their local FLPP teardown has actually
+	// finished. Otherwise a concurrent durable cancelled delivery can observe
+	// no session and be ACKed before Cancel reaches the plugin. Each session
+	// removes itself in dropPluginPeer after closeOnce completes.
+	if len(out) == 0 {
+		a.peerDeliveries = nil
+		a.peerDeliveryOrder = nil
+	}
 	if a.pending != nil && a.pending.Kind == pendingKindPluginPeer {
 		a.pending = nil
 	}
@@ -2009,13 +2737,31 @@ func (a *Agent) takePluginPeersLocked() []*pluginPeerSession {
 }
 
 func cancelPluginPeers(sessions []*pluginPeerSession) {
-	for _, session := range sessions {
+	closePluginPeersConcurrently(sessions, func(session *pluginPeerSession) {
 		session.cancelPluginAndClose()
-	}
+	})
+}
+
+func rejectPluginPeers(sessions []*pluginPeerSession, code string) {
+	closePluginPeersConcurrently(sessions, func(session *pluginPeerSession) {
+		session.rejectAndClose(code)
+	})
 }
 
 func abortPluginPeers(sessions []*pluginPeerSession) {
-	for _, session := range sessions {
+	closePluginPeersConcurrently(sessions, func(session *pluginPeerSession) {
 		session.close()
+	})
+}
+
+func closePluginPeersConcurrently(sessions []*pluginPeerSession, closeSession func(*pluginPeerSession)) {
+	var wait sync.WaitGroup
+	wait.Add(len(sessions))
+	for _, session := range sessions {
+		go func() {
+			defer wait.Done()
+			closeSession(session)
+		}()
 	}
+	wait.Wait()
 }

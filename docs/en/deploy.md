@@ -89,7 +89,7 @@ Agent: `http://127.0.0.1:8787` (turned into `ws://…/v1/device`).
 
 ### Optional direct data channel and self-hosted STUN
 
-Agent 0.6.0 and local `fleet-tool` 0.6.0 keep the existing WSS control connection while attempting a WebRTC DataChannel. Completing the short signaling context does not cancel the established session. A successful direct path carries the same `{ v, type, id, corr, t, body }` used by WSS for run, panes, desktop, and plugins. New peers negotiate terminal-result ACKs: if a DataChannel write succeeds but the Tool never receives it, the Agent replays that reply once through WSS and closes the unhealthy direct session. Healthy direct business traffic still bypasses the Worker, and old peers keep their existing behavior because they do not negotiate the extension. ICE failure, timeout, or a client without `rtc_v1` falls back to the existing Worker → WSS route. Remote `/mcp` and `/mcp/sse` execute inside the Worker and remain relayed because Workers do not expose a UDP socket.
+Agent 0.6.1 and local `fleet-tool` 0.6.1 keep the existing WSS control connection while attempting a WebRTC DataChannel. Completing the short signaling context does not cancel the established session. A successful direct path carries the same `{ v, type, id, corr, t, body }` used by WSS for run, panes, desktop, and plugins. New peers negotiate terminal-result ACKs: if a DataChannel write succeeds but the Tool never receives it, the Agent replays that reply once through WSS and closes the unhealthy direct session. Healthy direct business traffic still bypasses the Worker, and old peers keep their existing behavior because they do not negotiate the extension. ICE failure, timeout, or a client without `rtc_v1` falls back to the existing Worker → WSS route. Remote `/mcp` and `/mcp/sse` execute inside the Worker and remain relayed because Workers do not expose a UDP socket.
 
 STUN discovers public mappings; it does not relay command data. The first version deliberately has no TURN path. To self-host coturn on a small VPS, configure it in STUN-only mode on UDP 3478, then set this public Worker variable:
 
@@ -170,9 +170,9 @@ or `fleet install` to put `fleet` on PATH. The Linux tarball has both `fleet` an
 5. Mac/Windows: paste the hub origin (no path) and connect; Linux uses `FLEET_URL` above. Connected icon is `F•`.
 6. While enabled, the Agent blocks idle sleep (the screen may still lock). Closing the lid is not blocked. Linux uses `systemd-inhibit --what=idle:sleep`.
 7. Permission (settings page on Mac/Windows, tray right-click on all platforms):
-   - **Off**: refuse run and type (including existing panes)
-   - **Ask**: run and later keystrokes need approval at the machine
-   - **Allow**: run immediately. A coarse local filter still exists; it is not a security boundary
+   - **Off**: refuse run and type (including existing panes), plus plugin installation, removal, task execution, and peer sessions
+   - **Ask**: run, later keystrokes, and plugin operations need approval at the machine
+   - **Allow**: commands and plugin operations run immediately without another plugin click. The destructive-command policy and plugin source/platform/action/runtime/SHA-256 checks remain enforced
 
 The device only dials out. **No inbound ports, public IP, or VPN on the device side.** The Node machine in a plain deploy must of course be reachable (80/443 or the port you chose).
 
@@ -274,7 +274,7 @@ Any Node host, or Neon + your usual frontend host. Console and hub are separate:
 
 - Devices only dial out. Home routers need no port map.
 - Token goes in the `Authorization` header, not the URL.
-- The three local permission levels run on the device; the hub cannot change them. `off` / `ask` cover both run and type.
+- The three local permission levels run on the device; the hub cannot change them. They cover run/type and every plugin installation, removal, task, and peer operation. `allow` removes the extra click, not the destructive-command policy or plugin source/action/runtime/SHA-256 checks; changing between WSS and RTC cannot bypass this decision.
 - Worker `HUB_TOKEN` is an optional super operator. The Node hub requires `HUB_TOKEN` on a public bind (empty token is loopback-only).
 - Machines cannot ping each other. There is no LAN overlay.
 

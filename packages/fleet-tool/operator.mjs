@@ -6,7 +6,7 @@ import { createFileTransferPeerConfig } from "./file-transfer-contract.mjs";
  * Do not write hub_sessions, ~/.fleet, or a workspace file.
  */
 
-export const FLEET_VERSION = "0.6.0";
+export const FLEET_VERSION = "0.6.1";
 
 export { PLUGIN_REGISTRY_SOURCE };
 export const OFFICIAL_PLUGIN_CATALOG = GENERATED_PLUGIN_CATALOG;
@@ -96,7 +96,7 @@ export function shQuote(value) {
 }
 
 export const MCP_INSTRUCTIONS =
-  "Fleet: remote Windows/Linux/macOS machines via a cloud hub. list_computers, then set_computer (or pass device_id). run waits up to 30s; if the text is still running, call wait — do not run again. Official plugins are installed with install_plugin and always require approval at the device; poll get_plugin_task with its corr. start_file_transfer creates direct-only file transfer; Tool endpoints require this local stdio process, while device-to-device also works through remote MCP. Hub tokens are flt_1 values minted in website Settings. Stdio uses Fleet-OAEP; remote /mcp uses Streamable HTTP and /mcp/sse keeps classic SSE compatibility.";
+  "Fleet: remote Windows/Linux/macOS machines via a cloud hub. list_computers, then set_computer (or pass device_id). run waits up to 30s; if the text is still running, call wait — do not run again. Official plugin execution and software changes follow the target Agent permit: off refuses, ask prompts locally, allow runs without another click; poll get_plugin_task with its corr. start_file_transfer creates direct-only file transfer; Tool endpoints require this local stdio process, while device-to-device also works through remote MCP. Hub tokens are flt_1 values minted in website Settings. Stdio uses Fleet-OAEP; remote /mcp uses Streamable HTTP and /mcp/sse keeps classic SSE compatibility.";
 
 export function buildPrompts() {
   return [
@@ -664,7 +664,7 @@ export function buildTools() {
     },
     {
       name: "install_plugin",
-      description: "Install or upgrade one official plugin by registry id. The hub supplies the approved URL and SHA-256; arbitrary URLs are not accepted. Always requires confirmation on the device. Returns a corr ticket.",
+      description: "Install or upgrade one official plugin by registry id. The hub supplies the approved URL and SHA-256; arbitrary URLs are not accepted. The target Agent permit applies: off refuses, ask prompts locally, allow auto-authorizes. Returns a corr ticket.",
       inputSchema: {
         type: "object",
         required: ["plugin_id"],
@@ -673,7 +673,7 @@ export function buildTools() {
     },
     {
       name: "uninstall_plugin",
-      description: "Remove an installed official plugin and its private plugin data from the device. Always requires device confirmation. Returns a corr ticket.",
+      description: "Remove an installed official plugin and its private plugin data from the device under the target Agent permit. Returns a corr ticket.",
       inputSchema: {
         type: "object",
         required: ["plugin_id"],
@@ -707,7 +707,7 @@ export function buildTools() {
     {
       name: "start_file_transfer",
       description:
-        "Start one direct-only file transfer under this Fleet account. Each endpoint is kind=tool or kind=device. Tool paths belong to this local stdio process; remote Worker MCP only supports device-to-device. Both devices approve locally. File bytes never pass through Worker and a failed direct connection never falls back to relay.",
+        "Start one direct-only file transfer under this Fleet account. Each endpoint is kind=tool or kind=device. Tool paths belong to this local stdio process; remote Worker MCP only supports device-to-device. Each device endpoint follows its Agent permit: off refuses, ask prompts locally, allow auto-authorizes. File bytes never pass through Worker and a failed direct connection never falls back to relay.",
       inputSchema: {
         type: "object",
         required: ["source", "target"],

@@ -89,7 +89,7 @@ Agent 填 `http://127.0.0.1:8787`（会转成 `ws://…/v1/device`）。
 
 ### 可选的点对点数据通道和自建 STUN
 
-Agent 0.6.0 与本地 `fleet-tool` 0.6.0 会先保留原来的 WSS 控制连接，再尝试建立 WebRTC DataChannel。RTC 信令结束不会取消已建立会话；直连成功后，`run`、pane、桌面和插件仍传同一份 `{ v, type, id, corr, t, body }`。新版双方会协商终态结果 ACK：DataChannel 写入成功但 Tool 没收到时，Agent 才会经 WSS 补投一次并关闭坏掉的直连；健康直连的业务数据仍不经过 Worker。旧客户端不协商 ACK，保持原行为。打洞失败、超时或缺少 `rtc_v1` 时，继续回到原来的 Worker → WSS 路径。远程 `/mcp` 和 `/mcp/sse` 运行在 Worker 内，没有 UDP socket，继续走中枢。
+Agent 0.6.1 与本地 `fleet-tool` 0.6.1 会先保留原来的 WSS 控制连接，再尝试建立 WebRTC DataChannel。RTC 信令结束不会取消已建立会话；直连成功后，`run`、pane、桌面和插件仍传同一份 `{ v, type, id, corr, t, body }`。新版双方会协商终态结果 ACK：DataChannel 写入成功但 Tool 没收到时，Agent 才会经 WSS 补投一次并关闭坏掉的直连；健康直连的业务数据仍不经过 Worker。旧客户端不协商 ACK，保持原行为。打洞失败、超时或缺少 `rtc_v1` 时，继续回到原来的 Worker → WSS 路径。远程 `/mcp` 和 `/mcp/sse` 运行在 Worker 内，没有 UDP socket，继续走中枢。
 
 ```mermaid
 flowchart LR
@@ -196,9 +196,9 @@ Mac 可执行：`"/Applications/Fleet Agent.app/Contents/MacOS/FleetAgent" statu
 5. Mac/Windows 填中枢地址（不要带路径）再点连接；Linux 用上面的 `FLEET_URL`。状态变成「已连接」时图标是 `F•`。
 6. 开关打开时 Agent 挡住系统空闲休眠（屏幕仍可锁）。合盖不拦。Linux 用 `systemd-inhibit --what=idle:sleep`。
 7. 选权限（Mac/Windows 设置页或各平台托盘右键）：
-   - **停用**：拒绝 run 和 type（含已有 pane）
-   - **需当面同意**：run 和后续按键都要本机点头
-   - **自动执行**：直接跑。本机还有一条粗过滤，不当安全边界
+   - **停用**：拒绝 run 和 type（含已有 pane），也拒绝插件安装、卸载、task 执行和 peer 会话
+   - **需当面同意**：run、后续按键和插件操作都要在本机点头
+   - **自动执行**：命令和插件操作直接执行，不再弹出插件确认；危险命令策略和插件来源、平台、action/runtime、SHA-256 等硬校验仍然生效
 
 设备只主动连中枢，**设备侧不用开端口、不用公网 IP、不用 VPN**。普通部署那台 Node 机器当然要能被连上（80/443 或你选的端口）。
 
@@ -301,8 +301,8 @@ npm run build
 
 - 设备只出站。家用路由不用做端口映射。
 - Token 走 `Authorization` 头，不要写进 URL。
-- 本机三级权限在设备上执行，中枢改不了。`off` / `ask` 同时管 run 和 type。
-- 危险命令拦截只在设备 Agent 执行。Worker、RTC 和 WSS 都只是传递同一份 Envelope，插件审批也不会被另一条传输绕开。
+- 本机三级权限在设备上执行，中枢改不了。它统一管理 run/type，以及所有插件安装、卸载、task 和 peer 操作；`allow` 只省掉额外点击，不放松危险命令策略和插件来源、action/runtime、SHA-256 等硬校验。
+- 危险命令拦截和插件 permit 决策都只在设备 Agent 执行。Worker、RTC 和 WSS 只是传递同一份 Envelope，换传输不能绕开这套决策。
 - 重置 Token 会先写撤销墓碑并下发签名的 `auth_revoked`，随后断开 WSS。Agent 把它当最高优先级事件，立即关闭全部 DataChannel，旧 Token 不再自动重连。
 - Worker 的 `HUB_TOKEN` 是可选超级操作员。Node 中枢绑公网时必须设 `HUB_TOKEN`（空 token 只能 loopback）。
 - 机器之间互相 ping 不通是正常的：没有内网 overlay。

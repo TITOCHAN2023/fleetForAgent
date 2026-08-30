@@ -886,7 +886,7 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
           [t("macIntelZip"), "FleetAgent-macos-amd64.zip"],
           [t("linux"), "fleet-agent-linux-amd64.tar.gz"],
           [t("linuxArm"), "fleet-agent-linux-arm64.tar.gz"],
-          [t("checksums"), "checksums-0.6.0.txt"],
+          [t("checksums"), "checksums-0.6.1.txt"],
         ];
         return `<section class="card">
           <h3>${t("relTitle")}</h3>
@@ -922,7 +922,7 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
           <div class="wrap">
             <section class="card" style="padding:28px">
               <div class="plugin-head"><div style="max-width:660px"><p class="kicker">Official plugin registry</p><h1 style="max-width:none;font-size:clamp(30px,5vw,44px)">${zh ? "官方收录的开源插件" : "Officially curated open-source plugins"}</h1><p class="lead" style="max-width:650px">${zh ? "每个插件来自注册表仓库中的一个 Markdown 文件。网站、Fleet Tool 和 Hub 使用同一份固定快照。" : "Each plugin comes from one Markdown file in the registry repository. The website, Fleet Tool, and Hub use the same pinned snapshot."}</p></div><a class="btn" href="${esc(source.repository || "https://github.com/TITOCHAN2023/fleet-plugins")}" target="_blank" rel="noreferrer">${zh ? "查看注册表" : "View registry"} ↗</a></div>
-              <div class="plugin-facts"><span>${zh ? "设备端确认" : "Device approval"}</span><span>Release + SHA-256</span><span style="font-family:var(--mono)">${esc((source.commit || "").slice(0, 12))}</span></div>
+              <div class="plugin-facts"><span>${zh ? "遵循设备权限" : "Follows device permit"}</span><span>Release + SHA-256</span><span style="font-family:var(--mono)">${esc((source.commit || "").slice(0, 12))}</span></div>
             </section>
             <div class="plugin-grid">${cards || `<section class="card"><p class="muted">${zh ? "插件注册表暂时不可用。" : "The plugin registry is temporarily unavailable."}</p></section>`}</div>
           </div>`;

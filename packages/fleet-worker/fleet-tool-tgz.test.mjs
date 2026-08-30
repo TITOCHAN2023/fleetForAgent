@@ -26,6 +26,18 @@ function tarballFile(tgz, name) {
   return execFileSync("tar", ["-xOzf", tgz, name], { encoding: "utf8" });
 }
 
+function tarballBytes(tgz, name) {
+  return execFileSync("tar", ["-xOzf", tgz, name], { maxBuffer: 8 << 20 });
+}
+
+function assertPEMachine(tgz, name, machine) {
+  const bytes = tarballBytes(tgz, name);
+  assert.equal(bytes.subarray(0, 2).toString("ascii"), "MZ", `${name} is not a PE executable`);
+  const peOffset = bytes.readUInt32LE(0x3c);
+  assert.equal(bytes.subarray(peOffset, peOffset + 4).toString("binary"), "PE\0\0", `${name} has no PE signature`);
+  assert.equal(bytes.readUInt16LE(peOffset + 4), machine, `${name} has the wrong PE machine`);
+}
+
 function assertNpmTarball(tgz) {
   const buf = readFileSync(tgz);
   assert.equal(buf[0], 0x1f, `${tgz} is not gzip`);
@@ -46,13 +58,18 @@ function assertNpmTarball(tgz) {
     "package/plugin-peer-plugin.mjs",
     "package/plugin-peer-runtime.mjs",
     "package/official-plugins.generated.mjs",
+    "package/bin/fleet-tool-windows-job-host-amd64.exe",
+    "package/bin/fleet-tool-windows-job-host-arm64.exe",
     "package/tokenv1.mjs",
   ]) {
     assert.ok(listing.includes(name), `missing ${name}`);
   }
   const manifest = JSON.parse(tarballFile(tgz, "package/package.json"));
   assert.equal(manifest.name, "fleet-tool");
+  assert.equal(manifest.version, "0.6.1");
   assert.equal(manifest.bin?.["fleet-tool"], "./index.mjs");
+  assertPEMachine(tgz, "package/bin/fleet-tool-windows-job-host-amd64.exe", 0x8664);
+  assertPEMachine(tgz, "package/bin/fleet-tool-windows-job-host-arm64.exe", 0xaa64);
   assert.match(tarballFile(tgz, "package/index.mjs"), /from "\.\/tokenv1\.mjs"/);
   assert.doesNotMatch(tarballFile(tgz, "package/index.mjs"), /\.\.\/fleet-worker/);
 }
@@ -69,6 +86,9 @@ test("packer output matches the committed tarball contents", () => {
     assertNpmTarball(fresh);
     for (const name of ["package/package.json", "package/index.mjs", "package/operator.mjs", "package/mcp-protocol.mjs", "package/file-transfer-cli.mjs", "package/file-transfer-contract.mjs", "package/file-transfer-rtc.mjs", "package/plugin-peer-api.mjs", "package/plugin-peer-plugin.mjs", "package/plugin-peer-runtime.mjs", "package/official-plugins.generated.mjs", "package/tokenv1.mjs"]) {
       assert.equal(tarballFile(publicTgz, name), tarballFile(fresh, name), name);
+    }
+    for (const name of ["package/bin/fleet-tool-windows-job-host-amd64.exe", "package/bin/fleet-tool-windows-job-host-arm64.exe"]) {
+      assert.deepEqual(tarballBytes(publicTgz, name), tarballBytes(fresh, name), name);
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });

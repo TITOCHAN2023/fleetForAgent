@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
+import { createPluginPeerLauncher } from "./plugin-peer-plugin.mjs";
 import { createPluginPeerManager, pluginPeerRuntimeInternals } from "./plugin-peer-runtime.mjs";
 
 const ROUND1 = "815739bb-bca5-48a9-aeee-2c16bbfe11de";
@@ -92,6 +93,7 @@ class FakeHub {
     silentHandshake = false,
     earlyBindings = false,
     updateAt = "",
+    cancelOnFailEvent = false,
     remoteDoneBeforeLocal = false,
     holdPeerDoneBuffer = false,
   } = {}) {
@@ -102,6 +104,7 @@ class FakeHub {
     this.silentHandshake = silentHandshake;
     this.earlyBindings = earlyBindings;
     this.updateAt = updateAt;
+    this.cancelOnFailEvent = cancelOnFailEvent;
     this.remoteDoneBeforeLocal = remoteDoneBeforeLocal;
     this.holdPeerDoneBuffer = holdPeerDoneBuffer;
     this.localPeerDoneSent = false;
@@ -228,6 +231,10 @@ class FakeHub {
     if (pathname.endsWith("/status")) return { session: this.session() };
     if (pathname.endsWith("/authorize")) {
       this.authorized = structuredClone(body);
+      if (this.updateAt === "authorize_cancelled_status_only") {
+        this.phase = "cancelled";
+        return { session: this.session() };
+      }
       if (this.updateAt === "authorize_interrupted") {
         this.pushUpdate("interrupted");
         return { session: this.session() };
@@ -257,6 +264,13 @@ class FakeHub {
     }
     if (pathname.endsWith("/event")) {
       this.events.push({ ...body });
+      if (["completed", "cancelled", "failed", "expired"].includes(this.phase)) {
+        return { session: this.session() };
+      }
+      if (body.event === "fail" && this.cancelOnFailEvent) {
+        this.pushUpdate("cancelled");
+        return { session: this.session() };
+      }
       if (body.event === "active") {
         this.phase = "active";
         this.endpointEvents.source.active = true;
@@ -315,7 +329,7 @@ function peerConnectionClass(hub, { hangClose = false } = {}) {
   };
 }
 
-function fakePlugin(records, counters, cancelGate) {
+function fakePlugin(records, counters, { cancelGate, cancelError, abortGate } = {}) {
   let waiter;
   let stopped = false;
   return {
@@ -332,16 +346,36 @@ function fakePlugin(records, counters, cancelGate) {
       counters.cancel += 1;
       counters.order.push("cancel");
       if (cancelGate) await cancelGate;
+      if (cancelError) throw cancelError;
       stopped = true;
       waiter?.reject(Object.assign(new Error("cancelled"), { code: "cancelled" }));
     },
     async abort() {
       counters.order.push("abort");
       if (!stopped) counters.abort += 1;
+      if (abortGate) await abortGate;
       stopped = true;
       waiter?.reject(Object.assign(new Error("aborted"), { code: "cancelled" }));
     },
   };
+}
+
+function waitGate(gate, signal) {
+  if (!gate) return Promise.resolve();
+  const processCancelled = () => Object.assign(new Error("plugin process aborted"), { code: "cancelled" });
+  if (signal?.aborted) return Promise.reject(processCancelled());
+  return new Promise((resolve, reject) => {
+    const finish = (callback, value) => {
+      signal?.removeEventListener("abort", aborted);
+      callback(value);
+    };
+    const aborted = () => finish(reject, processCancelled());
+    signal?.addEventListener("abort", aborted, { once: true });
+    Promise.resolve(gate).then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error),
+    );
+  });
 }
 
 function managerFor(hub, {
@@ -349,6 +383,9 @@ function managerFor(hub, {
   firstRoundIdle = false,
   completeOnly = false,
   cancelGate,
+  cancelError,
+  abortGate,
+  startupGate,
   hangPeerClose = false,
   totalMs = 10_000,
   cancelMs,
@@ -363,7 +400,8 @@ function managerFor(hub, {
     verifyTokenV1: async () => ({ pub: "pub", kid: "kid-1" }),
     verifyFleetStatement: async ({ ticket }) => ticket,
     launchPlugin: async (args) => {
-      launchArgs.push(structuredClone(args));
+      const { onProcess, ...serializableArgs } = args;
+      launchArgs.push(structuredClone(serializableArgs));
       const counter = { abort: 0, cancel: 0, fromPeer: [], order: [] };
       counters.push(counter);
       launch += 1;
@@ -372,7 +410,14 @@ function managerFor(hub, {
         : launch === 1 && hub.interruptFirstRound
         ? [{ kind: "data", data: Buffer.from("first") }]
         : [{ kind: "data", data: Buffer.from("resumed") }, { kind: "control", control: { status: "complete", result: { ok: true } } }];
-      return fakePlugin(records, counter, cancelGate);
+      const plugin = fakePlugin(records, counter, {
+        cancelGate: typeof cancelGate === "function" ? cancelGate(launch) : cancelGate,
+        cancelError: typeof cancelError === "function" ? cancelError(launch) : cancelError,
+        abortGate: typeof abortGate === "function" ? abortGate(launch) : abortGate,
+      });
+      await onProcess?.(plugin);
+      await waitGate(startupGate, args.signal);
+      return plugin;
     },
     runtime: {
       loadPeerConnection: async () => peerConnectionClass(hub, { hangClose: hangPeerClose }),
@@ -531,6 +576,89 @@ test("same session resumes on a fresh immutable round after DATA interruption", 
   assert.equal(hub.lostAckResponse, true, "delivery ACK retry path was not exercised");
 });
 
+test("Hub cancel waits through retained Abort and cancels the fresh provisional owner", async () => {
+  const hub = new FakeHub({ interruptFirstRound: true, loseCreateResponse: false });
+  let releaseRetainedAbort;
+  let releaseReplacementCancel;
+  const retainedAbortGate = new Promise((resolve) => { releaseRetainedAbort = resolve; });
+  const replacementCancelGate = new Promise((resolve) => { releaseReplacementCancel = resolve; });
+  const { manager, counters } = managerFor(hub, {
+    abortGate: (launch) => launch === 1 ? retainedAbortGate : null,
+    cancelGate: (launch) => launch === 2 ? replacementCancelGate : null,
+  });
+  const started = await manager.start({ protocol: PROTOCOL, initiator: "source", source: SOURCE, target: TARGET });
+  const row = manager._rows.get(started.session_id);
+  const waiting = manager.wait(started.session_id);
+  const abortDeadline = Date.now() + 2000;
+  while ((counters[0]?.abort || 0) !== 1 && Date.now() < abortDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(counters[0]?.abort, 1, "fresh round never started retiring the interrupted plugin");
+
+  hub.pushUpdate("cancelled");
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(counters.length, 1, "replacement launched before retained Abort completed");
+  assert.equal(row.abort.signal.aborted, false, "Hub cancel aborted the fresh transition before replacement ownership");
+
+  releaseRetainedAbort();
+  const cancelDeadline = Date.now() + 2000;
+  while ((counters[1]?.cancel || 0) !== 1 && Date.now() < cancelDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(counters[1]?.cancel, 1, "fresh provisional plugin never received FLPP cancel");
+  assert.equal(counters[0].cancel, 0, "already-retiring plugin incorrectly received FLPP cancel");
+  assert.equal(row.abort.signal.aborted, false, "fresh transition was aborted before provisional Cancel settled");
+  assert.ok(
+    [...hub.deliveries.values()].some((item) => item.type === "peer_session_update" && item.body.phase === "cancelled"),
+    "Hub cancellation was ACKed before the replacement applied FLPP cancel",
+  );
+
+  releaseReplacementCancel();
+  const result = await waiting;
+  assert.equal(result.local.phase, "cancelled", JSON.stringify(result));
+  assert.equal(counters[1].cancel, 1);
+  assert.equal(
+    [...hub.deliveries.values()].some((item) => item.type === "peer_session_update" && item.body.phase === "cancelled"),
+    false,
+    "Hub cancellation remained after replacement cancellation was applied",
+  );
+});
+
+test("fresh replacement cancel failure is force-cleaned and does not ACK Hub cancellation", async () => {
+  const hub = new FakeHub({ interruptFirstRound: true, loseCreateResponse: false });
+  let releaseRetainedAbort;
+  const retainedAbortGate = new Promise((resolve) => { releaseRetainedAbort = resolve; });
+  const replacementError = Object.assign(new Error("replacement rejected cancel"), { code: "plugin_protocol" });
+  const { manager, counters } = managerFor(hub, {
+    abortGate: (launch) => launch === 1 ? retainedAbortGate : null,
+    cancelError: (launch) => launch === 2 ? replacementError : null,
+    cancelMs: 1000,
+  });
+  const started = await manager.start({ protocol: PROTOCOL, initiator: "source", source: SOURCE, target: TARGET });
+  const waiting = manager.wait(started.session_id);
+  const abortDeadline = Date.now() + 2000;
+  while ((counters[0]?.abort || 0) !== 1 && Date.now() < abortDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(counters[0]?.abort, 1);
+
+  hub.pushUpdate("cancelled");
+  const cancelObservedDeadline = Date.now() + 2000;
+  while (!manager._rows.get(started.session_id)?.cancelRequested && Date.now() < cancelObservedDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(manager._rows.get(started.session_id)?.cancelRequested, true, "fresh transition did not observe Hub cancellation");
+  releaseRetainedAbort();
+  await assert.rejects(() => waiting, (error) => error?.code === "cancel_unapplied");
+  assert.equal(counters[0].cancel, 0);
+  assert.equal(counters[1].cancel, 1);
+  assert.equal(counters[1].abort, 1, "failed replacement cancel skipped forced cleanup");
+  assert.ok(
+    [...hub.deliveries.values()].some((item) => item.type === "peer_session_update" && item.body.phase === "cancelled"),
+    "Hub cancellation was ACKed without a replacement cancellation receipt",
+  );
+});
+
 test("an active round resumes when the channel closes before its first DATA frame", async () => {
   const hub = new FakeHub({ interruptFirstRound: false, loseCreateResponse: false });
   const { manager, launches } = managerFor(hub, { firstRoundIdle: true });
@@ -547,6 +675,295 @@ test("an active round resumes when the channel closes before its first DATA fram
   assert.equal(launches(), 2);
   assert.equal(hub.events.filter((value) => value.event === "interrupt").length, 1);
   assert.deepEqual(hub.received.map(({ roundId, data }) => [roundId, data.toString()]), [[ROUND2, "resumed"]]);
+});
+
+test("Hub cancel racing an interrupted channel retains FLPP until cleanup then ACKs", async () => {
+  const hub = new FakeHub({ interruptFirstRound: false, loseCreateResponse: false });
+  let releaseCancel;
+  const cancelGate = new Promise((resolve) => { releaseCancel = resolve; });
+  const { manager, counters } = managerFor(hub, { idle: true, cancelGate });
+  const started = await manager.start({ protocol: PROTOCOL, initiator: "source", source: SOURCE, target: TARGET });
+  const row = manager._rows.get(started.session_id);
+  const deadline = Date.now() + 2000;
+  while (row.phase !== "active" && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(row.phase, "active");
+
+  hub.channels[0].readyState = "closed";
+  hub.channels[0].onclose?.();
+  hub.pushUpdate("cancelled");
+  const cancelStarted = Date.now() + 2000;
+  while (counters[0].cancel !== 1 && Date.now() < cancelStarted) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(counters[0].cancel, 1, "retained interrupted plugin never received FLPP cancel");
+  assert.ok(
+    [...hub.deliveries.values()].some((item) => item.type === "peer_session_update" && item.body.phase === "cancelled"),
+    "Hub cancel delivery was ACKed before gated local cleanup",
+  );
+  assert.equal(counters[0].abort, 0, "interruption aborted the plugin before cancellation won");
+
+  releaseCancel();
+  const result = await manager.wait(started.session_id);
+  assert.equal(result.local.phase, "cancelled", JSON.stringify(result));
+  assert.equal(counters[0].cancel, 1);
+  assert.deepEqual(counters[0].order.slice(0, 2), ["cancel", "abort"]);
+  assert.equal(
+    [...hub.deliveries.values()].some((item) => item.type === "peer_session_update" && item.body.phase === "cancelled"),
+    false,
+    "terminal delivery remained after local cleanup",
+  );
+});
+
+test("status-only Hub cancellation before active still gracefully cancels FLPP", async () => {
+  const hub = new FakeHub({
+    interruptFirstRound: false,
+    loseCreateResponse: false,
+    updateAt: "authorize_cancelled_status_only",
+  });
+  const { manager, counters } = managerFor(hub, { idle: true });
+  const started = await manager.start({ protocol: PROTOCOL, initiator: "source", source: SOURCE, target: TARGET });
+  const result = await manager.wait(started.session_id);
+  assert.equal(result.local.phase, "cancelled", JSON.stringify(result));
+  assert.equal(counters[0].cancel, 1);
+  assert.deepEqual(counters[0].order.slice(0, 2), ["cancel", "abort"]);
+});
+
+test("local and Hub cancellation await one shared plugin cleanup", async () => {
+  const hub = new FakeHub({ interruptFirstRound: false, loseCreateResponse: false });
+  let releaseCancel;
+  const cancelGate = new Promise((resolve) => { releaseCancel = resolve; });
+  const { manager, counters } = managerFor(hub, { idle: true, cancelGate });
+  const started = await manager.start({ protocol: PROTOCOL, initiator: "source", source: SOURCE, target: TARGET });
+  const row = manager._rows.get(started.session_id);
+  const deadline = Date.now() + 2000;
+  while (row.phase !== "active" && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(row.phase, "active");
+
+  const localCancel = manager.cancel(started.session_id);
+  hub.pushUpdate("cancelled");
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(counters[0].cancel, 1, "concurrent cancellation invoked FLPP cancel twice");
+  assert.equal(counters[0].abort, 0, "shared cancellation was force-aborted before its gate released");
+  assert.ok(
+    [...hub.deliveries.values()].some((item) => item.type === "peer_session_update" && item.body.phase === "cancelled"),
+    "concurrent Hub delivery was ACKed before shared cleanup",
+  );
+
+  releaseCancel();
+  await localCancel;
+  await row.done;
+  assert.equal(counters[0].cancel, 1);
+  assert.deepEqual(counters[0].order.slice(0, 2), ["cancel", "abort"]);
+});
+
+test("a Hub cancel that wins a local protocol-failure race is applied before ACK", async () => {
+  const hub = new FakeHub({
+    interruptFirstRound: false,
+    loseCreateResponse: false,
+    badTicket: true,
+    cancelOnFailEvent: true,
+  });
+  const { manager, counters } = managerFor(hub, { idle: true });
+  const started = await manager.start({ protocol: PROTOCOL, initiator: "source", source: SOURCE, target: TARGET });
+  const result = await manager.wait(started.session_id);
+
+  assert.equal(result.local.phase, "cancelled", JSON.stringify(result));
+  assert.equal(counters[0].cancel, 1, "cancelled delivery was reconciled without FLPP Cancel");
+  assert.equal(counters[0].abort, 0, "local failure aborted the plugin before the Hub decision");
+  assert.deepEqual(counters[0].order.slice(0, 2), ["cancel", "abort"]);
+  assert.equal(
+    [...hub.deliveries.values()].some((item) => item.type === "peer_session_update" && item.body.phase === "cancelled"),
+    false,
+    "cancelled delivery remained after its graceful cleanup and ACK",
+  );
+});
+
+test("Hub cancellation reaches a provisional plugin that is waiting for ready", async () => {
+  const hub = new FakeHub({ interruptFirstRound: false, loseCreateResponse: false });
+  let releaseCancel;
+  let releaseStartup;
+  const cancelGate = new Promise((resolve) => { releaseCancel = resolve; });
+  const startupGate = new Promise((resolve) => { releaseStartup = resolve; });
+  const { manager, counters } = managerFor(hub, { idle: true, cancelGate, startupGate });
+  const started = await manager.start({ protocol: PROTOCOL, initiator: "source", source: SOURCE, target: TARGET });
+  const provisionalDeadline = Date.now() + 2000;
+  while (counters.length !== 1 && Date.now() < provisionalDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(counters.length, 1, "test launcher never exposed its provisional process");
+
+  hub.pushUpdate("cancelled");
+  const cancelDeadline = Date.now() + 2000;
+  while (counters[0].cancel !== 1 && Date.now() < cancelDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(counters[0].cancel, 1, "Hub watcher waited for plugin ready before FLPP cancel");
+  assert.ok(
+    [...hub.deliveries.values()].some((item) => item.type === "peer_session_update" && item.body.phase === "cancelled"),
+    "provisional cancellation was ACKed before cleanup completed",
+  );
+  assert.equal(counters[0].abort, 0, "provisional plugin was aborted before graceful cancellation");
+
+  releaseCancel();
+  releaseStartup();
+  const result = await manager.wait(started.session_id);
+  assert.equal(result.local.phase, "cancelled", JSON.stringify(result));
+  assert.equal(counters[0].cancel, 1);
+  assert.equal(counters[0].abort, 0);
+  assert.equal(
+    [...hub.deliveries.values()].some((item) => item.type === "peer_session_update" && item.body.phase === "cancelled"),
+    false,
+    "provisional cancelled delivery remained after cleanup and ACK",
+  );
+});
+
+for (const terminal of [
+  { phase: "failed", failureCode: "FAILED", remoteCode: "REMOTE_PLUGIN_FAILED", error: /REMOTE_PLUGIN_FAILED/ },
+  { phase: "expired", failureCode: "EXPIRED", remoteCode: "SESSION_EXPIRED", error: /SESSION_EXPIRED/ },
+  { phase: "completed", failureCode: "PEER_PROTOCOL", remoteCode: "", error: /Hub completed before/ },
+]) {
+  test(`Hub ${terminal.phase} aborts an open-written provisional plugin without waiting for ready`, async () => {
+    const hub = new FakeHub({ interruptFirstRound: false, loseCreateResponse: false });
+    const neverReady = new Promise(() => {});
+    const { manager, counters } = managerFor(hub, {
+      idle: true,
+      startupGate: neverReady,
+      cancelMs: 100,
+    });
+    const started = await manager.start({ protocol: PROTOCOL, initiator: "source", source: SOURCE, target: TARGET });
+    const row = manager._rows.get(started.session_id);
+    const provisionalDeadline = Date.now() + 2000;
+    while (counters.length !== 1 && Date.now() < provisionalDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(counters.length, 1, "launcher never exposed its provisional process");
+
+    const began = Date.now();
+    hub.pushUpdate(terminal.phase, terminal.remoteCode);
+    const result = await manager.wait(started.session_id);
+    assert.ok(Date.now() - began < 500, `${terminal.phase} waited for the never-ready launcher`);
+    assert.equal(result.local.phase, "failed", JSON.stringify(result));
+    assert.equal(result.local.failure_code, terminal.failureCode, JSON.stringify(result));
+    assert.match(result.local.error, terminal.error, "local process cancellation replaced the authoritative Hub terminal error");
+    assert.doesNotMatch(result.local.error, /plugin process aborted/);
+    assert.equal(counters[0].cancel, 0);
+    assert.equal(counters[0].abort, 1, "provisional process did not receive Abort");
+    assert.equal(row.io.signal.aborted, true, "terminal cleanup did not stop the launcher signal");
+    assert.equal(
+      [...hub.deliveries.values()].some((item) => item.type === "peer_session_update" && item.body.phase === terminal.phase),
+      false,
+      `${terminal.phase} delivery remained after bounded local cleanup`,
+    );
+  });
+}
+
+test("Hub terminal ACK cannot be followed by a late resolver spawn", async () => {
+  const { mkdtemp } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const path = await import("node:path");
+  const root = await mkdtemp(path.join(tmpdir(), "fleet-peer-late-resolver-"));
+  const hub = new FakeHub({ interruptFirstRound: false, loseCreateResponse: false });
+  let releaseResolver;
+  const resolverGate = new Promise((resolve) => { releaseResolver = resolve; });
+  let markResolverStarted;
+  const resolverStarted = new Promise((resolve) => { markResolverStarted = resolve; });
+  let resolverSignal;
+  let spawns = 0;
+  const launchPlugin = createPluginPeerLauncher({
+    resolve: async (_pluginId, _protocol, _role, options) => {
+      resolverSignal = options.signal;
+      markResolverStarted();
+      await resolverGate;
+      return {
+        path: path.join(root, "must-not-spawn"),
+        action: "source",
+        dataDir: path.join(root, "data"),
+      };
+    },
+    spawnImpl: () => { spawns += 1; throw new Error("late spawn escaped terminal cleanup"); },
+  });
+  const manager = createPluginPeerManager({
+    hubPost: hub.post.bind(hub),
+    token: "token",
+    operatorId: OPERATOR,
+    verifyTokenV1: async () => ({ pub: "pub", kid: "kid-1" }),
+    verifyFleetStatement: async ({ ticket }) => ticket,
+    launchPlugin,
+    runtime: {
+      loadPeerConnection: async () => peerConnectionClass(hub),
+      randomBytes: () => Buffer.alloc(32, 0x40),
+      connectMs: 50,
+      maxRounds: 3,
+      totalMs: 10_000,
+      cancelMs: 100,
+    },
+  });
+  try {
+    const started = await manager.start({ protocol: PROTOCOL, initiator: "source", source: SOURCE, target: TARGET });
+    await resolverStarted;
+    hub.pushUpdate("failed", "REMOTE_PLUGIN_FAILED");
+    const result = await manager.wait(started.session_id);
+    assert.equal(result.local.phase, "failed", JSON.stringify(result));
+    assert.equal(result.local.failure_code, "FAILED", JSON.stringify(result));
+    assert.equal(resolverSignal.aborted, true, "terminal cleanup did not cancel the pending resolver");
+    assert.equal(spawns, 0);
+    assert.equal(
+      [...hub.deliveries.values()].some((item) => item.type === "peer_session_update" && item.body.phase === "failed"),
+      false,
+      "Hub terminal delivery was not ACKed before the late-resolver check",
+    );
+
+    releaseResolver();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(spawns, 0, "resolver spawned a plugin after terminal cleanup and ACK");
+  } finally {
+    releaseResolver?.();
+  }
+});
+
+test("rejected plugin cancel is force-cleaned and leaves durable Hub cancellation unacknowledged", async () => {
+  const hub = new FakeHub({ interruptFirstRound: false, loseCreateResponse: false });
+  const rejection = Object.assign(new Error("plugin rejected cancel"), { code: "plugin_protocol" });
+  const { manager, counters } = managerFor(hub, { idle: true, cancelError: rejection, cancelMs: 100 });
+  const started = await manager.start({ protocol: PROTOCOL, initiator: "source", source: SOURCE, target: TARGET });
+  const row = manager._rows.get(started.session_id);
+  const deadline = Date.now() + 2000;
+  while (row.phase !== "active" && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(row.phase, "active");
+
+  hub.pushUpdate("cancelled");
+  await assert.rejects(
+    () => manager.wait(started.session_id),
+    (error) => error?.code === "cancel_unapplied",
+  );
+  assert.equal(counters[0].cancel, 1);
+  assert.equal(counters[0].abort, 1, "cancel rejection skipped forced process cleanup");
+  assert.deepEqual(counters[0].order.slice(0, 2), ["cancel", "abort"]);
+  assert.ok(
+    [...hub.deliveries.values()].some((item) => item.type === "peer_session_update" && item.body.phase === "cancelled"),
+    "durable cancellation was ACKed even though FLPP cancel was rejected",
+  );
+});
+
+test("timed-out plugin cancel is force-cleaned and leaves durable Hub cancellation unacknowledged", async () => {
+  const hub = new FakeHub({ interruptFirstRound: false, loseCreateResponse: false });
+  const never = new Promise(() => {});
+  const { manager, counters } = managerFor(hub, { idle: true, cancelGate: never, cancelMs: 80 });
+  const started = await manager.start({ protocol: PROTOCOL, initiator: "source", source: SOURCE, target: TARGET });
+  const row = manager._rows.get(started.session_id);
+  const deadline = Date.now() + 2000;
+  while (row.phase !== "active" && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(row.phase, "active");
+
+  hub.pushUpdate("cancelled");
+  await assert.rejects(
+    () => manager.wait(started.session_id),
+    (error) => error?.code === "cancel_unapplied",
+  );
+  assert.equal(counters[0].cancel, 1);
+  assert.equal(counters[0].abort, 1, "cancel timeout skipped forced process cleanup");
+  assert.ok(
+    [...hub.deliveries.values()].some((item) => item.type === "peer_session_update" && item.body.phase === "cancelled"),
+    "durable cancellation was ACKed after FLPP cancel timed out",
+  );
 });
 
 test("local peer_done drains before Hub completion when the remote half closes first", async () => {
@@ -766,7 +1183,7 @@ test("AbortSignal interrupts an in-flight wait status request before bounded rem
   assert.equal(statusCalls, 2);
 });
 
-test("a plugin that never finishes graceful cancel is force-aborted within the cancel budget", async () => {
+test("a plugin cancel timeout is force-aborted and reported as unapplied", async () => {
   const hub = new FakeHub({ interruptFirstRound: false, loseCreateResponse: false });
   const never = new Promise(() => {});
   const { manager, counters } = managerFor(hub, { idle: true, cancelGate: never, cancelMs: 80 });
@@ -777,9 +1194,12 @@ test("a plugin that never finishes graceful cancel is force-aborted within the c
   assert.equal(row.phase, "active", `local=${row.phase} hub=${hub.phase}`);
 
   const began = Date.now();
-  await manager.cancel(started.session_id);
+  await assert.rejects(
+    () => manager.cancel(started.session_id),
+    (error) => error?.code === "cancel_unapplied",
+  );
   assert.ok(Date.now() - began < 500, "cancel exceeded its hard budget");
-  await row.done;
+  await assert.rejects(() => row.done, (error) => error?.code === "cancel_unapplied");
   assert.equal(counters[0].cancel, 1);
   assert.equal(counters[0].abort, 1);
   assert.deepEqual(counters[0].order.slice(0, 2), ["cancel", "abort"]);
@@ -801,6 +1221,51 @@ test("a peer connection that never closes cannot block the authoritative Hub can
   await row.done;
   assert.equal(hub.phase, "cancelled");
   assert.equal(row.cancelEventSent, true);
+});
+
+test("runtime shutdown joins cleanup already claimed by a terminal Hub cancellation", async () => {
+  const hub = new FakeHub({ interruptFirstRound: false, loseCreateResponse: false });
+  let releaseCancel;
+  const cancelGate = new Promise((resolve) => { releaseCancel = resolve; });
+  const { manager, counters } = managerFor(hub, { idle: true, cancelGate, cancelMs: 500 });
+  const started = await manager.start({ protocol: PROTOCOL, initiator: "source", source: SOURCE, target: TARGET });
+  const row = manager._rows.get(started.session_id);
+  let deadline = Date.now() + 2000;
+  while (row.phase !== "active" && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(row.phase, "active", `local=${row.phase} hub=${hub.phase}`);
+
+  hub.pushUpdate("cancelled");
+  deadline = Date.now() + 2000;
+  while ((row.phase !== "cancelled" || counters[0]?.cancel !== 1) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(row.phase, "cancelled");
+  assert.equal(counters[0]?.cancel, 1);
+
+  let settled = false;
+  const stopping = manager.shutdown().finally(() => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(settled, false, "shutdown returned while terminal cancellation cleanup was still running");
+
+  releaseCancel();
+  await stopping;
+  await row.done;
+  assert.equal(counters[0].cancel, 1);
+});
+
+test("runtime shutdown hard-bounds a terminal row whose cleanup never settles", async () => {
+  const hub = new FakeHub({ interruptFirstRound: false, loseCreateResponse: false });
+  const { manager } = managerFor(hub, { cancelMs: 60 });
+  manager._rows.set("4ecf761e-eb10-4ffc-af0e-5bd10be51de2", {
+    phase: "cancelled",
+    done: new Promise(() => {}),
+  });
+
+  const began = Date.now();
+  await manager.shutdown();
+  const elapsed = Date.now() - began;
+  assert.ok(elapsed >= 40, `shutdown skipped terminal cleanup instead of waiting for its bound (${elapsed}ms)`);
+  assert.ok(elapsed < 500, `shutdown exceeded its hard bound (${elapsed}ms)`);
 });
 
 test("runtime shutdown aborts a Hub poll that otherwise never settles", async () => {

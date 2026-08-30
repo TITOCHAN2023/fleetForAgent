@@ -14,6 +14,7 @@ import { execFileSync } from "node:child_process";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TOOL_DIR = join(ROOT, "packages/fleet-tool");
 const TOKEN_SRC = join(ROOT, "packages/fleet-worker/src/tokenv1.mjs");
+const WINDOWS_JOB_HOST_DIR = join(TOOL_DIR, "windows-job-host");
 export const DEFAULT_OUT = join(ROOT, "packages/fleet-worker/public/fleet-tool.tgz");
 
 const WORKER_IMPORT = 'from "../fleet-worker/src/tokenv1.mjs"';
@@ -30,6 +31,36 @@ export function rewriteToolIndex(src) {
     throw new Error(`packages/fleet-tool/index.mjs must import tokenv1 via ${WORKER_IMPORT}`);
   }
   return src.replaceAll(WORKER_IMPORT, PACKED_IMPORT);
+}
+
+function buildWindowsJobHosts(stage) {
+  const bin = join(stage, "bin");
+  mkdirSync(bin, { recursive: true });
+  for (const arch of ["amd64", "arm64"]) {
+    execFileSync(
+      "go",
+      [
+        "build",
+        "-buildvcs=false",
+        "-trimpath",
+        "-ldflags=-s -w -buildid=",
+        "-o",
+        join(bin, `fleet-tool-windows-job-host-${arch}.exe`),
+        ".",
+      ],
+      {
+        cwd: WINDOWS_JOB_HOST_DIR,
+        env: {
+          ...process.env,
+          CGO_ENABLED: "0",
+          GOOS: "windows",
+          GOARCH: arch,
+          GOCACHE: process.env.FLEET_TOOL_GO_CACHE || join(tmpdir(), "fleet-tool-go-build-cache"),
+        },
+        stdio: "inherit",
+      },
+    );
+  }
 }
 
 export function packFleetTool({ outFile = DEFAULT_OUT } = {}) {
@@ -51,6 +82,7 @@ export function packFleetTool({ outFile = DEFAULT_OUT } = {}) {
       "official-plugins.generated.mjs",
     ];
     for (const module of modules) cpSync(join(TOOL_DIR, module), join(stage, module));
+    buildWindowsJobHosts(stage);
     cpSync(TOKEN_SRC, join(stage, "tokenv1.mjs"));
     cpSync(join(TOOL_DIR, "README.md"), join(stage, "README.md"));
     writeFileSync(
@@ -63,7 +95,14 @@ export function packFleetTool({ outFile = DEFAULT_OUT } = {}) {
           type: "module",
           bin: { "fleet-tool": "./index.mjs" },
           dependencies: { werift: "0.24.4" },
-          files: ["index.mjs", ...modules, "tokenv1.mjs", "README.md"],
+          files: [
+            "index.mjs",
+            ...modules,
+            "bin/fleet-tool-windows-job-host-amd64.exe",
+            "bin/fleet-tool-windows-job-host-arm64.exe",
+            "tokenv1.mjs",
+            "README.md",
+          ],
         },
         null,
         2,

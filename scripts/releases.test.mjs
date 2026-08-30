@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -102,15 +103,28 @@ test("linux tarballs are clean root-owned ustar archives", () => {
   }
 });
 
-test("checksums cover every installer", () => {
-  const txt = readFileSync(join(dl, "checksums.txt"), "utf8");
-  for (const name of [
+test("checksums exactly cover and verify every installer", () => {
+  const expected = [
     "FleetAgent-windows-amd64.exe",
+    "FleetAgent-windows-arm64.exe",
     "FleetAgent-macos-arm64.dmg",
     "FleetAgent-macos-amd64.dmg",
+    "FleetAgent-macos-arm64.zip",
+    "FleetAgent-macos-amd64.zip",
     "fleet-agent-linux-amd64.tar.gz",
     "fleet-agent-linux-arm64.tar.gz",
-  ]) {
-    assert.ok(txt.includes(name), name);
+  ];
+  const entries = readFileSync(join(dl, "checksums.txt"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => {
+      const match = line.match(/^([0-9a-f]{64})\s+\*?(.+)$/);
+      assert.ok(match, `invalid checksum line: ${line}`);
+      return { hash: match[1], name: match[2] };
+    });
+  assert.deepEqual(entries.map(({ name }) => name).sort(), expected.sort());
+  for (const { hash, name } of entries) {
+    const actual = createHash("sha256").update(readFileSync(join(dl, name))).digest("hex");
+    assert.equal(actual, hash, name);
   }
 });

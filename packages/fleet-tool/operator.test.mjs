@@ -985,8 +985,8 @@ test("applyCliDevFlag sets FLEET_DEV and strips --dev", () => {
   assert.equal(isFleetDev({}), false);
 });
 
-test("MCP version is 0.6.0", () => {
-  assert.equal(FLEET_VERSION, "0.6.0");
+test("MCP version is 0.6.1", () => {
+  assert.equal(FLEET_VERSION, "0.6.1");
 });
 
 test("official plugin registry pins every platform artifact to SHA-256", () => {

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestInputVerdictOffAndAskAndAllow(t *testing.T) {
@@ -35,6 +37,35 @@ func TestInputVerdictOffAndAskAndAllow(t *testing.T) {
 	v, msg = a.inputVerdict()
 	if v != permitRefuse {
 		t.Fatalf("disabled allow should refuse, v=%v msg=%q", v, msg)
+	}
+}
+
+func TestPermitOffRejectsAndClearsPendingRun(t *testing.T) {
+	replies := make(chan Envelope, 1)
+	a := &Agent{
+		enabled: true, permit: PermitAsk, cfgPath: t.TempDir() + "/config.json",
+		pending: &Pending{
+			Kind: pendingKindRun, Corr: "pending-run", Command: "printf safe",
+			Sink: func(_ context.Context, env Envelope) error {
+				replies <- env
+				return nil
+			},
+		},
+	}
+	a.setPermit(PermitOff)
+	select {
+	case env := <-replies:
+		if env.Type != "result" || env.Body["ok"] != false || !strings.Contains(env.Body["error"].(string), "permit=off") {
+			t.Fatalf("pending run rejection=%#v", env)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("permit=off did not reject pending run")
+	}
+	a.mu.Lock()
+	pending := a.pending
+	a.mu.Unlock()
+	if pending != nil {
+		t.Fatalf("permit=off retained pending run=%#v", pending)
 	}
 }
 

@@ -28,7 +28,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
-var agentVersion = "0.6.0"
+var agentVersion = "0.6.1"
 
 //go:embed ui/index.html
 var uiHTML []byte
@@ -162,6 +162,10 @@ type Agent struct {
 	peerSessions        map[string]*pluginPeerSession
 	peerDeliveries      map[string]struct{}
 	peerDeliveryOrder   []string
+	peerCancelReceipts  map[string]struct{}
+	peerCancelOrder     []string
+	peerCancelRecovery  map[string]*pluginPeerSession
+	peerRecoveryOrder   []string
 	hb                  time.Duration
 	restarting          bool
 	autoUpdate          bool
@@ -351,6 +355,7 @@ func (a *Agent) setEnabled(on bool) {
 
 func (a *Agent) setPermit(p Permit) {
 	var peerSessions []*pluginPeerSession
+	var pending *Pending
 	a.mu.Lock()
 	if p == PermitOff || p == PermitAsk || p == PermitAllow {
 		a.permit = p
@@ -361,6 +366,8 @@ func (a *Agent) setPermit(p Permit) {
 		a.lastDigest = ""
 		a.log("info", "permit → "+string(p))
 		if p == PermitOff {
+			pending = a.pending
+			a.pending = nil
 			peerSessions = a.takePluginPeersLocked()
 		}
 		a.save()
@@ -368,7 +375,10 @@ func (a *Agent) setPermit(p Permit) {
 	ws := a.ws
 	a.mu.Unlock()
 	if len(peerSessions) > 0 {
-		cancelPluginPeers(peerSessions)
+		rejectPluginPeers(peerSessions, "DEVICE_DISABLED")
+	}
+	if pending != nil && pending.Kind != pendingKindPluginPeer {
+		rejectPending(pending, errors.New("fleet: permit=off — 本机不允许执行"))
 	}
 	a.pushUI()
 	if ws != nil {
@@ -1024,22 +1034,35 @@ func (a *Agent) deny() {
 	p := a.pending
 	a.pending = nil
 	a.mu.Unlock()
-	if p == nil || p.Sink == nil {
+	rejectPending(p, errors.New("fleet: denied at the machine"))
+	if p == nil {
 		return
-	}
-	if p.Peer != nil {
-		p.Peer.deny(errors.New("fleet: denied at the machine"))
-	} else if p.Kind == pendingKindPlugin {
-		_ = p.Sink(context.Background(), pluginResultEnv(p.Corr, nil, errors.New("fleet: denied at the machine")))
-	} else if p.Kind == pendingKindType {
-		_ = p.Sink(context.Background(), typedEnv(p.Corr, false, "fleet: denied at the machine"))
-	} else {
-		_ = p.Sink(context.Background(), resultEnv(p.Corr, false, 1, "", "fleet: denied at the machine"))
 	}
 	a.mu.Lock()
 	a.log("warn", "denied: "+p.Command)
 	a.mu.Unlock()
 	a.pushUI()
+}
+
+func rejectPending(p *Pending, err error) {
+	if p == nil || p.Sink == nil {
+		return
+	}
+	if p.Peer != nil {
+		p.Peer.deny(err)
+	} else if p.Kind == pendingKindPlugin {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = p.Sink(ctx, pluginResultEnv(p.Corr, nil, err))
+	} else if p.Kind == pendingKindType {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = p.Sink(ctx, typedEnv(p.Corr, false, err.Error()))
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = p.Sink(ctx, resultEnv(p.Corr, false, 1, "", err.Error()))
+	}
 }
 
 func listenSettings(addr string) (net.Listener, error) {

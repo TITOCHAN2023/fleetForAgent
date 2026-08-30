@@ -16,14 +16,14 @@ summary: Fleet 加了点对点数据通道，但控制连接、撤销能力和�
 
 Agent 里也只留一个业务入口。WSS 收到消息，交给 `dispatchEnvelope`。DataChannel 收到消息，还是交给它。命令执行、pane、桌面控制和插件最后都从同一个 `EnvelopeSink` 回信。
 
-这件事看着不够新鲜，却最要紧。插件安装本来要求设备旁的人确认，换成 RTC 以后还得确认。危险命令本来由设备拦，换成 RTC 以后仍然在同一个位置拦。若为直连复制一遍 handler，迟早会有一个分支少掉检查。
+这件事看着不够新鲜，却最要紧。插件安装继续服从设备权限：停用就拒绝，逐次确认才等设备旁的人点击，自动执行则不再多弹一次插件确认。危险命令本来由设备拦，换成 RTC 以后仍然在同一个位置拦。若为直连复制一遍 handler，迟早会有一个分支少掉检查。
 
 ```mermaid
 flowchart LR
   W["WSS Envelope"] --> D["同一个 dispatchEnvelope"]
   R["RTC Envelope"] --> D
   D --> S["shell 和 pane"]
-  D --> P["插件与本机审批"]
+  D --> P["插件与设备权限"]
   D --> C["桌面控制"]
 ```
 

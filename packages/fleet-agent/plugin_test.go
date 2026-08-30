@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -68,6 +70,11 @@ func TestValidateOfficialManifest(t *testing.T) {
 	m.ApprovalActions = []string{"undeclared"}
 	if _, err := validateOfficialManifest(m); err == nil {
 		t.Fatal("undeclared approval action accepted")
+	}
+	m = testManifest()
+	m.ID += " "
+	if _, err := validateOfficialManifest(m); err == nil {
+		t.Fatal("non-canonical plugin id accepted")
 	}
 }
 
@@ -162,20 +169,6 @@ func TestPluginConsentExplainsACPAction(t *testing.T) {
 	}
 }
 
-func TestSoftwareChangesAlwaysAsk(t *testing.T) {
-	a := &Agent{enabled: true, permit: PermitAllow}
-	if v, _ := a.inputVerdict(); v != permitProceed {
-		t.Fatalf("baseline verdict=%v", v)
-	}
-	// handlePlugin upgrades proceed to ask for install/uninstall; the invariant is
-	// represented independently here so permit=allow stays valid for invocations.
-	for _, op := range []string{"install", "uninstall"} {
-		if !pluginSoftwareChange(op) {
-			t.Fatalf("%s should be a software change", op)
-		}
-	}
-}
-
 func installPluginTestBinary(t *testing.T) installedPlugin {
 	t.Helper()
 	home := t.TempDir()
@@ -241,6 +234,312 @@ func installPluginTestBinary(t *testing.T) installedPlugin {
 	return meta
 }
 
+func receivePluginEnvelope(t *testing.T, replies <-chan Envelope) Envelope {
+	t.Helper()
+	select {
+	case env := <-replies:
+		return env
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for plugin response")
+		return Envelope{}
+	}
+}
+
+func pluginInvokeEnvelope() Envelope {
+	return Envelope{V: 1, Type: "plugin", Corr: "plugin-permit-test", Body: map[string]any{
+		"operation": "invoke",
+		"plugin_id": "fleet.transfer",
+		"action":    "prepare_source",
+		"input":     map[string]any{"path": "/safe/test"},
+	}}
+}
+
+func TestPluginInvokeFollowsPermitEvenForApprovalMetadata(t *testing.T) {
+	original := invokePluginTask
+	defer func() { invokePluginTask = original }()
+
+	for _, tt := range []struct {
+		name   string
+		permit Permit
+		first  string
+	}{
+		{name: "off", permit: PermitOff, first: "plugin_result"},
+		{name: "ask", permit: PermitAsk, first: "plugin_accepted"},
+		{name: "allow", permit: PermitAllow, first: "plugin_accepted"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			installPluginTestBinary(t)
+			invoked := make(chan pluginRequest, 1)
+			invokePluginTask = func(_ context.Context, req pluginRequest) (any, error) {
+				invoked <- req
+				return map[string]any{"action": req.Action}, nil
+			}
+			replies := make(chan Envelope, 4)
+			a := &Agent{enabled: true, permit: tt.permit}
+			a.handlePlugin(context.Background(), func(_ context.Context, env Envelope) error {
+				replies <- env
+				return nil
+			}, pluginInvokeEnvelope())
+
+			first := receivePluginEnvelope(t, replies)
+			if first.Type != tt.first {
+				t.Fatalf("first response=%s, want %s", first.Type, tt.first)
+			}
+			switch tt.permit {
+			case PermitOff:
+				if ok, _ := first.Body["ok"].(bool); ok || !strings.Contains(fmt.Sprint(first.Body["error"]), "permit=off") {
+					t.Fatalf("off response=%#v", first.Body)
+				}
+				select {
+				case <-invoked:
+					t.Fatal("permit=off invoked the plugin")
+				default:
+				}
+			case PermitAsk:
+				if first.Body["status"] != "waiting_approval" {
+					t.Fatalf("ask response=%#v", first.Body)
+				}
+				a.mu.Lock()
+				pending := a.pending
+				a.mu.Unlock()
+				if pending == nil || pending.Kind != pendingKindPlugin {
+					t.Fatalf("ask pending=%#v", pending)
+				}
+				select {
+				case <-invoked:
+					t.Fatal("ask invoked the plugin before approval")
+				default:
+				}
+				a.approve()
+				if env := receivePluginEnvelope(t, replies); env.Type != "plugin_accepted" || env.Body["status"] != "running" {
+					t.Fatalf("approved response=%#v", env)
+				}
+				<-invoked
+				if env := receivePluginEnvelope(t, replies); env.Type != "plugin_result" || env.Body["ok"] != true {
+					t.Fatalf("approved result=%#v", env)
+				}
+			case PermitAllow:
+				if first.Body["status"] != "running" {
+					t.Fatalf("allow response=%#v", first.Body)
+				}
+				a.mu.Lock()
+				pending := a.pending
+				a.mu.Unlock()
+				if pending != nil {
+					t.Fatalf("allow created approval pending=%#v", pending)
+				}
+				<-invoked
+				if env := receivePluginEnvelope(t, replies); env.Type != "plugin_result" || env.Body["ok"] != true {
+					t.Fatalf("allow result=%#v", env)
+				}
+			}
+		})
+	}
+}
+
+func TestPluginPermitOffRejectsBeforeInstalledBinaryValidation(t *testing.T) {
+	originalResolve := resolveInstalledPluginTaskAction
+	defer func() { resolveInstalledPluginTaskAction = originalResolve }()
+	called := false
+	resolveInstalledPluginTaskAction = func(string, string) (installedPlugin, string, error) {
+		called = true
+		return installedPlugin{}, "", errors.New("must not validate")
+	}
+	replies := make(chan Envelope, 1)
+	a := &Agent{enabled: true, permit: PermitOff}
+	a.handlePlugin(context.Background(), func(_ context.Context, env Envelope) error {
+		replies <- env
+		return nil
+	}, pluginInvokeEnvelope())
+	if env := receivePluginEnvelope(t, replies); env.Type != "plugin_result" || !strings.Contains(fmt.Sprint(env.Body["error"]), "permit=off") {
+		t.Fatalf("off response=%#v", env)
+	}
+	if called {
+		t.Fatal("permit=off hashed the installed plugin before rejecting")
+	}
+}
+
+func TestPluginAllowIgnoresStaleAskPending(t *testing.T) {
+	originalResolve := resolveInstalledPluginTaskAction
+	originalInvoke := invokePluginTask
+	defer func() {
+		resolveInstalledPluginTaskAction = originalResolve
+		invokePluginTask = originalInvoke
+	}()
+	resolveInstalledPluginTaskAction = func(string, string) (installedPlugin, string, error) {
+		return installedPlugin{ID: "fleet.transfer"}, "/test/plugin", nil
+	}
+	invoked := make(chan struct{}, 1)
+	invokePluginTask = func(context.Context, pluginRequest) (any, error) {
+		invoked <- struct{}{}
+		return map[string]any{"ok": true}, nil
+	}
+	replies := make(chan Envelope, 2)
+	stale := &Pending{Kind: pendingKindRun, Corr: "old", Command: "old command"}
+	a := &Agent{enabled: true, permit: PermitAllow, pending: stale}
+	a.handlePlugin(context.Background(), func(_ context.Context, env Envelope) error {
+		replies <- env
+		return nil
+	}, pluginInvokeEnvelope())
+	if env := receivePluginEnvelope(t, replies); env.Type != "plugin_accepted" || env.Body["status"] != "running" {
+		t.Fatalf("allow response=%#v", env)
+	}
+	select {
+	case <-invoked:
+	case <-time.After(time.Second):
+		t.Fatal("permit=allow was incorrectly blocked by a stale ask pending")
+	}
+	if env := receivePluginEnvelope(t, replies); env.Type != "plugin_result" || env.Body["ok"] != true {
+		t.Fatalf("allow result=%#v", env)
+	}
+	a.mu.Lock()
+	pending := a.pending
+	a.mu.Unlock()
+	if pending != stale {
+		t.Fatalf("new plugin request replaced unrelated pending=%#v", pending)
+	}
+}
+
+func TestPluginSoftwareChangesFollowPermit(t *testing.T) {
+	for _, operation := range []string{"install", "uninstall"} {
+		for _, permit := range []Permit{PermitOff, PermitAsk, PermitAllow} {
+			t.Run(operation+"/"+string(permit), func(t *testing.T) {
+				t.Setenv("FLEET_HOME", t.TempDir())
+				body := map[string]any{"operation": operation, "plugin_id": "fleet.acp"}
+				replies := make(chan Envelope, 3)
+				a := &Agent{enabled: true, permit: permit}
+				a.handlePlugin(context.Background(), func(_ context.Context, env Envelope) error {
+					replies <- env
+					return nil
+				}, Envelope{V: 1, Type: "plugin", Corr: operation + "-permit-test", Body: body})
+				first := receivePluginEnvelope(t, replies)
+				switch permit {
+				case PermitOff:
+					if first.Type != "plugin_result" || !strings.Contains(fmt.Sprint(first.Body["error"]), "permit=off") {
+						t.Fatalf("off response=%#v", first)
+					}
+				case PermitAsk:
+					if first.Type != "plugin_accepted" || first.Body["status"] != "waiting_approval" {
+						t.Fatalf("ask response=%#v", first)
+					}
+					a.deny()
+					if env := receivePluginEnvelope(t, replies); env.Type != "plugin_result" {
+						t.Fatalf("denied result=%#v", env)
+					}
+				case PermitAllow:
+					if first.Type != "plugin_accepted" || first.Body["status"] != "running" {
+						t.Fatalf("allow response=%#v", first)
+					}
+					a.mu.Lock()
+					pending := a.pending
+					a.mu.Unlock()
+					if pending != nil {
+						t.Fatalf("allow created approval pending=%#v", pending)
+					}
+					if env := receivePluginEnvelope(t, replies); env.Type != "plugin_result" {
+						t.Fatalf("allow result=%#v", env)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestPluginInvokeBlocksSamePluginUninstall(t *testing.T) {
+	installPluginTestBinary(t)
+	originalInvoke := invokePluginTask
+	defer func() { invokePluginTask = originalInvoke }()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	invokePluginTask = func(context.Context, pluginRequest) (any, error) {
+		close(started)
+		<-release
+		return map[string]any{"done": true}, nil
+	}
+	a := &Agent{enabled: true, permit: PermitAllow}
+	invokeReplies := make(chan Envelope, 2)
+	uninstallReplies := make(chan Envelope, 2)
+	a.handlePlugin(context.Background(), func(_ context.Context, env Envelope) error {
+		invokeReplies <- env
+		return nil
+	}, pluginInvokeEnvelope())
+	if env := receivePluginEnvelope(t, invokeReplies); env.Type != "plugin_accepted" || env.Body["status"] != "running" {
+		t.Fatalf("invoke response=%#v", env)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("plugin invocation did not start")
+	}
+	a.handlePlugin(context.Background(), func(_ context.Context, env Envelope) error {
+		uninstallReplies <- env
+		return nil
+	}, Envelope{V: 1, Type: "plugin", Corr: "uninstall-while-running", Body: map[string]any{
+		"operation": "uninstall", "plugin_id": "fleet.transfer",
+	}})
+	if env := receivePluginEnvelope(t, uninstallReplies); env.Type != "plugin_accepted" || env.Body["status"] != "running" {
+		t.Fatalf("uninstall response=%#v", env)
+	}
+	select {
+	case env := <-uninstallReplies:
+		t.Fatalf("uninstall crossed an active plugin invocation: %#v", env)
+	case <-time.After(50 * time.Millisecond):
+	}
+	dir, err := pluginDir("fleet.transfer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "metadata.json")); err != nil {
+		t.Fatalf("plugin disappeared while invocation held the read lock: %v", err)
+	}
+	close(release)
+	if env := receivePluginEnvelope(t, invokeReplies); env.Type != "plugin_result" || env.Body["ok"] != true {
+		t.Fatalf("invoke result=%#v", env)
+	}
+	if env := receivePluginEnvelope(t, uninstallReplies); env.Type != "plugin_result" || env.Body["ok"] != true {
+		t.Fatalf("uninstall result=%#v", env)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("plugin directory still exists after serialized uninstall: %v", err)
+	}
+}
+
+func TestPermitOffRevokesPendingPlugin(t *testing.T) {
+	installPluginTestBinary(t)
+	original := invokePluginTask
+	defer func() { invokePluginTask = original }()
+	invoked := make(chan struct{}, 1)
+	invokePluginTask = func(context.Context, pluginRequest) (any, error) {
+		invoked <- struct{}{}
+		return nil, nil
+	}
+	replies := make(chan Envelope, 4)
+	a := &Agent{enabled: true, permit: PermitAsk, cfgPath: filepath.Join(t.TempDir(), "config.json")}
+	a.handlePlugin(context.Background(), func(_ context.Context, env Envelope) error {
+		replies <- env
+		return nil
+	}, pluginInvokeEnvelope())
+	if env := receivePluginEnvelope(t, replies); env.Type != "plugin_accepted" || env.Body["status"] != "waiting_approval" {
+		t.Fatalf("waiting response=%#v", env)
+	}
+	a.setPermit(PermitOff)
+	if env := receivePluginEnvelope(t, replies); env.Type != "plugin_result" || !strings.Contains(fmt.Sprint(env.Body["error"]), "permit=off") {
+		t.Fatalf("revocation result=%#v", env)
+	}
+	a.mu.Lock()
+	pending := a.pending
+	a.mu.Unlock()
+	if pending != nil {
+		t.Fatalf("pending survived permit=off: %#v", pending)
+	}
+	a.approve()
+	select {
+	case <-invoked:
+		t.Fatal("revoked pending plugin was later approved")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestInstalledMetadataPreservesLegacyACPActions(t *testing.T) {
 	t.Setenv("FLEET_HOME", t.TempDir())
 	dir, err := pluginDir("fleet.acp")
@@ -263,7 +562,7 @@ func TestInstalledMetadataPreservesLegacyACPActions(t *testing.T) {
 	}
 }
 
-func TestInstalledPluginEnforcesActionAllowlistAndApproval(t *testing.T) {
+func TestInstalledPluginEnforcesActionAllowlistAndPreservesApprovalMetadata(t *testing.T) {
 	installPluginTestBinary(t)
 	if _, _, err := installedPluginForAction("fleet.transfer", "prepare_source"); err != nil {
 		t.Fatal(err)
@@ -271,11 +570,13 @@ func TestInstalledPluginEnforcesActionAllowlistAndApproval(t *testing.T) {
 	if _, _, err := installedPluginForAction("fleet.transfer", "delete_everything"); err == nil {
 		t.Fatal("undeclared action accepted")
 	}
-	if ask, err := pluginActionRequiresApproval("fleet.transfer", "prepare_source"); err != nil || !ask {
-		t.Fatalf("source approval=(%v, %v)", ask, err)
+	meta, _, err := installedPluginForTaskAction("fleet.transfer", "prepare_source")
+	if err != nil || !containsString(meta.ApprovalActions, "prepare_source") {
+		t.Fatalf("source metadata=(%#v, %v)", meta.ApprovalActions, err)
 	}
-	if ask, err := pluginActionRequiresApproval("fleet.transfer", "hang"); err != nil || ask {
-		t.Fatalf("hang approval=(%v, %v)", ask, err)
+	meta, _, err = installedPluginForTaskAction("fleet.transfer", "hang")
+	if err != nil || containsString(meta.ApprovalActions, "hang") {
+		t.Fatalf("hang metadata=(%#v, %v)", meta.ApprovalActions, err)
 	}
 }
 

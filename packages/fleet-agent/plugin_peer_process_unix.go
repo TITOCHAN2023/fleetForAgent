@@ -4,22 +4,50 @@ package main
 
 import (
 	"os/exec"
+	"sync"
 	"syscall"
 )
 
-func configurePluginProcess(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+type unixPluginProcessTree struct {
+	cmd       *exec.Cmd
+	closeOnce sync.Once
 }
 
-func terminatePluginProcessTree(cmd *exec.Cmd, force bool) {
-	if cmd == nil || cmd.Process == nil {
+func startPluginProcess(cmd *exec.Cmd) (pluginProcessTree, error) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid = true
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return &unixPluginProcessTree{cmd: cmd}, nil
+}
+
+func (p *unixPluginProcessTree) terminate(force bool) {
+	if p == nil || p.cmd == nil || p.cmd.Process == nil {
 		return
 	}
-	signal := syscall.SIGTERM
 	if force {
-		signal = syscall.SIGKILL
+		p.closeTree()
+		return
 	}
-	if err := syscall.Kill(-cmd.Process.Pid, signal); err != nil {
-		_ = cmd.Process.Signal(signal)
+	p.signal(syscall.SIGTERM)
+}
+
+func (p *unixPluginProcessTree) signal(signal syscall.Signal) {
+	if err := syscall.Kill(-p.cmd.Process.Pid, signal); err != nil {
+		_ = p.cmd.Process.Signal(signal)
 	}
+}
+
+func (p *unixPluginProcessTree) closeTree() {
+	p.closeOnce.Do(func() { p.signal(syscall.SIGKILL) })
+}
+
+func (p *unixPluginProcessTree) close() {
+	if p == nil || p.cmd == nil || p.cmd.Process == nil {
+		return
+	}
+	p.closeTree()
 }

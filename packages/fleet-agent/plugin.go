@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,6 +26,34 @@ const (
 	pluginMaxOutput   = 2 << 20
 	pluginStreamLine  = 64 << 10
 )
+
+var (
+	invokePluginTask                 = invokePlugin
+	resolveInstalledPluginTaskAction = installedPluginForTaskAction
+)
+
+const pluginOperationLockStripes = 64
+
+var pluginOperationLocks [pluginOperationLockStripes]sync.RWMutex
+
+func pluginOperationLock(id string) *sync.RWMutex {
+	sum := sha256.Sum256([]byte(id))
+	return &pluginOperationLocks[int(sum[0])%len(pluginOperationLocks)]
+}
+
+func withPluginReadLock(id string, fn func() (any, error)) (any, error) {
+	lock := pluginOperationLock(id)
+	lock.RLock()
+	defer lock.RUnlock()
+	return fn()
+}
+
+func withPluginWriteLock(id string, fn func() (any, error)) (any, error) {
+	lock := pluginOperationLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	return fn()
+}
 
 type pluginArtifact struct {
 	OS         string `json:"os"`
@@ -150,18 +179,6 @@ func pluginConsentText(req pluginRequest) string {
 	}
 }
 
-func pluginSoftwareChange(operation string) bool {
-	return operation == "install" || operation == "uninstall"
-}
-
-func pluginActionRequiresApproval(id, action string) (bool, error) {
-	meta, _, err := installedPluginForTaskAction(id, action)
-	if err != nil {
-		return false, err
-	}
-	return containsString(meta.ApprovalActions, action), nil
-}
-
 func pluginAcceptedEnv(corr, status string) Envelope {
 	return Envelope{V: 1, Type: "plugin_accepted", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"status": status}}
 }
@@ -188,9 +205,21 @@ func (a *Agent) handlePlugin(ctx context.Context, sink EnvelopeSink, env Envelop
 		go a.executePlugin(context.Background(), sink, env.Corr, req)
 		return
 	}
-	alwaysAsk := pluginSoftwareChange(req.Operation)
 	if req.Operation == "invoke" {
-		alwaysAsk, err = pluginActionRequiresApproval(req.PluginID, req.Action)
+		// Refuse disabled devices before hashing a potentially large plugin.
+		// The second verdict below closes the race with a permit change while
+		// validation is running.
+		a.mu.Lock()
+		v, msg := a.inputVerdict()
+		a.mu.Unlock()
+		if v == permitRefuse {
+			_ = sink(ctx, pluginResultEnv(env.Corr, nil, errors.New(msg)))
+			return
+		}
+		_, err = withPluginReadLock(req.PluginID, func() (any, error) {
+			_, _, validateErr := resolveInstalledPluginTaskAction(req.PluginID, req.Action)
+			return nil, validateErr
+		})
 		if err != nil {
 			_ = sink(ctx, pluginResultEnv(env.Corr, nil, err))
 			return
@@ -198,15 +227,6 @@ func (a *Agent) handlePlugin(ctx context.Context, sink EnvelopeSink, env Envelop
 	}
 	a.mu.Lock()
 	v, msg := a.inputVerdict()
-	// Software changes and manifest-declared sensitive actions always require a
-	// person at the device, even under permit=allow.
-	if alwaysAsk && v == permitProceed {
-		if a.pending != nil {
-			v, msg = permitRefuse, "fleet: another command is waiting for consent"
-		} else {
-			v = permitAsk
-		}
-	}
 	if v == permitRefuse {
 		a.mu.Unlock()
 		_ = sink(ctx, pluginResultEnv(env.Corr, nil, errors.New(msg)))
@@ -240,12 +260,18 @@ func (a *Agent) executePlugin(ctx context.Context, sink EnvelopeSink, corr strin
 			a.mu.Lock()
 			hubInput, hubToken := a.hubInput, a.hubToken
 			a.mu.Unlock()
-			result, err = installPluginFromHub(ctx, *req.Manifest, hubInput, hubToken)
+			result, err = withPluginWriteLock(req.Manifest.ID, func() (any, error) {
+				return installPluginFromHub(ctx, *req.Manifest, hubInput, hubToken)
+			})
 		}
 	case "uninstall":
-		result, err = uninstallPlugin(req.PluginID)
+		result, err = withPluginWriteLock(req.PluginID, func() (any, error) {
+			return uninstallPlugin(req.PluginID)
+		})
 	case "invoke":
-		result, err = invokePlugin(ctx, req)
+		result, err = withPluginReadLock(req.PluginID, func() (any, error) {
+			return invokePluginTask(ctx, req)
+		})
 	default:
 		err = fmt.Errorf("unknown plugin operation %q", req.Operation)
 	}
@@ -583,7 +609,10 @@ func validateOfficialManifest(m pluginManifest) (pluginArtifact, error) {
 	if m.SchemaVersion != 1 || m.Publisher != "Fleet Official" || m.License == "" {
 		return pluginArtifact{}, errors.New("untrusted plugin manifest")
 	}
-	if _, err := cleanPluginID(m.ID); err != nil {
+	if id, err := cleanPluginID(m.ID); err != nil || id != m.ID {
+		if err == nil {
+			err = errors.New("plugin id must be canonical")
+		}
 		return pluginArtifact{}, err
 	}
 	if _, err := cleanPluginVersion(m.Version); err != nil {
@@ -964,23 +993,27 @@ func runPluginCommand(ctx context.Context, cmd *exec.Cmd) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	configurePluginProcess(cmd)
-	if err := cmd.Start(); err != nil {
+	tree, err := startPluginProcess(cmd)
+	if err != nil {
 		return err
 	}
 	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		tree.close()
+		done <- err
+	}()
 	select {
 	case err := <-done:
 		return err
 	case <-ctx.Done():
-		terminatePluginProcessTree(cmd, false)
+		tree.terminate(false)
 		select {
 		case <-done:
 			return ctx.Err()
 		case <-time.After(time.Second):
 		}
-		terminatePluginProcessTree(cmd, true)
+		tree.terminate(true)
 		<-done
 		return ctx.Err()
 	}

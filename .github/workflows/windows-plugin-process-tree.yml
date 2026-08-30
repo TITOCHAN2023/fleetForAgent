@@ -27,7 +27,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: packages/fleet-tool/windows-job-host/go.mod
+          go-version: "1.25.0"
           cache-dependency-path: |
             packages/fleet-agent/go.sum
             packages/fleet-tool/windows-job-host/go.sum

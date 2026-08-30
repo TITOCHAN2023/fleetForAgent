@@ -15,6 +15,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TOOL_DIR = join(ROOT, "packages/fleet-tool");
 const TOKEN_SRC = join(ROOT, "packages/fleet-worker/src/tokenv1.mjs");
 const WINDOWS_JOB_HOST_DIR = join(TOOL_DIR, "windows-job-host");
+const WINDOWS_JOB_HOST_GO_TOOLCHAIN = "go1.25.0";
 export const DEFAULT_OUT = join(ROOT, "packages/fleet-worker/public/fleet-tool.tgz");
 
 const WORKER_IMPORT = 'from "../fleet-worker/src/tokenv1.mjs"';
@@ -59,6 +60,7 @@ function buildWindowsJobHosts(stage) {
           CGO_ENABLED: "0",
           GOOS: "windows",
           GOARCH: arch,
+          GOTOOLCHAIN: WINDOWS_JOB_HOST_GO_TOOLCHAIN,
           GOCACHE: process.env.FLEET_TOOL_GO_CACHE || join(tmpdir(), "fleet-tool-go-build-cache"),
         },
         stdio: "inherit",

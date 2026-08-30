@@ -20,6 +20,10 @@ export const DEFAULT_OUT = join(ROOT, "packages/fleet-worker/public/fleet-tool.t
 const WORKER_IMPORT = 'from "../fleet-worker/src/tokenv1.mjs"';
 const PACKED_IMPORT = 'from "./tokenv1.mjs"';
 
+function normalizedText(path) {
+  return readFileSync(path, "utf8").replaceAll("\r\n", "\n");
+}
+
 export function fleetToolVersion(operatorSrc = readFileSync(join(TOOL_DIR, "operator.mjs"), "utf8")) {
   const m = operatorSrc.match(/export const FLEET_VERSION = "([^"]+)"/);
   if (!m) throw new Error("FLEET_VERSION missing from packages/fleet-tool/operator.mjs");
@@ -68,7 +72,7 @@ export function packFleetTool({ outFile = DEFAULT_OUT } = {}) {
   rmSync(stage, { recursive: true, force: true });
   mkdirSync(stage, { recursive: true });
   try {
-    writeFileSync(join(stage, "index.mjs"), rewriteToolIndex(readFileSync(join(TOOL_DIR, "index.mjs"), "utf8")));
+    writeFileSync(join(stage, "index.mjs"), rewriteToolIndex(normalizedText(join(TOOL_DIR, "index.mjs"))));
     const modules = [
       "operator.mjs",
       "mcp-protocol.mjs",
@@ -81,10 +85,12 @@ export function packFleetTool({ outFile = DEFAULT_OUT } = {}) {
       "plugin-peer-runtime.mjs",
       "official-plugins.generated.mjs",
     ];
-    for (const module of modules) cpSync(join(TOOL_DIR, module), join(stage, module));
+    for (const module of modules) {
+      writeFileSync(join(stage, module), normalizedText(join(TOOL_DIR, module)));
+    }
     buildWindowsJobHosts(stage);
-    cpSync(TOKEN_SRC, join(stage, "tokenv1.mjs"));
-    cpSync(join(TOOL_DIR, "README.md"), join(stage, "README.md"));
+    writeFileSync(join(stage, "tokenv1.mjs"), normalizedText(TOKEN_SRC));
+    writeFileSync(join(stage, "README.md"), normalizedText(join(TOOL_DIR, "README.md")));
     writeFileSync(
       join(stage, "package.json"),
       `${JSON.stringify(

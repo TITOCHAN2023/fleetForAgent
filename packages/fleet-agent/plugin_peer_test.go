@@ -991,7 +991,19 @@ func TestPermitOffTerminatesPendingPluginPeer(t *testing.T) {
 	}, Envelope{V: 1, Type: "peer_session_prepare", Body: mapped}) {
 		t.Fatal("permit=ask rejected peer prepare")
 	}
+	agent.mu.Lock()
+	session := agent.peerSessions[req.SessionID]
+	agent.mu.Unlock()
+	if session == nil {
+		t.Fatal("permit=ask did not retain the pending peer session")
+	}
 	agent.setPermit(PermitOff)
+	session.mu.Lock()
+	closed, cleanupDone := session.closed, session.cleanupDone
+	session.mu.Unlock()
+	if !closed || cleanupDone == nil {
+		t.Fatalf("permit=off did not synchronously claim peer cleanup: closed=%v done=%v", closed, cleanupDone != nil)
+	}
 	select {
 	case env := <-replies:
 		if env.Type != "peer_session_event" || env.Body["event"] != "fail" || env.Body["failure_code"] != "DEVICE_DISABLED" {
@@ -999,6 +1011,11 @@ func TestPermitOffTerminatesPendingPluginPeer(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("permit=off did not terminate Worker peer session")
+	}
+	select {
+	case <-cleanupDone:
+	case <-time.After(time.Second):
+		t.Fatal("permit=off did not finish local peer cleanup")
 	}
 	agent.mu.Lock()
 	pending, sessions := agent.pending, len(agent.peerSessions)

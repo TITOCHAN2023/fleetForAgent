@@ -108,7 +108,11 @@ export function packFleetTool({ outFile = DEFAULT_OUT } = {}) {
         2,
       )}\n`,
     );
-    const packed = JSON.parse(execFileSync("npm", ["pack", "--json"], { cwd: stage, encoding: "utf8" }));
+    const npmCommand = process.platform === "win32" ? (process.env.ComSpec || "cmd.exe") : "npm";
+    const npmArgs = process.platform === "win32"
+      ? ["/d", "/s", "/c", "npm pack --json"]
+      : ["pack", "--json"];
+    const packed = JSON.parse(execFileSync(npmCommand, npmArgs, { cwd: stage, encoding: "utf8" }));
     const filename = packed[0]?.filename;
     if (!filename) throw new Error("npm pack did not return a filename");
     mkdirSync(dirname(outFile), { recursive: true });

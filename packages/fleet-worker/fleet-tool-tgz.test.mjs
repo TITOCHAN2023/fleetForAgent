@@ -18,6 +18,7 @@ function tarballListing(tgz) {
   return execFileSync("tar", ["-tzf", tgz], { encoding: "utf8" })
     .trim()
     .split("\n")
+    .map((name) => name.trim().replaceAll("\\", "/"))
     .filter(Boolean)
     .sort();
 }

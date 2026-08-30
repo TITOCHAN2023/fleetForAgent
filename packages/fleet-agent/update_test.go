@@ -120,7 +120,11 @@ func TestExtractTarGzAgentBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Mode()&0o111 == 0 {
+	// Windows does not expose Unix execute bits through os.FileMode; Chmod only
+	// controls the read-only attribute there. The extracted bytes and file type
+	// are still worth testing on every platform, but executable mode is a Unix
+	// contract.
+	if runtime.GOOS != "windows" && st.Mode()&0o111 == 0 {
 		t.Fatal("extracted binary must be executable")
 	}
 }

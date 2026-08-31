@@ -65,6 +65,8 @@ When a device first connects, Fleet assigns it to the account that presented a v
 
 Fleet checks the account-to-device relationship again when listing devices or sending an operation. The stored device record is one check, and the current live connection is another. A missed check in one place does not give a message a path through the other.
 
+The hosted Worker has no deployment-wide credential that bypasses this ownership check. Its optional ops allowlist changes only who may view the limited operations console; it adds no machine-control authority.
+
 The device directory and control interface do not return device IPs. A user sees enough information to choose a computer, including its name, operating system, online status, and Agent version. Like any website, Fleet may still produce ordinary web access logs. That is separate from publishing controlled-computer IPs through the device interface.
 
 ```mermaid

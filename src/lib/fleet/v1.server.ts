@@ -10,6 +10,12 @@ import { getSql } from "@/lib/db";
 import { officialPlugin } from "../../../packages/fleet-tool/operator.mjs";
 import { makeDeviceSlug } from "./cap";
 import {
+  DeviceAliasError,
+  deviceIdConflictsWithAlias,
+  resolveDeviceReference,
+} from "./device-alias";
+import { setDeviceAliasForUser } from "./device-alias.server";
+import {
   attachDevice,
   detachDevice,
   getAgentVer,
@@ -220,19 +226,37 @@ export async function handleHubHttp(request: Request): Promise<Response> {
     return json({ computers: await listComputers(userId) });
   }
 
-  if (path === "/v1/get_computer" && request.method === "POST") {
+  if (path === "/v1/set_computer_alias" && request.method === "POST") {
     const deviceId = String(body.device_id ?? "");
     if (!deviceId) return json({ error: "device_id required" }, 400);
-    if (!(await ownsDevice(userId, deviceId))) return json({ error: "not found" }, 404);
+    if (!Object.prototype.hasOwnProperty.call(body, "alias")) {
+      return json({ error: "alias required" }, 400);
+    }
+    try {
+      return json(await setDeviceAliasForUser(userId, deviceId, body.alias));
+    } catch (error) {
+      if (error instanceof DeviceAliasError) {
+        return json({ error: error.message, code: error.code }, error.status);
+      }
+      throw error;
+    }
+  }
+
+  if (path === "/v1/get_computer" && request.method === "POST") {
+    const reference = String(body.device_id ?? "");
+    if (!reference) return json({ error: "device_id required" }, 400);
+    const deviceId = await resolveDeviceId(userId, reference);
+    if (!deviceId) return json({ error: "not found" }, 404);
     const row = (await listComputers(userId)).find((c) => c.id === deviceId);
     if (!row) return json({ error: "not found" }, 404);
     return json(row);
   }
 
   if (path === "/v1/heartbeat" && request.method === "POST") {
-    const deviceId = String(body.device_id ?? "");
-    if (!deviceId) return json({ error: "device_id required" }, 400);
-    if (!(await ownsDevice(userId, deviceId))) return json({ error: "not found" }, 404);
+    const reference = String(body.device_id ?? "");
+    if (!reference) return json({ error: "device_id required" }, 400);
+    const deviceId = await resolveDeviceId(userId, reference);
+    if (!deviceId) return json({ error: "not found" }, 404);
     if (!isOnline(deviceId)) return json({ error: "offline" }, 409);
     const waitMs = clampHeartbeatWaitMs(body.wait_ms);
     const pending = waitNextHeartbeat(deviceId, waitMs);
@@ -249,9 +273,10 @@ export async function handleHubHttp(request: Request): Promise<Response> {
   }
 
   if ((path === "/v1/desktop_screenshot" || path === "/v1/desktop_action") && request.method === "POST") {
-    const deviceId = String(body.device_id ?? "");
-    if (!deviceId) return json({ error: "device_id required" }, 400);
-    if (!(await ownsDevice(userId, deviceId))) return json({ error: "not found" }, 404);
+    const reference = String(body.device_id ?? "");
+    if (!reference) return json({ error: "device_id required" }, 400);
+    const deviceId = await resolveDeviceId(userId, reference);
+    if (!deviceId) return json({ error: "not found" }, 404);
     const catalog = (await listComputers(userId)).find((c) => c.id === deviceId);
     if (!catalog) return json({ error: "not found" }, 404);
     if (!isOnline(deviceId)) return json({ error: "offline" }, 409);
@@ -287,11 +312,12 @@ export async function handleHubHttp(request: Request): Promise<Response> {
   }
 
   if (path === "/v1/plugin" && request.method === "POST") {
-    const deviceId = String(body.device_id ?? "");
+    const reference = String(body.device_id ?? "");
     const operation = String(body.operation ?? "");
     const pluginId = String(body.plugin_id ?? "");
-    if (!deviceId || !operation) return json({ error: "device_id and operation required" }, 400);
-    if (!(await ownsDevice(userId, deviceId))) return json({ error: "not found" }, 404);
+    if (!reference || !operation) return json({ error: "device_id and operation required" }, 400);
+    const deviceId = await resolveDeviceId(userId, reference);
+    if (!deviceId) return json({ error: "not found" }, 404);
     if (!isOnline(deviceId)) return json({ error: "offline" }, 409);
     const catalog = (await listComputers(userId)).find((computer) => computer.id === deviceId);
     if (!catalog) return json({ error: "not found" }, 404);
@@ -320,22 +346,21 @@ export async function handleHubHttp(request: Request): Promise<Response> {
   }
 
   if (path === "/v1/plugin_result" && request.method === "POST") {
-    const deviceId = String(body.device_id ?? "");
+    const reference = String(body.device_id ?? "");
     const corr = String(body.corr ?? "");
-    if (!deviceId || !corr) return json({ error: "device_id and corr required" }, 400);
-    if (!(await ownsDevice(userId, deviceId))) return json({ error: "not found" }, 404);
+    if (!reference || !corr) return json({ error: "device_id and corr required" }, 400);
+    const deviceId = await resolveDeviceId(userId, reference);
+    if (!deviceId) return json({ error: "not found" }, 404);
     const row = getResult(deviceId, corr);
     return json(row ? { corr, ...row } : { corr, status: "pending" });
   }
 
   if (path === "/v1/select_computer" && request.method === "POST") {
-    const id = String(body.id ?? "");
-    if (!id) return json({ error: "id required" }, 400);
+    const reference = String(body.id ?? "");
+    if (!reference) return json({ error: "id required" }, 400);
+    const id = await resolveDeviceId(userId, reference);
+    if (!id) return json({ error: "not found" }, 404);
     const sql = await getSql();
-    const found = await sql<{ id: string }>`
-      select id from devices where id = ${id} and user_id = ${userId}
-    `;
-    if (!found[0]) return json({ error: "not found" }, 404);
     await sql`
       insert into hub_sessions (user_id, selected_device_id, selected_at)
       values (${userId}, ${id}, now())
@@ -345,10 +370,11 @@ export async function handleHubHttp(request: Request): Promise<Response> {
   }
 
   if (path === "/v1/run" && request.method === "POST") {
-    const deviceId = String(body.device_id ?? "");
+    const reference = String(body.device_id ?? "");
     const command = String(body.command ?? "");
-    if (!deviceId || !command) return json({ error: "device_id and command required" }, 400);
-    if (!(await ownsDevice(userId, deviceId))) return json({ error: "not found" }, 404);
+    if (!reference || !command) return json({ error: "device_id and command required" }, 400);
+    const deviceId = await resolveDeviceId(userId, reference);
+    if (!deviceId) return json({ error: "not found" }, 404);
     const corr = randomUUID();
     const ok = sendToDevice(userId, deviceId, envelope("run", { command, mode: "pane" }, corr));
     if (!ok) return json({ error: "offline" }, 409);
@@ -364,9 +390,10 @@ export async function handleHubHttp(request: Request): Promise<Response> {
   }
 
   if (path === "/v1/type" && request.method === "POST") {
-    const deviceId = String(body.device_id ?? "");
-    if (!deviceId || (body.keys == null && body.key == null)) return json({ error: "device_id and keys or key required" }, 400);
-    if (!(await ownsDevice(userId, deviceId))) return json({ error: "not found" }, 404);
+    const reference = String(body.device_id ?? "");
+    if (!reference || (body.keys == null && body.key == null)) return json({ error: "device_id and keys or key required" }, 400);
+    const deviceId = await resolveDeviceId(userId, reference);
+    if (!deviceId) return json({ error: "not found" }, 404);
     const ok = sendToDevice(
       userId,
       deviceId,
@@ -377,9 +404,10 @@ export async function handleHubHttp(request: Request): Promise<Response> {
   }
 
   if (path === "/v1/read_screen" && request.method === "POST") {
-    const deviceId = String(body.device_id ?? "");
-    if (!deviceId) return json({ error: "device_id required" }, 400);
-    if (!(await ownsDevice(userId, deviceId))) return json({ error: "not found" }, 404);
+    const reference = String(body.device_id ?? "");
+    if (!reference) return json({ error: "device_id required" }, 400);
+    const deviceId = await resolveDeviceId(userId, reference);
+    if (!deviceId) return json({ error: "not found" }, 404);
     const corr = body.corr != null ? String(body.corr) : "";
     sendToDevice(userId, deviceId, envelope("read_screen", { corr }, corr || undefined));
     const row = getScreen(deviceId, corr || undefined);
@@ -387,9 +415,10 @@ export async function handleHubHttp(request: Request): Promise<Response> {
   }
 
   if (path === "/v1/list_panes" && request.method === "POST") {
-    const deviceId = String(body.device_id ?? "");
-    if (!deviceId) return json({ error: "device_id required" }, 400);
-    if (!(await ownsDevice(userId, deviceId))) return json({ error: "not found" }, 404);
+    const reference = String(body.device_id ?? "");
+    if (!reference) return json({ error: "device_id required" }, 400);
+    const deviceId = await resolveDeviceId(userId, reference);
+    if (!deviceId) return json({ error: "not found" }, 404);
     if (!sendToDevice(userId, deviceId, envelope("list_panes", {}))) {
       return json({ panes: [] });
     }
@@ -397,10 +426,11 @@ export async function handleHubHttp(request: Request): Promise<Response> {
   }
 
   if (path === "/v1/get_result" && request.method === "POST") {
-    const deviceId = String(body.device_id ?? "");
+    const reference = String(body.device_id ?? "");
     const corr = String(body.corr ?? "");
-    if (!deviceId || !corr) return json({ error: "device_id and corr required" }, 400);
-    if (!(await ownsDevice(userId, deviceId))) return json({ error: "not found" }, 404);
+    if (!reference || !corr) return json({ error: "device_id and corr required" }, 400);
+    const deviceId = await resolveDeviceId(userId, reference);
+    if (!deviceId) return json({ error: "not found" }, 404);
     const waitMs = clampHubWaitMs(body.wait_ms);
     const row = waitMs > 0 ? await waitHubResult(deviceId, corr, waitMs) : getResult(deviceId, corr);
     return json(hubResultPayload(corr, row));
@@ -443,8 +473,17 @@ export async function handleHubUpgrade(req: IncomingMessage, socket: Duplex, hea
 async function acceptDevice(ws: WebSocket, req: IncomingMessage, userId: string, deviceId: string) {
   const name = header(req, "x-device-name") || deviceId;
   const os = header(req, "x-device-os") || "linux";
+  const accepted = await upsertDevice(userId, deviceId, {
+    name,
+    os,
+    arch: "unknown",
+    online: true,
+  });
+  if (!accepted) {
+    ws.close(1008, "device id conflicts with an existing device");
+    return;
+  }
   attachDevice(userId, deviceId, ws);
-  await upsertDevice(userId, deviceId, { name, os, arch: "unknown", online: true });
   ws.send(JSON.stringify(envelope("hello_ok", { heartbeat_s: 25 })));
 
   ws.on("message", (data) => {
@@ -469,7 +508,7 @@ async function onDeviceMessage(userId: string, deviceId: string, ws: WebSocket, 
     return;
   }
   if (parsed.type === "hello") {
-    const helloVer = String(parsed.body.agent_ver ?? "");
+    const helloVer = agentVerFromBody(parsed.body);
     putAgentVer(deviceId, helloVer);
     await upsertDevice(userId, deviceId, {
       name: String(parsed.body.hostname ?? deviceId),
@@ -488,9 +527,11 @@ async function onDeviceMessage(userId: string, deviceId: string, ws: WebSocket, 
   }
   if (parsed.type === "ping" || parsed.type === "heartbeat") {
     const sql = await getSql();
+    const reportedVer = agentVerFromBody(parsed.body);
     await sql`
       update devices
-      set status = ${"online"}, last_seen = now()
+      set status = ${"online"}, last_seen = now(),
+          agent_ver = coalesce(${reportedVer ?? null}, agent_ver)
       where id = ${deviceId} and user_id = ${userId}
     `;
     const pingCaps = Array.isArray(parsed.body.caps) ? joinCaps(normalizeCaps(parsed.body.caps)) : null;
@@ -501,7 +542,7 @@ async function onDeviceMessage(userId: string, deviceId: string, ws: WebSocket, 
     if (pingPermit) {
       await sql`update devices set permit = ${pingPermit} where id = ${deviceId} and user_id = ${userId}`;
     }
-    putAgentVer(deviceId, agentVerFromBody(parsed.body));
+    putAgentVer(deviceId, reportedVer);
     noteHeartbeat(deviceId);
     ws.send(JSON.stringify(envelope("pong", {}, parsed.id)));
     return;
@@ -554,13 +595,15 @@ async function listComputers(userId: string) {
   const rows = await sql<{
     id: string;
     name: string;
+    alias: string | null;
     os: string;
     status: string;
     last_seen: string | Date;
+    agent_ver: string | null;
     caps: string | null;
     permit: string | null;
   }>`
-    select id, name, os, status, last_seen, caps, permit
+    select id, name, alias, os, status, last_seen, agent_ver, caps, permit
     from devices
     where user_id = ${userId}
     order by created_at asc
@@ -569,28 +612,26 @@ async function listComputers(userId: string) {
     computerPublic({
       id: r.id,
       name: r.name,
+      alias: r.alias,
       os: r.os,
       online: isOnline(r.id),
       lastSeen: r.last_seen instanceof Date ? r.last_seen.getTime() : new Date(r.last_seen).getTime(),
-      agentVer: getAgentVer(r.id),
+      agentVer: getAgentVer(r.id) ?? r.agent_ver?.trim() ?? "",
       caps: r.caps,
       permit: r.permit,
     }),
   ).filter((row): row is NonNullable<typeof row> => Boolean(row));
 }
 
-async function ownsDevice(userId: string, deviceId: string) {
-  const sql = await getSql();
-  const rows = await sql<{ id: string }>`
-    select id from devices where id = ${deviceId} and user_id = ${userId}
-  `;
-  return Boolean(rows[0]);
+async function resolveDeviceId(userId: string, reference: unknown) {
+  return resolveDeviceReference(await getSql(), userId, reference);
 }
 
 async function stolenDevice(userId: string, deviceId: string) {
   const sql = await getSql();
   const rows = await sql<{ user_id: string }>`select user_id from devices where id = ${deviceId}`;
-  return Boolean(rows[0] && rows[0].user_id !== userId);
+  if (rows[0]) return rows[0].user_id !== userId;
+  return deviceIdConflictsWithAlias(sql, userId, deviceId);
 }
 
 async function upsertDevice(
@@ -610,31 +651,35 @@ async function upsertDevice(
   const existing = await sql<{ user_id: string; slug: string }>`
     select user_id, slug from devices where id = ${deviceId}
   `;
-  if (existing[0] && existing[0].user_id !== userId) return;
+  if (existing[0] && existing[0].user_id !== userId) return false;
   const status = extra.online ? "online" : "offline";
   const arch = extra.arch || "unknown";
   const capsText = extra.caps ? joinCaps(extra.caps) : null;
   const permit = extra.permit ?? null;
+  const agentVer = extra.agentVer?.trim() || null;
   if (!existing[0]) {
+    if (await deviceIdConflictsWithAlias(sql, userId, deviceId)) return false;
     const slug = makeDeviceSlug(extra.name);
     await sql`
-      insert into devices (id, user_id, slug, name, os, arch, location_tag, status, caps, permit)
-      values (${deviceId}, ${userId}, ${slug}, ${extra.name}, ${extra.os}, ${arch}, ${"home"}, ${status}, ${capsText ?? "shell,pane"}, ${permit})
+      insert into devices (id, user_id, slug, name, os, arch, location_tag, status, caps, permit, agent_ver)
+      values (${deviceId}, ${userId}, ${slug}, ${extra.name}, ${extra.os}, ${arch}, ${"home"}, ${status}, ${capsText ?? "shell,pane"}, ${permit}, ${agentVer})
     `;
-    return;
+    return true;
   }
   if (arch !== "unknown") {
     await sql`
       update devices
       set name = ${extra.name}, os = ${extra.os}, arch = ${arch},
-          status = ${status}, last_seen = now()
+          status = ${status}, last_seen = now(),
+          agent_ver = coalesce(${agentVer}, agent_ver)
       where id = ${deviceId} and user_id = ${userId}
     `;
   } else {
     await sql`
       update devices
       set name = ${extra.name}, os = ${extra.os},
-          status = ${status}, last_seen = now()
+          status = ${status}, last_seen = now(),
+          agent_ver = coalesce(${agentVer}, agent_ver)
       where id = ${deviceId} and user_id = ${userId}
     `;
   }
@@ -644,6 +689,7 @@ async function upsertDevice(
   if (permit != null) {
     await sql`update devices set permit = ${permit} where id = ${deviceId} and user_id = ${userId}`;
   }
+  return true;
 }
 
 function envelope(type: string, body: Record<string, unknown> = {}, corr?: string): Envelope {

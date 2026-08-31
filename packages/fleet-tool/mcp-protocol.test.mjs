@@ -45,7 +45,10 @@ test("the shared protocol returns Fleet tools as direct JSON-RPC", async () => {
 
 test("shared MCP protocol exposes per-result transport only in _meta", async () => {
   const session = new McpRpcSession({
-    rpc: async (path) => {
+    rpc: async (path, body) => {
+      if (path === "/v1/get_computer") {
+        return { id: body.device_id, alias: "", online: true };
+      }
       assert.equal(path, "/v1/run");
       return wrapTransportRpc({ corr: "c-rtc", status: "running" }, "rtc");
     },
@@ -67,6 +70,9 @@ test("Streamable HTTP can restore process-local device selection after DO evicti
   const calls = [];
   const rpc = async (path, body) => {
     calls.push({ path, body: { ...body } });
+    if (path === "/v1/get_computer") {
+      return { id: body.device_id, alias: "", online: true };
+    }
     if (path === "/v1/run") return { corr: "job-a", status: "running" };
     if (path === "/v1/get_result") return { corr: body.corr, status: "pending" };
     return {};

@@ -37,6 +37,68 @@ test("old hubs and old agents fall back without changing the business request", 
   assert.deepEqual(calls, [["/v1/rtc/config", { device_id: "old-agent" }]]);
 });
 
+test("RTC does not cache an alias across Hub resolutions", async () => {
+  const calls = [];
+  const manager = createRtcManager({
+    hubPost: async (path, body) => {
+      calls.push([path, body]);
+      assert.equal(path, "/v1/rtc/config");
+      assert.deepEqual(body, { device_id: "Singapore 128GB" });
+      return { available: false, device_id: "device-real" };
+    },
+    token: "unused",
+    operatorId: "operator-1",
+    verifyTokenV1: async () => {
+      throw new Error("not called");
+    },
+    verifyFleetStatement: async () => null,
+    officialPlugin: () => null,
+  });
+
+  assert.deepEqual(
+    await manager.tryRpc("/v1/run", { device_id: "Singapore 128GB", command: "uname -a" }),
+    { handled: false },
+  );
+  assert.deepEqual(calls, [["/v1/rtc/config", { device_id: "Singapore 128GB" }]]);
+  assert.equal("aliases" in manager, false);
+});
+
+test("an alias cannot silently reuse a stale canonical RTC session", async () => {
+  const sent = [];
+  const calls = [];
+  const manager = createRtcManager({
+    hubPost: async (path, body) => {
+      calls.push([path, body]);
+      return { available: false, device_id: "device-new" };
+    },
+    token: "unused",
+    operatorId: "operator-1",
+    verifyTokenV1: async () => null,
+    verifyFleetStatement: async () => null,
+    officialPlugin: () => null,
+  });
+  manager.sessions.set("device-real", {
+    deviceId: "device-real",
+    open: true,
+    directReady: true,
+    closed: false,
+    lastCorr: "",
+    rows: new Map(),
+    send(message) {
+      sent.push(message);
+    },
+    async close() {},
+  });
+
+  const result = await manager.tryRpc("/v1/run", {
+    device_id: "Build Box",
+    command: "pwd",
+  });
+  assert.deepEqual(result, { handled: false });
+  assert.deepEqual(calls, [["/v1/rtc/config", { device_id: "Build Box" }]]);
+  assert.equal(sent.length, 0);
+});
+
 test("heartbeat stays on the existing hub path and never opens RTC", async () => {
   const calls = [];
   const manager = createRtcManager({

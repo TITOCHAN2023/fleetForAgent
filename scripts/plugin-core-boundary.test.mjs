@@ -60,6 +60,8 @@ test("Worker exposes only the generic peer control plane", async () => {
     wrangler,
     /tag = "v4"\s+new_sqlite_classes = \["PeerSessionDO"\]\s+deleted_classes = \["TransferDO"\]/,
   );
+  assert.match(wrangler, /name\s*=\s*"REVOCATION"\s+class_name\s*=\s*"RevocationDO"/);
+  assert.match(wrangler, /tag = "v5"\s+new_sqlite_classes = \["RevocationDO"\]/);
   assert.doesNotMatch(runtimeSource, /peer_session_data/i, "file/data bytes must never use Hub WSS");
   assert.doesNotMatch(peer, /\bFLPP\b/, "Worker must not parse the local plugin DATA ABI");
 });

@@ -136,7 +136,23 @@
       .kv span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; text-align: right; }
       input { height: 44px; padding: 0 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); width: 100%; }
       .err { color: var(--bad); font-size: 13px; min-height: 1.2em; }
-      .machine { border: 1px solid var(--border); border-radius: 12px; padding: 16px; background: var(--surface); }
+      .machine { border: 1px solid var(--border); border-radius: 12px; padding: 16px; background: var(--surface); display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px 20px; }
+      .machine-main { min-width: 0; }
+      .machine-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .machine-meta { margin-top: 3px; font-family: var(--mono); overflow-wrap: anywhere; }
+      .machine-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; white-space: nowrap; }
+      .machine-status { display: inline-flex; align-items: center; gap: 6px; }
+      .machine-actions .btn { height: 32px; padding: 0 12px; font-size: 12px; }
+      .alias-form { display: grid; gap: 14px; }
+      .alias-context { display: grid; gap: 4px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--elevated); }
+      .alias-context .kv { font-family: var(--sans); }
+      .alias-context .kv span:last-child { font-family: var(--mono); }
+      .alias-field { display: grid; gap: 6px; }
+      .alias-field label { font-size: 13px; font-weight: 600; }
+      @media (max-width: 560px) {
+        .machine { grid-template-columns: minmax(0, 1fr); }
+        .machine-actions { justify-content: space-between; }
+      }
       .dot { width: 8px; height: 8px; border-radius: 99px; background: var(--subtle); display: inline-block; }
       .dot.on { background: var(--ok); }
       .warn { color: var(--warn); font-size: 14px; }
@@ -266,7 +282,10 @@
           desktopLink: "下载图形客户端",
           shellHistory: "这些命令包含 Hub token。只在可信终端运行；必要时清理或保护 shell 历史记录。",
           empty: "还没有机器。装 Agent，填本站地址和 token，连上后会出现在这里。",
-          online: "在线", offline: "离线",
+          online: "在线", offline: "离线", agentVersion: "Agent",
+          setAlias: "设置别名", editAlias: "修改别名", aliasTitle: "机器别名", aliasLabel: "别名",
+          aliasPlaceholder: "例如：新加坡 128GB", aliasHint: "同一账号内需要唯一。支持中文和空格；留空保存等同于清除。",
+          originalName: "原机器名", deviceId: "设备 ID", saveAlias: "保存", clearAlias: "清除", savingAlias: "正在保存…", aliasFailed: "保存别名失败",
           relTitle: "安装本机 Agent",
           relBody: "每台想加入舰队的电脑都要装。装好后只向这个网站出站连接。",
           win: "Windows", winArm: "Windows ARM64", macArm: "macOS Apple 芯片", macArmZip: "macOS Apple 芯片 zip", macIntel: "macOS Intel", macIntelZip: "macOS Intel zip", linux: "Linux amd64", linuxArm: "Linux ARM64", checksums: "Checksums",
@@ -334,7 +353,10 @@
           desktopLink: "Download the desktop client",
           shellHistory: "These commands contain the Hub token. Run them only in a trusted terminal, then clear or protect shell history if needed.",
           empty: "No machines yet. Install an agent, paste this origin and token, then it shows up here.",
-          online: "online", offline: "offline",
+          online: "online", offline: "offline", agentVersion: "Agent",
+          setAlias: "Set alias", editAlias: "Edit alias", aliasTitle: "Machine alias", aliasLabel: "Alias",
+          aliasPlaceholder: "For example: Singapore 128GB", aliasHint: "Must be unique in this account. Spaces are allowed; saving an empty value clears it.",
+          originalName: "Original name", deviceId: "Device ID", saveAlias: "Save", clearAlias: "Clear", savingAlias: "Saving…", aliasFailed: "Could not save alias",
           relTitle: "Install the local agent",
           relBody: "Install on every machine you want in the fleet. It only dials out to this site.",
           win: "Windows", winArm: "Windows ARM64", macArm: "macOS Apple silicon", macArmZip: "macOS Apple silicon zip", macIntel: "macOS Intel", macIntelZip: "macOS Intel zip", linux: "Linux amd64", linuxArm: "Linux ARM64", checksums: "Checksums",
@@ -353,6 +375,7 @@
         computers: [],
         pluginRegistry: null,
         prompt: null,
+        aliasEditor: null,
         metaReady: false,
       };
       const t = (k) => T[state.locale][k];
@@ -558,6 +581,46 @@
         }
         render();
       }
+      async function loadComputers() {
+        const j = await api("/v1/list_computers", { method: "POST", body: "{}" });
+        state.computers = Array.isArray(j.computers) ? j.computers : [];
+      }
+      function openAliasEditor(deviceId) {
+        const computer = state.computers.find((item) => String(item.id) === String(deviceId));
+        if (!computer) return;
+        state.aliasEditor = {
+          deviceId: String(computer.id),
+          value: String(computer.alias || ""),
+          busy: false,
+          error: "",
+        };
+        render();
+        requestAnimationFrame(() => {
+          const input = $("#alias-input");
+          if (input) { input.focus(); input.select(); }
+        });
+      }
+      async function saveComputerAlias(rawAlias) {
+        const editor = state.aliasEditor;
+        if (!editor || editor.busy) return;
+        const deviceId = editor.deviceId;
+        const alias = String(rawAlias || "").trim();
+        state.aliasEditor = { ...editor, value: alias, busy: true, error: "" };
+        render();
+        try {
+          const out = await api("/v1/set_computer_alias", {
+            method: "POST",
+            body: JSON.stringify({ device_id: deviceId, alias }),
+          });
+          const savedAlias = typeof out.alias === "string" ? out.alias : alias;
+          state.computers = state.computers.map((item) => String(item.id) === deviceId ? { ...item, alias: savedAlias } : item);
+          state.aliasEditor = null;
+          try { await loadComputers(); } catch {}
+        } catch (e) {
+          state.aliasEditor = { ...editor, value: alias, busy: false, error: e.message || t("aliasFailed") };
+        }
+        render();
+      }
       async function boot() {
         applyTheme(state.themePref);
         try {
@@ -567,7 +630,7 @@
         if (signedIn()) {
           try { state.meta = await api("/v1/hub_token"); } catch { state.meta = { hasToken: true, prefix: "" }; }
           state.metaReady = true;
-          try { const j = await api("/v1/list_computers", { method: "POST", body: "{}" }); state.computers = j.computers || []; } catch { state.computers = []; }
+          try { await loadComputers(); } catch { state.computers = []; }
         }
         await Promise.all([loadBlog(), loadPluginRegistry()]);
         render();
@@ -930,12 +993,46 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
       function fleetView() {
         if (!state.computers.length) return `<section class="card"><h3>${t("fleet")}</h3><p class="muted" style="margin-top:8px">${t("empty")}</p></section>`;
         return `<section class="card"><h3>${t("fleet")}</h3>
-          <div style="margin-top:16px;display:grid;gap:10px">${state.computers.map((c) => `
-            <div class="machine row" style="justify-content:space-between">
-              <div><strong>${c.name || c.id}</strong><div class="subtle" style="font-family:var(--mono)">${c.id} · ${c.os || ""}</div></div>
-              <span class="muted"><span class="dot${c.online ? " on" : ""}"></span> ${c.online ? t("online") : t("offline")}</span>
-            </div>`).join("")}</div>
+          <div style="margin-top:16px;display:grid;gap:10px">${state.computers.map((c) => {
+            const id = String(c.id || "");
+            const name = String(c.name || id);
+            const alias = String(c.alias || "").trim();
+            const os = String(c.os || "");
+            const version = String(c.agentVer || "—");
+            const meta = [alias && name !== id ? name : "", id, os, `${t("agentVersion")} ${version}`].filter(Boolean).join(" · ");
+            return `<div class="machine">
+              <div class="machine-main"><div class="machine-title"><strong>${esc(alias || name || id)}</strong></div><div class="subtle machine-meta">${esc(meta)}</div></div>
+              <div class="machine-actions">
+                <span class="muted machine-status"><span class="dot${c.online ? " on" : ""}"></span>${c.online ? t("online") : t("offline")}</span>
+                <button class="btn" type="button" data-alias-device="${esc(id)}">${alias ? t("editAlias") : t("setAlias")}</button>
+              </div>
+            </div>`;
+          }).join("")}</div>
         </section>`;
+      }
+      function aliasPromptView() {
+        const editor = state.aliasEditor;
+        if (!editor) return "";
+        const computer = state.computers.find((item) => String(item.id) === editor.deviceId);
+        if (!computer) return "";
+        const busy = Boolean(editor.busy);
+        const hasAlias = Boolean(String(computer.alias || "").trim());
+        return `<div class="shade" data-alias-action="shade"><div class="prompt" role="dialog" aria-modal="true" aria-labelledby="alias-title">
+          <form class="alias-form" id="alias-form">
+            <h3 id="alias-title">${t("aliasTitle")}</h3>
+            <div class="alias-context">
+              <div class="kv"><span class="subtle">${t("originalName")}</span><span>${esc(computer.name || computer.id || "—")}</span></div>
+              <div class="kv"><span class="subtle">${t("deviceId")}</span><span>${esc(computer.id || "—")}</span></div>
+            </div>
+            <div class="alias-field"><label for="alias-input">${t("aliasLabel")}</label><input id="alias-input" maxlength="64" autocomplete="off" value="${esc(editor.value)}" placeholder="${esc(t("aliasPlaceholder"))}" ${busy ? "disabled" : ""} /><p class="subtle" style="margin:0">${t("aliasHint")}</p></div>
+            ${editor.error ? `<p class="err" style="margin:0">${esc(editor.error)}</p>` : ""}
+            <div class="row" style="justify-content:flex-end">
+              ${hasAlias ? `<button class="btn danger" type="button" data-alias-action="clear" ${busy ? "disabled" : ""}>${t("clearAlias")}</button>` : ""}
+              <button class="btn" type="button" data-alias-action="cancel" ${busy ? "disabled" : ""}>${t("promptCancel")}</button>
+              <button class="btn primary" type="submit" ${busy ? "disabled" : ""}>${busy ? t("savingAlias") : t("saveAlias")}</button>
+            </div>
+          </form>
+        </div></div>`;
       }
       function render() {
         document.documentElement.lang = state.locale === "zh" ? "zh-CN" : "en";
@@ -945,7 +1042,7 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
         else if (isPlugins()) root.innerHTML = pluginsView();
         else if (signedIn()) root.innerHTML = appView();
         else root.innerHTML = homeView();
-        root.insertAdjacentHTML("beforeend", promptView());
+        root.insertAdjacentHTML("beforeend", promptView() + aliasPromptView());
         bind();
         void renderBlogMermaid();
       }
@@ -985,6 +1082,23 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
         });
         document.querySelectorAll("[data-copy]").forEach((b) => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy));
         document.querySelectorAll("[data-copy-secret]").forEach((b) => b.onclick = () => { if (state.secret) navigator.clipboard.writeText(state.secret); });
+        document.querySelectorAll("[data-alias-device]").forEach((b) => b.onclick = () => openAliasEditor(b.dataset.aliasDevice));
+        document.querySelectorAll("[data-alias-action]").forEach((b) => {
+          b.onclick = (e) => {
+            const editor = state.aliasEditor;
+            if (!editor || editor.busy) return;
+            const act = b.dataset.aliasAction;
+            if (act === "shade" && e.target !== b) return;
+            if (act === "cancel" || act === "shade") { state.aliasEditor = null; render(); return; }
+            if (act === "clear") void saveComputerAlias("");
+          };
+        });
+        const aliasForm = $("#alias-form");
+        if (aliasForm) aliasForm.onsubmit = (e) => { e.preventDefault(); void saveComputerAlias($("#alias-input").value); };
+        const aliasInput = $("#alias-input");
+        if (aliasInput) aliasInput.onkeydown = (e) => {
+          if (e.key === "Escape" && state.aliasEditor && !state.aliasEditor.busy) { e.preventDefault(); state.aliasEditor = null; render(); }
+        };
         requestAnimationFrame(syncSegments);
       }
       window.addEventListener("popstate", () => { void Promise.all([loadBlog(), loadPluginRegistry()]).then(render); });

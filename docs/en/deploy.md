@@ -56,27 +56,32 @@ git clone https://github.com/TITOCHAN2023/fleetForAgent.git
 cd fleetForAgent/packages/fleet-worker
 npm install
 npx wrangler login
+```
+
+Before deploying, replace both production-domain values in `wrangler.toml`: set `HUB_ORIGIN` to your exact public origin and set `[[routes]].pattern` to its hostname. Then register these callbacks in your own Google and X OAuth applications:
+
+```text
+https://your.example/v1/auth/callback/google
+https://your.example/v1/auth/callback/x
+```
+
+The callback origin, `HUB_ORIGIN`, and route hostname must describe the same site; otherwise login fails or issued `flt_1` tokens have the wrong audience. Now deploy:
+
+```bash
 npx wrangler deploy
 ```
 
-`wrangler.toml` sets `workers_dev = false`, so there is no `*.workers.dev` URL. Bind a custom domain (Cloudflare Dashboard → Workers → Triggers → Custom Domain) and paste that origin into the Agent. This repo's production host is `https://fleet.ginfo.cc`. Flip `workers_dev` back to `true` for a workers.dev preview.
+`wrangler.toml` sets `workers_dev = false`, so there is no `*.workers.dev` URL. Bind that custom domain in Cloudflare and paste its origin into the Agent. This repo's production host is `https://fleet.ginfo.cc`. For a workers.dev preview, enable `workers_dev`, remove the custom route, and use the workers.dev origin consistently in OAuth and `HUB_ORIGIN`.
 
-### Token (recommended in production)
+### Authentication
 
 ```bash
-npx wrangler secret put HUB_TOKEN
 npx wrangler secret put ADMIN_EMAILS
 ```
 
-`ADMIN_EMAILS` is a comma or whitespace list of cookie-session emails that may open `/ops` on this same Worker. Empty / unset = no admins. Not `HUB_TOKEN` / `Fleet-OAEP`. Do not put emails in `[vars]`.
+The public Worker has no deployment-wide machine-control credential. Configure the OAuth providers described in [Auth](auth.md), sign in, and issue one per-account `flt_1` token from Settings. Agents and the local Tool use Fleet-OAEP; remote MCP accepts Bearer only for session initialization. Every machine route stays scoped to that account.
 
-After `HUB_TOKEN`, device connections and control-plane calls must send:
-
-```
-Authorization: Bearer <HUB_TOKEN>
-```
-
-The local Agent settings page has a Hub token field. With no secret the Worker is open — only for bringing it up yourself.
+`ADMIN_EMAILS` is a comma or whitespace list of cookie-session emails that may open `/ops` on this same Worker. Empty / unset = no admins. It never authenticates a machine-control request or adds authority beyond that user's existing account-scoped access. Do not put emails in `[vars]`.
 
 Local debug:
 
@@ -87,11 +92,17 @@ npx wrangler dev --port 8787
 
 Agent: `http://127.0.0.1:8787` (turned into `ws://…/v1/device`).
 
-### Optional direct data channel and self-hosted STUN
+### Default direct data channel and optional self-hosted STUN
 
-Agent 0.6.1 and local `fleet-tool` 0.6.1 keep the existing WSS control connection while attempting a WebRTC DataChannel. Completing the short signaling context does not cancel the established session. A successful direct path carries the same `{ v, type, id, corr, t, body }` used by WSS for run, panes, desktop, and plugins. New peers negotiate terminal-result ACKs: if a DataChannel write succeeds but the Tool never receives it, the Agent replays that reply once through WSS and closes the unhealthy direct session. Healthy direct business traffic still bypasses the Worker, and old peers keep their existing behavior because they do not negotiate the extension. ICE failure, timeout, or a client without `rtc_v1` falls back to the existing Worker → WSS route. Remote `/mcp` and `/mcp/sse` execute inside the Worker and remain relayed because Workers do not expose a UDP socket.
+Agent 0.6.1 and local `fleet-tool` 0.6.3 keep the existing WSS control connection while attempting a WebRTC DataChannel. Completing the short signaling context does not cancel the established session. A successful direct path carries the same `{ v, type, id, corr, t, body }` used by WSS for run, panes, desktop, and plugins. New peers negotiate terminal-result ACKs: if a DataChannel write succeeds but the Tool never receives it, the Agent replays that reply once through WSS and closes the unhealthy direct session. Healthy direct business traffic still bypasses the Worker, and old peers keep their existing behavior because they do not negotiate the extension. ICE failure, timeout, or a client without `rtc_v1` falls back to the existing Worker → WSS route. Remote `/mcp` and `/mcp/sse` execute inside the Worker and remain relayed because Workers do not expose a UDP socket.
 
-STUN discovers public mappings; it does not relay command data. The first version deliberately has no TURN path. To self-host coturn on a small VPS, configure it in STUN-only mode on UDP 3478, then set this public Worker variable:
+STUN discovers public mappings; it does not relay command data. The Worker ships with Cloudflare STUN in its public configuration:
+
+```toml
+RTC_STUN_URLS = "stun:stun.cloudflare.com:3478"
+```
+
+The Agent and Tool need no separate setting; they obtain this address from the Worker for every new RTC session. The first version deliberately has no TURN path. To self-host coturn on a small VPS, configure it in STUN-only mode on UDP 3478, then replace the default public Worker variable:
 
 ```toml
 RTC_STUN_URLS = "stun:stun.example.com:3478"
@@ -106,14 +117,16 @@ No Cloudflare. One Node 18+ machine:
 ```bash
 cd packages/fleet-hub
 npm install
-HUB_TOKEN=change-me PORT=8787 HOST=0.0.0.0 npm start
+SELF_HOST_TOKEN=change-me PORT=8787 HOST=0.0.0.0 npm start
 ```
 
 Local Agent: `http://127.0.0.1:8787`. On the public internet put Caddy / nginx in front for HTTPS; Agent uses `hub.example.com`.
 
 Control-plane paths match the Worker: `/v1/health`, `/v1/list_computers`, `/v1/run`, `/v1/get_result`, `/v1/read_screen`, `/v1/type`. Devices still use `WSS /v1/device`.
 
-This Node hub is a shared `HUB_TOKEN` relay: no `flt_1`, no per-account isolation. An empty `HUB_TOKEN` is **loopback-only** (`HOST=127.0.0.1`). Binding `0.0.0.0` or a public address requires a token.
+This Node hub is a single-user `SELF_HOST_TOKEN` relay: no `flt_1`, no per-account isolation. An empty `SELF_HOST_TOKEN` is **loopback-only** (`HOST=127.0.0.1`). Binding `0.0.0.0` or a public address requires a token. Agents and Tools keep their existing `FLEET_TOKEN` setting and receive the same value.
+
+Existing installations may keep the deprecated `HUB_TOKEN` environment name during migration. New installations should use `SELF_HOST_TOKEN`; it takes precedence when both are present.
 
 systemd example:
 
@@ -121,7 +134,7 @@ systemd example:
 [Service]
 WorkingDirectory=/opt/fleet/packages/fleet-hub
 Environment=PORT=8787
-Environment=HUB_TOKEN=change-me
+Environment=SELF_HOST_TOKEN=change-me
 ExecStart=/usr/bin/node index.mjs
 Restart=always
 ```
@@ -187,7 +200,7 @@ gh release create v0.x.0 public/dl/FleetAgent-* public/dl/fleet-agent-linux-amd6
 
 ## 3. List machines, pick one, run
 
-Worker and Node hubs share the same paths. Replace `$HUB` with `https://fleet-hub.<account>.workers.dev` or `https://hub.example.com`.
+Worker and Node hubs share the same paths, not the same authentication. For the Worker, use `fleet-tool` with `FLEET_URL` + the account's `flt_1`; it performs the Fleet-OAEP challenge. The raw Bearer examples below are only for the single-user Node hub. Set `$HUB=https://hub.example.com` and `$SELF_HOST_TOKEN` to the value used by the Node process.
 
 Health:
 
@@ -199,7 +212,7 @@ List devices (no IPs):
 
 ```bash
 curl -X POST $HUB/v1/list_computers \
-  -H "authorization: Bearer $HUB_TOKEN" \
+  -H "authorization: Bearer $SELF_HOST_TOKEN" \
   -H "content-type: application/json" \
   -d '{}'
 ```
@@ -208,7 +221,7 @@ Run a command:
 
 ```bash
 curl -X POST $HUB/v1/run \
-  -H "authorization: Bearer $HUB_TOKEN" \
+  -H "authorization: Bearer $SELF_HOST_TOKEN" \
   -H "content-type: application/json" \
   -d '{"device_id":"<id>","command":"uname -a"}'
 ```
@@ -217,7 +230,7 @@ Returns `{ "corr": "...", "status": "running" }`. Then fetch the result:
 
 ```bash
 curl -X POST $HUB/v1/get_result \
-  -H "authorization: Bearer $HUB_TOKEN" \
+  -H "authorization: Bearer $SELF_HOST_TOKEN" \
   -H "content-type: application/json" \
   -d '{"device_id":"<id>","corr":"<corr>"}'
 ```
@@ -237,7 +250,7 @@ The job lives in a **pane on the device**, not on the hub request.
 
 ```bash
 # returns immediately { corr, status: running }
-curl -X POST $HUB/v1/run -H "authorization: Bearer $HUB_TOKEN" \
+curl -X POST $HUB/v1/run -H "authorization: Bearer $SELF_HOST_TOKEN" \
   -H "content-type: application/json" \
   -d '{"device_id":"<id>","command":"yes"}'
 
@@ -275,7 +288,7 @@ Any Node host, or Neon + your usual frontend host. Console and hub are separate:
 - Devices only dial out. Home routers need no port map.
 - Token goes in the `Authorization` header, not the URL.
 - The three local permission levels run on the device; the hub cannot change them. They cover run/type and every plugin installation, removal, task, and peer operation. `allow` removes the extra click, not the destructive-command policy or plugin source/action/runtime/SHA-256 checks; changing between WSS and RTC cannot bypass this decision.
-- Worker `HUB_TOKEN` is an optional super operator. The Node hub requires `HUB_TOKEN` on a public bind (empty token is loopback-only).
+- Worker machine access is always account-scoped; the optional ops allowlist grants no extra machine-control authority. The single-user Node hub requires `SELF_HOST_TOKEN` on a public bind (empty token is loopback-only), and possession grants full control of that instance.
 - Machines cannot ping each other. There is no LAN overlay.
 
 ---

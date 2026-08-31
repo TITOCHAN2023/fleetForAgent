@@ -52,9 +52,9 @@ Remote MCP is the explicit Bearer exception. The recommended Streamable HTTP end
 
 Resetting the token deletes the old keypair and closes every live device WebSocket for that account (`1008 token reset`). Legacy `flt_` hex Bearer is rejected with an English `HIGH_SEC` error: update the agent / MCP client, then issue a new token.
 
-`HUB_ORIGIN` is set in `packages/fleet-worker/wrangler.toml` `[vars]`. Optional `HUB_TOKEN` remains HTTP-only super for list/run; it cannot steal a device WebSocket.
+`HUB_ORIGIN` is set in `packages/fleet-worker/wrangler.toml` `[vars]`. The public Worker has no shared cross-account machine-control credential: OAEP and MCP actors always resolve to one account, while the login cookie is scoped to that same account.
 
-Optional `ADMIN_EMAILS` is a different secret: cookie-session emails that may open `/ops` on this Worker. Empty = no admins. Not `HUB_TOKEN` / `actor.super` / `Fleet-OAEP`.
+Optional `ADMIN_EMAILS` only permits matching cookie sessions to open `/ops` on this Worker. Empty = no admins. It grants no machine-control authority beyond that user's existing account-scoped web access, and authorization headers never grant ops access.
 
 ```bash
 npx wrangler secret put ADMIN_EMAILS

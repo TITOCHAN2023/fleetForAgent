@@ -7,20 +7,22 @@
  *
  * Auth: per-account flt_1 tokens (RSA-2048, aud = HUB_ORIGIN). /v1 operators
  * and agents present Fleet-OAEP wraps. Remote MCP uses Bearer to initialize
- * Streamable HTTP or classic SSE sessions; session endpoints never carry the token. Optional secret
- * HUB_TOKEN is a super operator for HTTP list/run only — it cannot steal a
- * device WebSocket. Empty HUB_TOKEN = no super user. Optional ADMIN_EMAILS
- * is a cookie-session list for /ops on this same Worker. Empty = no admins.
+ * Streamable HTTP or classic SSE sessions; session endpoints never carry the token.
+ * ADMIN_EMAILS is an optional cookie-session list for /ops on this same
+ * Worker. It grants no extra machine-control authority.
  */
 
 import { handleOAuth } from "./oauth";
 import { applyBannedState, rejectIfBanned } from "./ban.mjs";
 import { canClaimDevice, deviceOwnerConflict } from "./bind.mjs";
 import {
+  type DeviceCatalogAccess,
   deviceCatalogKey,
   listCatalogDevices,
   markUserDeviceIndexReady,
-  rememberDeviceOwner,
+  resolveCatalogDevice,
+  setCatalogDeviceAlias,
+  storeCatalogDevice,
 } from "./device-catalog.mjs";
 import { handleOpsRoute, isOpsAdmin } from "./ops.mjs";
 import {
@@ -102,7 +104,7 @@ export interface Env {
   FLEET: DurableObjectNamespace;
   MCP: DurableObjectNamespace;
   PEER_SESSION: DurableObjectNamespace;
-  HUB_TOKEN?: string;
+  REVOCATION: DurableObjectNamespace;
   ADMIN_EMAILS?: string;
   HUB_ORIGIN?: string;
   ASSETS?: Fetcher;
@@ -120,6 +122,7 @@ export interface Env {
 export { PeerSessionDO };
 
 export const PEER_SESSION_ACCOUNT_LIMIT = 32;
+export const REVOCATION_FANOUT = 64;
 
 type PeerSessionReservation = {
   sessionId: string;
@@ -200,6 +203,7 @@ function isDeviceEnvelope(value: unknown): value is Envelope {
 
 type DeviceRow = {
   id: string;
+  alias?: string;
   name: string;
   os: string;
   online: boolean;
@@ -209,6 +213,8 @@ type DeviceRow = {
   userId?: string;
   caps?: string[];
   permit?: "off" | "ask" | "allow";
+  /** Internal socket generation. Never returned by list_computers. */
+  connectionId?: string;
 };
 
 type WsAttachment = {
@@ -220,9 +226,10 @@ type WsAttachment = {
   caps?: string[];
   permit?: string;
   agentVer?: string;
+  connectionId?: string;
 };
 
-type Actor = { id: string; email?: string; kid?: string; super?: boolean; banned?: boolean };
+type Actor = { id: string; email?: string; kid?: string; banned?: boolean };
 
 type UserRow = {
   id: string;
@@ -334,8 +341,8 @@ export default {
       );
     }
     if (url.pathname === "/v1/me" && request.method === "GET") {
-      const resolved = await resolveActor(request, env, fleet);
-      if (!resolved.actor || resolved.actor.super) return deny(resolved, true);
+      const resolved = await resolveActor(request, fleet);
+      if (!resolved.actor) return deny(resolved);
       return json({
         id: resolved.actor.id,
         email: resolved.actor.email,
@@ -343,15 +350,15 @@ export default {
       });
     }
     if (url.pathname === "/v1/hub_token" && request.method === "GET") {
-      const resolved = await resolveActor(request, env, fleet);
-      if (!resolved.actor || resolved.actor.super) return deny(resolved, true);
+      const resolved = await resolveActor(request, fleet);
+      if (!resolved.actor) return deny(resolved);
       return fleet.fetch(
         new Request(`https://fleet/token-meta?user=${encodeURIComponent(resolved.actor.id)}`),
       );
     }
     if (url.pathname === "/v1/hub_token" && request.method === "POST") {
-      const resolved = await resolveActor(request, env, fleet);
-      if (!resolved.actor || resolved.actor.super) return deny(resolved, true);
+      const resolved = await resolveActor(request, fleet);
+      if (!resolved.actor) return deny(resolved);
       const aud = encodeURIComponent(configuredOrigin(env));
       return fleet.fetch(
         new Request(
@@ -371,14 +378,14 @@ export default {
     }
 
     if (url.pathname === "/v1/device") {
-      const resolved = await resolveActor(request, env, fleet);
+      const resolved = await resolveActor(request, fleet);
       if (!resolved.actor) return deny(resolved);
       const actor = resolved.actor;
-      if (!actor.kid || actor.super) {
+      if (!actor.kid) {
         return json({ error: "device WebSocket requires a per-account Hub token" }, 401);
       }
       const deviceId = deviceIdFrom(request);
-      if (!deviceId) return json({ error: "x-device-id required" }, 400);
+      if (!validDeviceId(deviceId)) return json({ error: "valid x-device-id required" }, 400);
       const rowRes = await fleet.fetch(
         new Request(`https://fleet/device?id=${encodeURIComponent(deviceId)}`),
       );
@@ -393,7 +400,7 @@ export default {
       return stub.fetch(new Request(request, { headers }));
     }
 
-    const resolved = await resolveActor(request, env, fleet);
+    const resolved = await resolveActor(request, fleet);
     if (!resolved.actor) return deny(resolved);
     const response = await handleAuthorizedOperatorRequest(request, env, fleet, resolved.actor);
     return response ?? json({ error: "not found" }, 404);
@@ -405,11 +412,28 @@ async function handleAuthorizedOperatorRequest(
   env: Env,
   fleet: DurableObjectStub,
   actor: Actor,
+  authIsCurrent = false,
 ): Promise<Response | null> {
+  if (actor.kid && !authIsCurrent) {
+    // Authentication happens before route bodies are consumed. Buffer first,
+    // then revalidate the kid so an old-token request cannot hold a slow body
+    // across reset and dispatch against the replacement device connection.
+    if (request.body && request.method !== "GET" && request.method !== "HEAD") {
+      const body = await request.arrayBuffer();
+      request = new Request(request, { body });
+    }
+    const current = await fleet.fetch(
+      new Request("https://fleet/validate-mcp", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: actor.id, kid: actor.kid }),
+      }),
+    );
+    if (!current.ok) return withCors(current);
+  }
   const url = new URL(request.url);
 
   if (isPluginArtifactPath(url.pathname)) {
-    if (actor.super) return json({ error: "account authentication required" }, 401);
     return serveOfficialPluginArtifact(request);
   }
 
@@ -419,18 +443,19 @@ async function handleAuthorizedOperatorRequest(
 
   if (url.pathname === "/v1/rtc/config" && request.method === "POST") {
     const body = (await request.json().catch(() => ({}))) as { device_id?: string };
-    if (!actor.kid || actor.super)
+    if (!actor.kid)
       return json({ error: "RTC requires a per-account hub token" }, 401);
     if (!body.device_id) return json({ error: "device_id required" }, 400);
-    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-    const catalog = await fleet.fetch(
-      new Request(`https://fleet/device?id=${encodeURIComponent(body.device_id)}`),
-    );
-    const row = (await catalog.json()) as DeviceRow;
-    if (!row.online || !normalizeCaps(row.caps).includes("rtc_v1")) {
-      return json({ available: false, reason: "agent does not advertise rtc_v1" });
+    const device = await resolveOwnedDevice(fleet, actor, body.device_id);
+    if (!device) return json({ error: "not found" }, 404);
+    if (!device.online || !normalizeCaps(device.caps).includes("rtc_v1")) {
+      return json({
+        available: false,
+        device_id: device.id,
+        reason: "agent does not advertise rtc_v1",
+      });
     }
-    return json({ available: true, stun_urls: rtcStunURLs(env) });
+    return json({ available: true, device_id: device.id, stun_urls: rtcStunURLs(env) });
   }
 
   if (url.pathname === "/v1/rtc/offer" && request.method === "POST") {
@@ -439,13 +464,14 @@ async function handleAuthorizedOperatorRequest(
       sid?: string;
       offer?: string;
     };
-    if (!actor.kid || actor.super)
+    if (!actor.kid)
       return json({ error: "RTC requires a per-account hub token" }, 401);
     if (!body.device_id || !validRtcSid(body.sid) || !validRtcSdp(body.offer)) {
       return json({ error: "valid device_id, sid, and offer required" }, 400);
     }
-    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-    const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+    const device = await resolveOwnedDevice(fleet, actor, body.device_id);
+    if (!device) return json({ error: "not found" }, 404);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(device.id));
     return stub.fetch(
       new Request("https://device/rtc-offer", {
         method: "POST",
@@ -455,7 +481,7 @@ async function handleAuthorizedOperatorRequest(
           offer: body.offer,
           user_id: actor.id,
           kid: actor.kid,
-          device_id: body.device_id,
+          device_id: device.id,
           operator_id: fingerprintFromHeaders(request.headers),
           stun_urls: rtcStunURLs(env),
         }),
@@ -465,12 +491,13 @@ async function handleAuthorizedOperatorRequest(
 
   if (url.pathname === "/v1/rtc/session" && request.method === "POST") {
     const body = (await request.json().catch(() => ({}))) as { device_id?: string; sid?: string };
-    if (!actor.kid || actor.super)
+    if (!actor.kid)
       return json({ error: "RTC requires a per-account hub token" }, 401);
     if (!body.device_id || !validRtcSid(body.sid))
       return json({ error: "device_id and sid required" }, 400);
-    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-    const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+    const device = await resolveOwnedDevice(fleet, actor, body.device_id);
+    if (!device) return json({ error: "not found" }, 404);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(device.id));
     return stub.fetch(
       new Request("https://device/rtc-session", {
         method: "POST",
@@ -487,12 +514,13 @@ async function handleAuthorizedOperatorRequest(
 
   if (url.pathname === "/v1/rtc/cancel" && request.method === "POST") {
     const body = (await request.json().catch(() => ({}))) as { device_id?: string; sid?: string };
-    if (!actor.kid || actor.super)
+    if (!actor.kid)
       return json({ error: "RTC requires a per-account hub token" }, 401);
     if (!body.device_id || !validRtcSid(body.sid))
       return json({ error: "device_id and sid required" }, 400);
-    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-    const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+    const device = await resolveOwnedDevice(fleet, actor, body.device_id);
+    if (!device) return json({ error: "not found" }, 404);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(device.id));
     return stub.fetch(
       new Request("https://device/rtc-cancel", {
         method: "POST",
@@ -516,8 +544,9 @@ async function handleAuthorizedOperatorRequest(
     if (!body.device_id || !validRtcCorr(String(body.corr ?? "")) || body.type !== "desktop") {
       return json({ error: "valid device_id, corr, and type required" }, 400);
     }
-    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-    const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+    const device = await resolveOwnedDevice(fleet, actor, body.device_id);
+    if (!device) return json({ error: "not found" }, 404);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(device.id));
     const q = new URLSearchParams({ corr: body.corr!, type: body.type });
     return stub.fetch(
       new Request(`https://device/rtc-result?${q}`, { headers: operatorHeaders(request) }),
@@ -525,35 +554,45 @@ async function handleAuthorizedOperatorRequest(
   }
 
   if (url.pathname === "/v1/list_computers" && request.method === "POST") {
-    const q = actor.super ? "" : `?user=${encodeURIComponent(actor.id)}`;
-    return fleet.fetch(new Request(`https://fleet/list${q}`));
+    return fleet.fetch(
+      new Request(`https://fleet/list?user=${encodeURIComponent(actor.id)}`),
+    );
+  }
+
+  if (url.pathname === "/v1/set_computer_alias" && request.method === "POST") {
+    const body = (await request.json().catch(() => ({}))) as {
+      device_id?: unknown;
+      alias?: unknown;
+    };
+    if (typeof body.alias !== "string") return json({ error: "alias must be a string" }, 400);
+    return fleet.fetch(
+      new Request("https://fleet/set-alias", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ user_id: actor.id, device_id: body.device_id, alias: body.alias }),
+      }),
+    );
   }
 
   if (url.pathname === "/v1/get_computer" && request.method === "POST") {
     const body = (await request.json()) as { device_id?: string };
     if (!body.device_id) return json({ error: "device_id required" }, 400);
-    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-    const res = await fleet.fetch(
-      new Request(`https://fleet/device?id=${encodeURIComponent(body.device_id)}`),
-    );
-    const row = computerPublic(await res.json());
+    const device = await resolveOwnedDevice(fleet, actor, body.device_id);
+    const row = computerPublic(device);
     return row ? json(row) : json({ error: "not found" }, 404);
   }
 
   if (url.pathname === "/v1/heartbeat" && request.method === "POST") {
     const body = (await request.json()) as { device_id?: string; wait_ms?: number };
     if (!body.device_id) return json({ error: "device_id required" }, 400);
-    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-    const catalog = await fleet.fetch(
-      new Request(`https://fleet/device?id=${encodeURIComponent(body.device_id)}`),
-    );
-    if (!computerPublic(await catalog.json())) return json({ error: "not found" }, 404);
-    const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+    const device = await resolveOwnedDevice(fleet, actor, body.device_id);
+    if (!device) return json({ error: "not found" }, 404);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(device.id));
     return stub.fetch(
       new Request("https://device/heartbeat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ device_id: body.device_id, wait_ms: body.wait_ms }),
+        body: JSON.stringify({ device_id: device.id, wait_ms: body.wait_ms }),
       }),
     );
   }
@@ -563,16 +602,12 @@ async function handleAuthorizedOperatorRequest(
     request.method === "POST"
   ) {
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-    const deviceId = String(body.device_id ?? "");
-    if (!deviceId) return json({ error: "device_id required" }, 400);
-    if (!(await owns(fleet, actor, deviceId))) return json({ error: "not found" }, 404);
-    const catalog = await fleet.fetch(
-      new Request(`https://fleet/device?id=${encodeURIComponent(deviceId)}`),
-    );
-    const row = (await catalog.json()) as DeviceRow;
-    if (!computerPublic(row)) return json({ error: "not found" }, 404);
-    if (!hasComputerUse(row)) return json(unsupportedCapBody(row), 409);
-    const stub = env.DEVICE.get(env.DEVICE.idFromName(deviceId));
+    const reference = String(body.device_id ?? "");
+    if (!reference) return json({ error: "device_id required" }, 400);
+    const device = await resolveOwnedDevice(fleet, actor, reference);
+    if (!device) return json({ error: "not found" }, 404);
+    if (!hasComputerUse(device)) return json(unsupportedCapBody(device), 409);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(device.id));
     return stub.fetch(
       new Request("https://device/desktop", {
         method: "POST",
@@ -584,24 +619,21 @@ async function handleAuthorizedOperatorRequest(
 
   if (url.pathname === "/v1/plugin" && request.method === "POST") {
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-    const deviceId = String(body.device_id ?? "");
+    const reference = String(body.device_id ?? "");
     const operation = String(body.operation ?? "");
     const pluginId = String(body.plugin_id ?? "");
-    if (!deviceId || !operation) return json({ error: "device_id and operation required" }, 400);
-    if (!(await owns(fleet, actor, deviceId))) return json({ error: "not found" }, 404);
-    const catalog = await fleet.fetch(
-      new Request(`https://fleet/device?id=${encodeURIComponent(deviceId)}`),
-    );
-    const row = (await catalog.json()) as DeviceRow;
-    if (!computerPublic(row)) return json({ error: "not found" }, 404);
-    if (!normalizeCaps(row.caps).includes("plugins")) {
+    if (!reference || !operation)
+      return json({ error: "device_id and operation required" }, 400);
+    const device = await resolveOwnedDevice(fleet, actor, reference);
+    if (!device) return json({ error: "not found" }, 404);
+    if (!normalizeCaps(device.caps).includes("plugins")) {
       return json(
         {
           error: "unsupported",
           code: "UNSUPPORTED_CAP",
           missing: "plugins",
-          agentVer: row.agentVer ?? "",
-          os: row.os ?? "",
+          agentVer: device.agentVer ?? "",
+          os: device.os ?? "",
         },
         409,
       );
@@ -623,7 +655,7 @@ async function handleAuthorizedOperatorRequest(
         );
       }
     }
-    const stub = env.DEVICE.get(env.DEVICE.idFromName(deviceId));
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(device.id));
     return stub.fetch(
       new Request("https://device/plugin", {
         method: "POST",
@@ -645,8 +677,9 @@ async function handleAuthorizedOperatorRequest(
   if (url.pathname === "/v1/plugin_result" && request.method === "POST") {
     const body = (await request.json().catch(() => ({}))) as { device_id?: string; corr?: string };
     if (!body.device_id || !body.corr) return json({ error: "device_id and corr required" }, 400);
-    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-    const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+    const device = await resolveOwnedDevice(fleet, actor, body.device_id);
+    if (!device) return json({ error: "not found" }, 404);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(device.id));
     return stub.fetch(
       new Request(`https://device/plugin-result?corr=${encodeURIComponent(body.corr)}`, {
         headers: operatorHeaders(request),
@@ -656,7 +689,9 @@ async function handleAuthorizedOperatorRequest(
 
   if (url.pathname === "/v1/select_computer" && request.method === "POST") {
     const body = (await request.json()) as { id?: string };
-    return body.id ? json({ selected: body.id }) : json({ error: "id required" }, 400);
+    if (!body.id) return json({ error: "id required" }, 400);
+    const device = await resolveOwnedDevice(fleet, actor, body.id);
+    return device ? json({ selected: device.id }) : json({ error: "not found" }, 404);
   }
 
   if (url.pathname === "/v1/run" && request.method === "POST") {
@@ -667,8 +702,9 @@ async function handleAuthorizedOperatorRequest(
     };
     if (!body.device_id || !body.command)
       return json({ error: "device_id and command required" }, 400);
-    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-    const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+    const device = await resolveOwnedDevice(fleet, actor, body.device_id);
+    if (!device) return json({ error: "not found" }, 404);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(device.id));
     const fp = fingerprintFromHeaders(request.headers);
     return stub.fetch(
       new Request("https://device/run", {
@@ -689,8 +725,9 @@ async function handleAuthorizedOperatorRequest(
     if (!body.device_id || (body.keys == null && body.key == null)) {
       return json({ error: "device_id and keys or key required" }, 400);
     }
-    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-    const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+    const device = await resolveOwnedDevice(fleet, actor, body.device_id);
+    if (!device) return json({ error: "not found" }, 404);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(device.id));
     const fp = fingerprintFromHeaders(request.headers);
     return stub.fetch(
       new Request("https://device/type", {
@@ -704,8 +741,9 @@ async function handleAuthorizedOperatorRequest(
   if (url.pathname === "/v1/read_screen" && request.method === "POST") {
     const body = (await request.json()) as { device_id?: string; corr?: string };
     if (!body.device_id) return json({ error: "device_id required" }, 400);
-    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-    const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+    const device = await resolveOwnedDevice(fleet, actor, body.device_id);
+    if (!device) return json({ error: "not found" }, 404);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(device.id));
     const q = body.corr ? `?corr=${encodeURIComponent(body.corr)}` : "";
     return stub.fetch(
       new Request(`https://device/screen${q}`, { headers: operatorHeaders(request) }),
@@ -715,16 +753,18 @@ async function handleAuthorizedOperatorRequest(
   if (url.pathname === "/v1/list_panes" && request.method === "POST") {
     const body = (await request.json()) as { device_id?: string };
     if (!body.device_id) return json({ error: "device_id required" }, 400);
-    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-    const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+    const device = await resolveOwnedDevice(fleet, actor, body.device_id);
+    if (!device) return json({ error: "not found" }, 404);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(device.id));
     return stub.fetch(new Request("https://device/panes", { method: "POST" }));
   }
 
   if (url.pathname === "/v1/get_result" && request.method === "POST") {
     const body = (await request.json()) as { device_id?: string; corr?: string; wait_ms?: number };
     if (!body.device_id) return json({ error: "device_id required" }, 400);
-    if (!(await owns(fleet, actor, body.device_id))) return json({ error: "not found" }, 404);
-    const stub = env.DEVICE.get(env.DEVICE.idFromName(body.device_id));
+    const device = await resolveOwnedDevice(fleet, actor, body.device_id);
+    if (!device) return json({ error: "not found" }, 404);
+    const stub = env.DEVICE.get(env.DEVICE.idFromName(device.id));
     const q = new URLSearchParams();
     if (body.corr) q.set("corr", body.corr);
     const waitMs = clampHubWaitMs(body.wait_ms);
@@ -745,7 +785,7 @@ async function handlePeerSessionOperatorRequest(
   actor: Actor,
 ): Promise<Response> {
   if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
-  if (!actor.kid || actor.super) {
+  if (!actor.kid) {
     return json({ error: "peer sessions require a per-account Hub token" }, 401);
   }
   const operatorId = fingerprintFromHeaders(request.headers);
@@ -806,11 +846,8 @@ async function handlePeerSessionOperatorRequest(
         prepared.push({ ...endpoint, name: "Fleet Tool" });
         continue;
       }
-      const catalog = await fleet.fetch(
-        new Request(`https://fleet/device?id=${encodeURIComponent(String(endpoint.id))}`),
-      );
-      const row = (await catalog.json()) as DeviceRow;
-      if (!row.id || row.userId !== actor.id) return json({ error: "not found" }, 404);
+      const row = await resolveOwnedDevice(fleet, actor, String(endpoint.id));
+      if (!row) return json({ error: "not found" }, 404);
       if (!row.online) return json({ error: "device offline", code: "OFFLINE" }, 409);
       const advertised = normalizeCaps(row.caps);
       if (!advertised.includes(PEER_SESSION_PROTOCOL)) {
@@ -825,7 +862,7 @@ async function handlePeerSessionOperatorRequest(
           409,
         );
       }
-      prepared.push({ ...endpoint, name: row.name || endpoint.id });
+      prepared.push({ ...endpoint, id: row.id, name: row.alias || row.name || row.id });
     }
     payload = {
       session_id: sessionId,
@@ -867,9 +904,99 @@ async function handlePeerSessionOperatorRequest(
   return new Response(response.body, { status: response.status, headers: responseHeaders });
 }
 
+/**
+ * Bounded revocation tree. Every invocation makes at most REVOCATION_FANOUT
+ * subrequests, so resetting a large device catalog cannot hit one Worker's
+ * subrequest ceiling. A parent succeeds only after every child succeeds.
+ */
+export class RevocationDO implements DurableObject {
+  env: Env;
+
+  constructor(_ctx: DurableObjectState, env: Env) {
+    this.env = env;
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname !== "/kick-tree" || request.method !== "POST") {
+      return json({ error: "not found" }, 404);
+    }
+    const body = (await request.json().catch(() => ({}))) as {
+      devices?: unknown;
+      revocation?: RevocationNotice | null;
+      job?: unknown;
+      node?: unknown;
+    };
+    const job = String(body.job ?? "");
+    const node = String(body.node ?? "root");
+    // Catalog IDs are durable data. Older Workers accepted names that the new
+    // connection path rejects (for example Cf characters or >256 bytes). Keep
+    // every stored string byte-for-byte so reset still reaches the original
+    // DeviceDO. A malformed entry fails only its own leaf after siblings have
+    // been attempted; it must never suppress the rest of the fleet.
+    const devices: unknown[] = Array.isArray(body.devices) ? [...new Set(body.devices)] : [];
+    if (
+      !/^[a-zA-Z0-9._:-]{1,160}$/.test(job) ||
+      !/^[a-zA-Z0-9.:-]{1,160}$/.test(node)
+    ) {
+      return json({ error: "invalid revocation batch" }, 400);
+    }
+    if (devices.length === 0) return json({ ok: true, count: 0 });
+
+    if (devices.length <= REVOCATION_FANOUT) {
+      const settled = await Promise.allSettled(
+        devices.map(async (id) => {
+          if (typeof id !== "string" || id.length === 0) {
+            throw new Error("invalid catalog device id");
+          }
+          const response = await this.env.DEVICE.get(this.env.DEVICE.idFromName(id)).fetch(
+            new Request("https://device/kick", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(body.revocation ?? {}),
+            }),
+          );
+          if (!response.ok) throw new Error(`device revocation failed: ${response.status}`);
+        }),
+      );
+      const failures = settled.filter((result) => result.status === "rejected").length;
+      return failures > 0
+        ? json({ error: `device revocation failed for ${failures} device(s)` }, 500)
+        : json({ ok: true, count: devices.length });
+    }
+
+    const groupSize = Math.ceil(devices.length / REVOCATION_FANOUT);
+    const groups: unknown[][] = [];
+    for (let offset = 0; offset < devices.length; offset += groupSize) {
+      groups.push(devices.slice(offset, offset + groupSize));
+    }
+    const settled = await Promise.allSettled(
+      groups.map(async (group, index) => {
+        const child = `${node}.${index}`;
+        const stub = this.env.REVOCATION.get(
+          this.env.REVOCATION.idFromName(`${job}:${child}`),
+        );
+        const response = await stub.fetch(
+          new Request("https://revocation/kick-tree", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ ...body, devices: group, job, node: child }),
+          }),
+        );
+        if (!response.ok) throw new Error(`revocation subtree failed: ${response.status}`);
+      }),
+    );
+    const failures = settled.filter((result) => result.status === "rejected").length;
+    return failures > 0
+      ? json({ error: `revocation subtree failed for ${failures} branch(es)` }, 500)
+      : json({ ok: true, count: devices.length });
+  }
+}
+
 export class FleetDO implements DurableObject {
   ctx: DurableObjectState;
   env: Env;
+  private userMutationTails = new Map<string, Promise<void>>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
@@ -880,6 +1007,7 @@ export class FleetDO implements DurableObject {
     const url = new URL(request.url);
     if (url.pathname === "/list") {
       const user = url.searchParams.get("user");
+      if (!user) return json({ error: "user required" }, 400);
       const computers = await this.list(user);
       return json({ computers });
     }
@@ -888,17 +1016,50 @@ export class FleetDO implements DurableObject {
       const row = await this.ctx.storage.get<DeviceRow>(deviceCatalogKey(id));
       return json(row ?? {});
     }
+    if (url.pathname === "/resolve-device") {
+      const userId = url.searchParams.get("user") ?? "";
+      const reference = url.searchParams.get("ref") ?? "";
+      const row = await resolveCatalogDevice<DeviceRow>(this.ctx.storage, userId, reference);
+      return row ? json(row) : json({ error: "not found" }, 404);
+    }
+    if (url.pathname === "/set-alias" && request.method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as {
+        user_id?: unknown;
+        device_id?: unknown;
+        alias?: unknown;
+      };
+      const result = await setCatalogDeviceAlias<DeviceRow>(
+        this.ctx.storage,
+        String(body.user_id ?? ""),
+        body.device_id,
+        body.alias,
+      );
+      if (!result.ok) return json({ error: result.error }, result.status);
+      return json({
+        ok: true,
+        device_id: result.device.id,
+        ...(computerPublic(result.device) ?? {}),
+      });
+    }
+    if (url.pathname === "/claim-device" && request.method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as DeviceRow & { kid?: string };
+      const { kid = "", ...row } = body;
+      return this.claimDevice(row, kid);
+    }
+    if (url.pathname === "/touch-device" && request.method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as DeviceRow & { kid?: string };
+      const { kid = "", ...row } = body;
+      return this.touchDevice(row, kid);
+    }
+    if (url.pathname === "/release-device" && request.method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as DeviceRow & { kid?: string };
+      const { kid = "", ...row } = body;
+      return this.releaseDevice(row, kid);
+    }
     if (url.pathname === "/upsert" && request.method === "POST") {
       const row = (await request.json()) as DeviceRow;
-      const prev = await this.ctx.storage.get<DeviceRow>(deviceCatalogKey(row.id));
-      if (deviceOwnerConflict(prev?.userId, row.userId)) {
-        return json({ error: "taken" }, 409);
-      }
-      const next: DeviceRow = { ...prev, ...row, id: row.id };
-      if (prev?.userId && !row.userId) next.userId = prev.userId;
-      await this.ctx.storage.put(deviceCatalogKey(row.id), next);
-      await rememberDeviceOwner(this.ctx.storage, prev, next);
-      return json({ ok: true });
+      const result = await this.ctx.storage.transaction((txn) => this.writeDevice(txn, row));
+      return result.ok ? json({ ok: true }) : json({ error: result.error }, result.status);
     }
     if (url.pathname === "/oauth" && request.method === "POST") {
       const body = (await request.json()) as { email?: string; provider?: string };
@@ -997,38 +1158,152 @@ export class FleetDO implements DurableObject {
     }
     if (url.pathname === "/token-issue" && request.method === "POST") {
       const userId = url.searchParams.get("user") ?? "";
-      const user = await this.userById(userId);
-      if (!user) return json({ error: "unauthorized" }, 401);
-      const banned = rejectIfBanned(user);
-      if (banned) return json({ error: banned.error }, banned.status);
-      const revocation = await this.beginTokenRevocation(user);
-      // A live RTC channel bypasses the hub data path, so revocation is not
-      // complete until every device DO has closed its control socket. Keep the
-      // old signing key for a retry if a kick fails; the revoked marker already
-      // prevents all new authentication with it.
-      await this.kickUserDevices(user.id, revocation);
-      await this.revokeToken(user);
-      const minted = await mintTokenV1({ aud: url.searchParams.get("aud") ?? "" });
-      user.tokenHash = minted.hash;
-      user.tokenPrefix = minted.prefix;
-      user.tokenAt = Date.now();
-      user.kid = minted.kid;
-      user.pub = minted.pub;
-      user.priv = minted.priv;
-      await this.ctx.storage.put(`u:${user.email}`, user);
-      await this.ctx.storage.put(`id:${user.id}`, user.email);
-      await this.ctx.storage.put(`tok:${minted.hash}`, user.id);
-      await this.ctx.storage.put(`kid:${minted.kid}`, user.id);
-      return json({ token: minted.raw, prefix: minted.prefix });
+      const aud = url.searchParams.get("aud") ?? "";
+      return this.withUserMutationLock(userId, async () => {
+        // Read inside the lock. Two reset requests must never operate on the
+        // same stale UserRow or the later one can miss sockets authenticated by
+        // the token minted by the earlier one.
+        const user = await this.userById(userId);
+        if (!user) return json({ error: "unauthorized" }, 401);
+        const banned = rejectIfBanned(user);
+        if (banned) return json({ error: banned.error }, banned.status);
+        const revocation = await this.beginTokenRevocation(user);
+        // A live RTC channel bypasses the hub data path, so revocation is not
+        // complete until every device DO has closed its control socket. Keep the
+        // old signing key for a retry if a kick fails; the revoked marker already
+        // prevents all new authentication with it.
+        await this.kickUserDevices(user.id, revocation);
+        await this.revokeToken(user);
+        const minted = await mintTokenV1({ aud });
+        user.tokenHash = minted.hash;
+        user.tokenPrefix = minted.prefix;
+        user.tokenAt = Date.now();
+        user.kid = minted.kid;
+        user.pub = minted.pub;
+        user.priv = minted.priv;
+        await this.ctx.storage.put(`u:${user.email}`, user);
+        await this.ctx.storage.put(`id:${user.id}`, user.email);
+        await this.ctx.storage.put(`tok:${minted.hash}`, user.id);
+        await this.ctx.storage.put(`kid:${minted.kid}`, user.id);
+        return json({ token: minted.raw, prefix: minted.prefix });
+      });
     }
     return json({ error: "not found" }, 404);
   }
 
-  async list(userId: string | null): Promise<DeviceRow[]> {
+  async claimDevice(row: DeviceRow, kid: string): Promise<Response> {
+    if (!validDeviceId(row.id) || !row.userId || !kid || !validConnectionId(row.connectionId)) {
+      return json({ error: "device claim requires id, user, kid, and connection" }, 401);
+    }
+    const result = await this.ctx.storage.transaction(async (txn) => {
+      const email = await txn.get<string>(`id:${row.userId}`);
+      const user = email ? await txn.get<UserRow>(`u:${email}`) : undefined;
+      const banned = rejectIfBanned(user);
+      if (banned) return { ok: false as const, status: banned.status, error: banned.error };
+      if (
+        !user ||
+        user.id !== row.userId ||
+        user.kid !== kid ||
+        !user.tokenHash ||
+        (await txn.get(`revoked:${kid}`))
+      ) {
+        return {
+          ok: false as const,
+          status: 401,
+          error: "Hub token was reset or revoked",
+        };
+      }
+      return this.writeDevice(txn, row);
+    });
+    return result.ok ? json({ ok: true }) : json({ error: result.error }, result.status);
+  }
+
+  async touchDevice(row: DeviceRow, kid: string): Promise<Response> {
+    if (!validDeviceId(row.id) || !row.userId || !kid || !validConnectionId(row.connectionId)) {
+      return json({ error: "device touch requires id, user, kid, and connection" }, 401);
+    }
+    const result = await this.ctx.storage.transaction(async (txn) => {
+      const email = await txn.get<string>(`id:${row.userId}`);
+      const user = email ? await txn.get<UserRow>(`u:${email}`) : undefined;
+      const banned = rejectIfBanned(user);
+      if (banned) return { ok: false as const, status: banned.status, error: banned.error };
+      if (
+        !user ||
+        user.id !== row.userId ||
+        user.kid !== kid ||
+        !user.tokenHash ||
+        (await txn.get(`revoked:${kid}`))
+      ) {
+        return {
+          ok: false as const,
+          status: 401,
+          error: "Hub token was reset or revoked",
+        };
+      }
+      const current = await txn.get<DeviceRow>(deviceCatalogKey(row.id));
+      if (!current || current.userId !== row.userId) {
+        return { ok: false as const, status: 404, error: "not found" };
+      }
+      if (current.connectionId && current.connectionId !== row.connectionId) {
+        return { ok: false as const, status: 409, error: "stale device connection" };
+      }
+      return this.writeDevice(txn, { ...row, online: true });
+    });
+    return result.ok ? json({ ok: true }) : json({ error: result.error }, result.status);
+  }
+
+  async releaseDevice(row: DeviceRow, kid: string): Promise<Response> {
+    if (!validDeviceId(row.id) || !row.userId || !kid || !validConnectionId(row.connectionId)) {
+      return json({ error: "device release requires id, user, kid, and connection" }, 401);
+    }
+    const result = await this.ctx.storage.transaction(async (txn) => {
+      const current = await txn.get<DeviceRow>(deviceCatalogKey(row.id));
+      if (!current || current.userId !== row.userId) {
+        return { ok: false as const, status: 404, error: "not found" };
+      }
+      if (current.connectionId !== row.connectionId) {
+        return { ok: true as const, stale: true };
+      }
+      await storeCatalogDevice(txn, {
+        ...current,
+        online: false,
+        lastSeen: Date.now(),
+      });
+      return { ok: true as const, stale: false };
+    });
+    return result.ok ? json({ ok: true, stale: result.stale }) : json({ error: result.error }, result.status);
+  }
+
+  async writeDevice(
+    storage: DeviceCatalogAccess,
+    row: DeviceRow,
+  ): Promise<
+    | { ok: true; device: DeviceRow }
+    | { ok: false; status: 400 | 409; error: string }
+  > {
+    if (!validDeviceId(row.id)) return { ok: false, status: 400, error: "valid device id required" };
+    const prev = await storage.get<DeviceRow>(deviceCatalogKey(row.id));
+    if (deviceOwnerConflict(prev?.userId, row.userId)) {
+      return { ok: false, status: 409, error: "taken" };
+    }
+    if (!prev && row.userId) {
+      const aliasOwner = await resolveCatalogDevice<DeviceRow>(storage, row.userId, row.id);
+      if (aliasOwner && aliasOwner.id !== row.id) {
+        return { ok: false, status: 409, error: "device id conflicts with alias" };
+      }
+    }
+    const next: DeviceRow = { ...prev, ...row, id: row.id };
+    if (prev?.userId && !row.userId) next.userId = prev.userId;
+    await storeCatalogDevice(storage, next);
+    return { ok: true, device: next };
+  }
+
+  async list(userId: string): Promise<DeviceRow[]> {
     const rows = await listCatalogDevices<DeviceRow>(this.ctx.storage, userId);
     rows.sort((a, b) => Number(b.online) - Number(a.online) || b.lastSeen - a.lastSeen);
     return rows.map((r) => ({
       id: r.id,
+      alias: r.alias,
       name: r.name,
       os: r.os,
       online: r.online,
@@ -1305,14 +1580,10 @@ export class FleetDO implements DurableObject {
   async beginTokenRevocation(user: UserRow): Promise<RevocationNotice | null> {
     if (!user.kid || !user.priv) return null;
     const kid = user.kid;
+    // A kid is globally unique and old tokens must stay dead. One small marker
+    // per reset is cheaper and safer than a bounded tombstone cache whose
+    // eviction could reopen a delayed request.
     await this.ctx.storage.put(`revoked:${kid}`, Date.now());
-    const previous = (await this.ctx.storage.get<string[]>(`revoked-kids:${user.id}`)) ?? [];
-    const kids = [...previous.filter((value) => value !== kid), kid];
-    while (kids.length > 16) {
-      const dropped = kids.shift();
-      if (dropped) await this.ctx.storage.delete(`revoked:${dropped}`);
-    }
-    await this.ctx.storage.put(`revoked-kids:${user.id}`, kids);
     const statement = await signFleetStatement({
       privatePkcs8B64: user.priv,
       statement: { v: 1, kind: "auth_revoked", kid, at: Date.now(), reason: "token_reset" },
@@ -1320,24 +1591,44 @@ export class FleetDO implements DurableObject {
     return { kid, statement };
   }
 
+  private async withUserMutationLock<T>(userId: string, mutate: () => Promise<T>): Promise<T> {
+    const previous = this.userMutationTails.get(userId) ?? Promise.resolve();
+    let release!: () => void;
+    const tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.userMutationTails.set(userId, tail);
+    await previous;
+    try {
+      return await mutate();
+    } finally {
+      release();
+      if (this.userMutationTails.get(userId) === tail) this.userMutationTails.delete(userId);
+    }
+  }
+
   async kickUserDevices(userId: string, revocation: RevocationNotice | null = null) {
-    const devices = (await this.list(userId)).filter((device) => device.online);
-    for (let i = 0; i < devices.length; i += 32) {
-      await Promise.all(
-        devices.slice(i, i + 32).map((d) =>
-          this.env.DEVICE.get(this.env.DEVICE.idFromName(d.id))
-            .fetch(
-              new Request("https://device/kick", {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify(revocation ?? {}),
-              }),
-            )
-            .then((response) => {
-              if (!response.ok) throw new Error(`device revocation failed: ${response.status}`);
-            }),
-        ),
-      );
+    const devices = await this.list(userId);
+    if (devices.length === 0) return;
+    const job = crypto.randomUUID();
+    const root = this.env.REVOCATION.get(
+      this.env.REVOCATION.idFromName(`${job}:root`),
+    );
+    const response = await root.fetch(
+      new Request("https://revocation/kick-tree", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          devices: devices.map((device) => device.id),
+          revocation,
+          job,
+          node: "root",
+        }),
+      }),
+    );
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error || `device revocation failed: ${response.status}`);
     }
   }
 
@@ -1376,11 +1667,15 @@ export class FleetDO implements DurableObject {
 
   async setUserBanned(id: string, banned: boolean | undefined) {
     if (typeof banned !== "boolean") return null;
-    const user = await this.userById(String(id || "").trim());
-    if (!user) return null;
-    applyBannedState(user, banned);
-    await this.ctx.storage.put(`u:${user.email}`, user);
-    return { id: user.id, banned: Boolean(user.banned), bannedAt: user.bannedAt };
+    const userId = String(id || "").trim();
+    if (!userId) return null;
+    return this.withUserMutationLock(userId, async () => {
+      const user = await this.userById(userId);
+      if (!user) return null;
+      applyBannedState(user, banned);
+      await this.ctx.storage.put(`u:${user.email}`, user);
+      return { id: user.id, banned: Boolean(user.banned), bannedAt: user.bannedAt };
+    });
   }
 
   async register(email: string, password: string): Promise<Response> {
@@ -1638,7 +1933,7 @@ export class McpDO implements DurableObject {
       body: JSON.stringify(body),
     });
     const response =
-      (await handleAuthorizedOperatorRequest(request, this.env, fleet, this.actor)) ??
+      (await handleAuthorizedOperatorRequest(request, this.env, fleet, this.actor, true)) ??
       json({ error: "not found" }, 404);
     const value = (await response.json().catch(() => ({}))) as Record<string, unknown>;
     if (!response.ok) throw new HubRpcError(response.status, value);
@@ -1662,6 +1957,9 @@ export class DeviceDO implements DurableObject {
     string,
     { body: Record<string, unknown>; expiresAt: number }
   >();
+  // Closes the tiny claim-before-accept race locally. If a kick reaches this
+  // DO first, the pending old-kid handshake must not accept a socket later.
+  private revokedKids = new Set<string>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
@@ -1674,19 +1972,34 @@ export class DeviceDO implements DurableObject {
 
     if (url.pathname === "/kick" && request.method === "POST") {
       const revocation = (await request.json().catch(() => ({}))) as Partial<RevocationNotice>;
-      for (const ws of this.ctx.getWebSockets()) {
-        if (revocation.kid && revocation.statement?.payload && revocation.statement.sig) {
-          ws.send(
-            JSON.stringify(
+      if (revocation.kid) {
+        this.revokedKids.add(revocation.kid);
+      }
+      const notice =
+        revocation.kid && revocation.statement?.payload && revocation.statement.sig
+          ? JSON.stringify(
               envelope("auth_revoked", {
                 kid: revocation.kid,
                 statement: revocation.statement,
               }),
-            ),
-          );
+            )
+          : "";
+      let closeFailures = 0;
+      for (const ws of this.ctx.getWebSockets()) {
+        if (notice) {
+          try {
+            ws.send(notice);
+          } catch {
+            // Closing WSS is the old-client-compatible revocation path.
+          }
         }
-        ws.close(1008, "token reset");
+        try {
+          ws.close(1008, "token reset");
+        } catch {
+          closeFailures += 1;
+        }
       }
+      if (closeFailures > 0) return json({ error: "device revocation incomplete" }, 500);
       return json({ ok: true });
     }
 
@@ -1760,21 +2073,28 @@ export class DeviceDO implements DurableObject {
       if (!userId || !kid) {
         return json({ error: "device WebSocket requires a per-account Hub token" }, 401);
       }
-      const validated = await this.fleet().fetch(
-        new Request("https://fleet/validate-mcp", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ id: userId, kid }),
-        }),
-      );
-      if (!validated.ok) return json({ error: "Hub token was reset or revoked" }, 401);
-      const claimed = await this.mark(id, {
+      const connectionId = crypto.randomUUID();
+      const claimed = await this.mark("claim", id, {
         name: request.headers.get("x-device-name") ?? id,
         os: request.headers.get("x-device-os") ?? "linux",
-        online: true,
         userId,
+        kid,
+        connectionId,
       });
-      if (!claimed) return json({ error: "taken" }, 409);
+      if (!claimed.ok) {
+        const body = (await claimed.json().catch(() => ({}))) as Record<string, unknown>;
+        return json(body, claimed.status);
+      }
+      if (this.revokedKids.has(kid)) {
+        await this.mark("release", id, {
+          name: request.headers.get("x-device-name") ?? id,
+          os: request.headers.get("x-device-os") ?? "linux",
+          userId,
+          kid,
+          connectionId,
+        });
+        return json({ error: "Hub token was reset or revoked" }, 401);
+      }
       const pair = new WebSocketPair();
       this.ctx.acceptWebSocket(pair[1]);
       for (const extra of this.ctx.getWebSockets()) {
@@ -1786,6 +2106,7 @@ export class DeviceDO implements DurableObject {
         os: request.headers.get("x-device-os") ?? "linux",
         userId,
         kid,
+        connectionId,
       });
       pair[1].send(
         JSON.stringify(envelope("hello_ok", { heartbeat_s: 3600, ...updateAdvert(this.env) })),
@@ -2067,6 +2388,9 @@ export class DeviceDO implements DurableObject {
       return;
     }
     const att = (ws.deserializeAttachment() ?? {}) as WsAttachment;
+    // Attachments from pre-generation Workers are upgraded in place. The
+    // Agent wire stays unchanged; only the Hub's internal socket identity is new.
+    if (!validConnectionId(att.connectionId)) att.connectionId = crypto.randomUUID();
 
     if (parsed.type === "hello") {
       const os = String(parsed.body.os ?? att.os ?? "linux");
@@ -2075,7 +2399,7 @@ export class DeviceDO implements DurableObject {
       else if (!Array.isArray(att.caps)) att.caps = [];
       const permit = normalizePermit(parsed.body.permit);
       if (permit) att.permit = permit;
-      const agentVer = String(parsed.body.agent_ver ?? att.agentVer ?? "");
+      const agentVer = agentVerFromBody(parsed.body) ?? att.agentVer ?? "";
       att.agentVer = agentVer;
       const arch = archFromBody(parsed.body);
       ws.serializeAttachment({
@@ -2087,17 +2411,20 @@ export class DeviceDO implements DurableObject {
         caps: att.caps,
         permit: att.permit,
         agentVer,
+        connectionId: att.connectionId,
       });
-      await this.mark(att.deviceId ?? "unknown", {
+      const marked = await this.mark("touch", att.deviceId ?? "unknown", {
         name,
         os,
-        online: true,
         agentVer,
         userId: att.userId,
+        kid: att.kid,
+        connectionId: att.connectionId,
         ...(Array.isArray(parsed.body.caps) ? { caps: normalizeCaps(parsed.body.caps) } : {}),
         ...(permit ? { permit } : {}),
         ...(arch !== undefined ? { arch } : {}),
       });
+      if (!marked.ok) ws.close(1008, "token reset");
       return;
     }
 
@@ -2189,17 +2516,23 @@ export class DeviceDO implements DurableObject {
         caps: att.caps,
         permit: att.permit,
         agentVer: att.agentVer,
+        connectionId: att.connectionId,
       });
-      await this.mark(att.deviceId ?? "unknown", {
+      const marked = await this.mark("touch", att.deviceId ?? "unknown", {
         name: att.name ?? att.deviceId ?? "device",
         os: att.os ?? "linux",
-        online: true,
         userId: att.userId,
+        kid: att.kid,
+        connectionId: att.connectionId,
         ...(agentVer !== undefined ? { agentVer } : {}),
         ...(Array.isArray(body.caps) ? { caps: normalizeCaps(body.caps) } : {}),
         ...(permit ? { permit } : {}),
         ...(arch !== undefined ? { arch } : {}),
       });
+      if (!marked.ok) {
+        ws.close(1008, "token reset");
+        return;
+      }
       this.noteBeat();
       ws.send(JSON.stringify(envelope("pong", updateAdvert(this.env), parsed.id)));
       return;
@@ -2263,22 +2596,24 @@ export class DeviceDO implements DurableObject {
   }
 
   async webSocketClose(ws: WebSocket) {
-    // Replacing a socket closes the old one; that close must not flip the
-    // device offline while the new connection is already accepted.
-    const still = this.ctx.getWebSockets().filter((s) => s !== ws);
-    if (still.length > 0) return;
     const att = (ws.deserializeAttachment() ?? {}) as {
       deviceId?: string;
       name?: string;
       os?: string;
       userId?: string;
+      kid?: string;
+      connectionId?: string;
     };
     if (att.deviceId) {
-      await this.mark(att.deviceId, {
+      // Every socket releases its own generation. FleetDO's connection-id CAS
+      // makes replacement closes harmless and still lets the newest socket
+      // mark itself offline if close events arrive out of order.
+      await this.mark("release", att.deviceId, {
         name: att.name ?? att.deviceId,
         os: att.os ?? "linux",
-        online: false,
         userId: att.userId,
+        kid: att.kid,
+        connectionId: att.connectionId,
       });
     }
   }
@@ -2506,38 +2841,44 @@ export class DeviceDO implements DurableObject {
   }
 
   private async mark(
+    mode: "claim" | "touch" | "release",
     id: string,
     extra: {
       name: string;
       os: string;
-      online: boolean;
       agentVer?: string;
       arch?: string;
       userId?: string;
+      kid?: string;
+      connectionId?: string;
       caps?: string[];
       permit?: "off" | "ask" | "allow";
     },
-  ): Promise<boolean> {
+  ): Promise<Response> {
     const row: DeviceRow = {
       id,
       name: extra.name,
       os: extra.os,
-      online: extra.online,
+      online: mode !== "release",
       lastSeen: Date.now(),
       agentVer: extra.agentVer,
       arch: extra.arch,
       userId: extra.userId,
+      connectionId: extra.connectionId,
     };
     if (Array.isArray(extra.caps)) row.caps = extra.caps;
     if (extra.permit) row.permit = extra.permit;
-    const res = await this.fleet().fetch(
-      new Request("https://fleet/upsert", {
+    if (!extra.userId || !extra.kid) {
+      return json({ error: "device presence requires current token" }, 401);
+    }
+    const path = `/${mode}-device`;
+    return this.fleet().fetch(
+      new Request(`https://fleet${path}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(row),
+        body: JSON.stringify({ ...row, kid: extra.kid }),
       }),
     );
-    return res.ok;
   }
 }
 
@@ -2595,6 +2936,14 @@ async function dispatchOps(
   path: string,
 ): Promise<Response> {
   const sess = await resolveSession(request, fleet);
+  if (!isOpsAdmin(sess, env.ADMIN_EMAILS)) {
+    return handleOpsRoute({
+      path,
+      method: request.method,
+      actor: sess,
+      adminEmails: env.ADMIN_EMAILS,
+    });
+  }
   let catalog: { users?: unknown[]; devices?: unknown[] } = {};
   if (path !== "/ops") {
     const res = await fleet.fetch(new Request("https://fleet/ops-catalog"));
@@ -2748,8 +3097,7 @@ function highSecJson(error: string, status = 401) {
   return json({ error, code: "HIGH_SEC" }, status);
 }
 
-function deny(resolved: Resolved, rejectSuper = false) {
-  if (resolved.actor && rejectSuper) return json({ error: "unauthorized" }, 401);
+function deny(resolved: Resolved) {
   if ("error" in resolved && resolved.error) {
     return json(
       resolved.code ? { error: resolved.error, code: resolved.code } : { error: resolved.error },
@@ -2766,14 +3114,9 @@ function fleetChallenge(fleet: DurableObjectStub, kid: string, aud: string) {
 
 async function resolveActor(
   request: Request,
-  env: Env,
   fleet: DurableObjectStub,
 ): Promise<Resolved> {
-  const need = env.HUB_TOKEN?.trim();
   const auth = parseAuthorization(request.headers.get("authorization"));
-  if (need && auth.kind === "bearer" && auth.token === need)
-    return { actor: { id: "*", super: true } };
-
   if (auth.kind === "oaep") {
     const wrapRes = await fleet.fetch(
       new Request("https://fleet/resolve-wrap", {
@@ -2791,10 +3134,7 @@ async function resolveActor(
       code: data.code || "HIGH_SEC",
     };
   }
-  if (auth.kind === "bearer" && isLegacyFlt(auth.token)) {
-    return { error: HIGH_SEC_UPGRADE, status: 401, code: "HIGH_SEC" };
-  }
-  if (auth.kind === "bearer" && auth.token.startsWith("flt_1.")) {
+  if (auth.kind === "bearer" && (isLegacyFlt(auth.token) || auth.token.startsWith("flt_1."))) {
     return { error: HIGH_SEC_UPGRADE, status: 401, code: "HIGH_SEC" };
   }
   if (cookie(request, "fleet_session")) {
@@ -2807,13 +3147,16 @@ async function resolveActor(
   return { error: "unauthorized", status: 401 };
 }
 
-async function owns(fleet: DurableObjectStub, actor: Actor, deviceId: string): Promise<boolean> {
-  if (actor.super) return true;
-  const res = await fleet.fetch(
-    new Request(`https://fleet/device?id=${encodeURIComponent(deviceId)}`),
-  );
-  const row = (await res.json()) as DeviceRow;
-  return Boolean(row.id && row.userId === actor.id);
+async function resolveOwnedDevice(
+  fleet: DurableObjectStub,
+  actor: Actor,
+  reference: string,
+): Promise<DeviceRow | null> {
+  const query = new URLSearchParams({ user: actor.id, ref: reference });
+  const response = await fleet.fetch(new Request(`https://fleet/resolve-device?${query}`));
+  if (!response.ok) return null;
+  const row = (await response.json()) as DeviceRow;
+  return row.id && row.userId === actor.id ? row : null;
 }
 
 function reservePeerSession(
@@ -2982,6 +3325,18 @@ function deviceIdFrom(request: Request): string | null {
   if (header) return header;
   const q = new URL(request.url).searchParams.get("id")?.trim();
   return q || null;
+}
+
+function validDeviceId(value: unknown): value is string {
+  if (typeof value !== "string" || !value || value.trim() !== value) return false;
+  return (
+    new TextEncoder().encode(value).byteLength <= 256 &&
+    !/[\p{Cc}\p{Cf}\p{Cs}]/u.test(value)
+  );
+}
+
+function validConnectionId(value: unknown): value is string {
+  return typeof value === "string" && validPeerSessionId(value);
 }
 
 function rtcStunURLs(env: Env): string[] {

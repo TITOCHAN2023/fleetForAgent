@@ -28,6 +28,11 @@ test("Streamable HTTP reuses McpDO without a new migration and persists eviction
   assert.match(worker, /wrapTransportRpc\(value, isDeviceTransportPath\(path\) \? "ws" : null\)/);
 });
 
+test("token reset fanout has an explicit RevocationDO migration", () => {
+  assert.match(wrangler, /name = "REVOCATION"\s+class_name = "RevocationDO"/);
+  assert.match(wrangler, /tag = "v5"\s+new_sqlite_classes = \["RevocationDO"\]/);
+});
+
 test("classic SSE remains a separate endpoint", () => {
   assert.match(worker, /if \(path === "\/mcp\/sse"\)/);
   assert.match(worker, /dispatchMcpSse/);

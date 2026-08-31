@@ -3,11 +3,8 @@ main = "src/index.ts"
 compatibility_date = "2026-04-07"
 workers_dev = false
 
-# Optional shared token. Leave unset for a first bring-up, then:
-#   npx wrangler secret put HUB_TOKEN
-# [vars] must not hold the token.
-#
-# Optional cookie-session ops emails (not HUB_TOKEN / Fleet-OAEP). Empty = no admins:
+# Optional cookie-session ops emails. This authorizes only the ops console;
+# it is never accepted by the machine-control data plane. Empty = no admins:
 #   npx wrangler secret put ADMIN_EMAILS
 # [vars] must not hold emails.
 #
@@ -22,11 +19,11 @@ workers_dev = false
 # aud inside every flt_1 token. Never taken from the Host header.
 [vars]
 HUB_ORIGIN = "https://fleet.ginfo.cc"
-# Optional, public configuration rather than a secret. Comma-separate up to
-# four STUN URLs. Leave unset until the hostname really serves UDP 3478;
-# bounded task/shell calls may keep their existing Hub/WSS path when direct ICE
-# is unavailable. Generic peer sessions remain direct-only and fail closed.
-# RTC_STUN_URLS = "stun:stun.example.com:3478"
+# Public configuration rather than a secret. Cloudflare's public STUN is the
+# default; replace it with up to four comma-separated STUN URLs when needed.
+# Bounded task/shell calls keep their Hub/WSS fallback when direct ICE is
+# unavailable. Generic peer sessions remain direct-only and fail closed.
+RTC_STUN_URLS = "stun:stun.cloudflare.com:3478"
 
 [[routes]]
 pattern = "fleet.ginfo.cc"
@@ -55,6 +52,10 @@ class_name = "McpDO"
 name = "PEER_SESSION"
 class_name = "PeerSessionDO"
 
+[[durable_objects.bindings]]
+name = "REVOCATION"
+class_name = "RevocationDO"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["DeviceDO", "FleetDO"]
@@ -71,3 +72,7 @@ new_sqlite_classes = ["TransferDO"]
 tag = "v4"
 new_sqlite_classes = ["PeerSessionDO"]
 deleted_classes = ["TransferDO"]
+
+[[migrations]]
+tag = "v5"
+new_sqlite_classes = ["RevocationDO"]

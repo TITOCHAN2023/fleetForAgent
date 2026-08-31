@@ -25,12 +25,14 @@ export function DeviceRail({
   devices,
   onSelect,
   onToggle,
+  onSetAlias,
   onAdd,
   onRemove,
 }: {
   devices: DeviceDto[];
   onSelect: (id: string) => void;
   onToggle: (id: string, status: "online" | "offline") => void;
+  onSetAlias: (id: string, alias: string) => Promise<void> | void;
   onAdd: (p: { name: string; os: OsKind; locationTag: string }) => Promise<void> | void;
   onRemove: (id: string) => void;
 }) {
@@ -40,6 +42,7 @@ export function DeviceRail({
   const [os, setOs] = useState<OsKind>("linux");
   const [locationTag, setLocationTag] = useState("home");
   const [busy, setBusy] = useState(false);
+  const [aliasBusy, setAliasBusy] = useState<string | null>(null);
 
   return (
     <aside className="flex min-h-0 flex-col gap-2">
@@ -73,7 +76,9 @@ export function DeviceRail({
               <div className="flex items-start justify-between gap-2">
                 <div className="flex items-center gap-2 text-fg">
                   <OsIcon os={d.os} />
-                  <span className="text-sm font-medium">{deviceTitle(d.slug, d.name)}</span>
+                  <span className="text-sm font-medium">
+                    {d.alias || deviceTitle(d.slug, d.name)}
+                  </span>
                 </div>
                 <span className="flex items-center gap-1 text-xs text-muted">
                   <Circle
@@ -90,11 +95,46 @@ export function DeviceRail({
                 <Badge>{OS[d.os] ?? d.os}</Badge>
                 <Badge>{locationLabel(d.locationTag)}</Badge>
                 <Badge className="font-mono">{d.arch}</Badge>
+                {d.agentVer && <Badge className="font-mono">Agent {d.agentVer}</Badge>}
               </div>
               <p className="mt-2 font-mono text-xs text-subtle">
+                {d.alias ? `${d.name} · ` : ""}
                 {d.slug} · {t("fleet.noLan")}
               </p>
             </button>
+            <form
+              className="mt-1 flex gap-1"
+              onSubmit={async (event) => {
+                event.preventDefault();
+                const form = new FormData(event.currentTarget);
+                setAliasBusy(d.id);
+                try {
+                  await onSetAlias(d.id, String(form.get("alias") ?? ""));
+                } catch {
+                  // The parent mutation owns the user-facing error toast.
+                } finally {
+                  setAliasBusy(null);
+                }
+              }}
+            >
+              <Input
+                key={`${d.id}:${d.alias ?? ""}`}
+                name="alias"
+                defaultValue={d.alias ?? ""}
+                maxLength={64}
+                className="h-8 min-w-0 text-xs"
+                placeholder={t("fleet.aliasPh")}
+                aria-label={t("fleet.alias")}
+              />
+              <Button
+                type="submit"
+                size="sm"
+                variant="secondary"
+                disabled={aliasBusy === d.id}
+              >
+                {t("fleet.aliasSave")}
+              </Button>
+            </form>
             <div className="mt-1 flex justify-between px-1 text-xs">
               <button
                 type="button"

@@ -21,9 +21,13 @@ import fleetWorker, {
   isTaskPluginAction,
   McpDO,
   PEER_SESSION_ACCOUNT_LIMIT,
+  REVOCATION_FANOUT,
+  RevocationDO,
 } from "./src/index.ts";
 
 const SESSION = "00000000-0000-4000-8000-000000000001";
+const CONNECTION_OLD = "00000000-0000-4000-8000-000000000011";
+const CONNECTION_NEW = "00000000-0000-4000-8000-000000000012";
 
 test("peer ticket fingerprint fixture is canonical lowercase hex without separators", () => {
   assert.equal(canonicalPeerFingerprint(sdp("a")), "aa".repeat(32));
@@ -120,6 +124,300 @@ test("FleetDO peer session limits are isolated between accounts", async () => {
   }
   assert.equal((await reserve(fleet, "account-a", numberedSession(33))).status, 429);
   assert.equal((await reserve(fleet, "account-b", numberedSession(33))).status, 429);
+});
+
+test("FleetDO refuses an unscoped device list instead of scanning every account", async () => {
+  const state = fakeState();
+  const fleet = new FleetDO(
+    state as unknown as DurableObjectState,
+    {} as ConstructorParameters<typeof FleetDO>[1],
+  );
+  const response = await fleet.fetch(new Request("https://fleet/list"));
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "user required" });
+});
+
+test("FleetDO rejects a new device id that would steal an existing alias", async () => {
+  const state = fakeState();
+  const fleet = new FleetDO(
+    state as unknown as DurableObjectState,
+    {} as ConstructorParameters<typeof FleetDO>[1],
+  );
+  const upsert = (id: string) =>
+    fleet.fetch(
+      new Request("https://fleet/upsert", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, userId: "account-a", name: id, os: "linux", online: true }),
+      }),
+    );
+
+  assert.equal((await upsert("device-a")).status, 200);
+  assert.equal(
+    (
+      await fleet.fetch(
+        new Request("https://fleet/set-alias", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            user_id: "account-a",
+            device_id: "device-a",
+            alias: "future-device",
+          }),
+        }),
+      )
+    ).status,
+    200,
+  );
+  const stolen = await upsert("future-device");
+  assert.equal(stolen.status, 409);
+  assert.deepEqual(await stolen.json(), { error: "device id conflicts with alias" });
+  assert.equal((await upsert("device-a")).status, 200, "the original device can still reconnect");
+});
+
+test("FleetDO claim rejects a revoked kid before creating a catalog row", async () => {
+  const state = fakeState();
+  const fleet = new FleetDO(
+    state as unknown as DurableObjectState,
+    {} as ConstructorParameters<typeof FleetDO>[1],
+  );
+  await seedFleetUser(state, "kid-old");
+
+  assert.equal((await claimFleetDevice(fleet, "device-a", "kid-old")).status, 200);
+  assert.equal(
+    state.value<{ connectionId?: string }>("d:device-a")?.connectionId,
+    CONNECTION_OLD,
+  );
+  assert.equal(state.value("udi:account-a:device-a"), "d:device-a");
+
+  await state.storage.put("revoked:kid-old", Date.now());
+  const rejected = await claimFleetDevice(fleet, "device-b", "kid-old");
+  assert.equal(rejected.status, 401);
+  assert.equal(state.value("d:device-b"), undefined);
+  assert.equal(state.value("udi:account-a:device-b"), undefined);
+});
+
+test("an old connection generation cannot touch or release its replacement", async () => {
+  const state = fakeState();
+  const fleet = new FleetDO(
+    state as unknown as DurableObjectState,
+    {} as ConstructorParameters<typeof FleetDO>[1],
+  );
+  await seedFleetUser(state, "kid-old");
+  assert.equal(
+    (await claimFleetDevice(fleet, "device-a", "kid-old", CONNECTION_OLD)).status,
+    200,
+  );
+
+  assert.equal(
+    (await claimFleetDevice(fleet, "device-a", "kid-old", CONNECTION_NEW)).status,
+    200,
+  );
+  const staleTouch = await touchFleetDevice(fleet, "device-a", "kid-old", CONNECTION_OLD);
+  assert.equal(staleTouch.status, 409);
+  assert.deepEqual(await staleTouch.json(), { error: "stale device connection" });
+  const stale = await releaseFleetDevice(fleet, "device-a", "kid-old", CONNECTION_OLD);
+  assert.equal(stale.status, 200);
+  assert.deepEqual(await stale.json(), { ok: true, stale: true });
+  assert.equal(state.value<{ online: boolean; connectionId: string }>("d:device-a")?.online, true);
+  assert.equal(
+    state.value<{ online: boolean; connectionId: string }>("d:device-a")?.connectionId,
+    CONNECTION_NEW,
+  );
+
+  const current = await releaseFleetDevice(fleet, "device-a", "kid-old", CONNECTION_NEW);
+  assert.deepEqual(await current.json(), { ok: true, stale: false });
+  assert.equal(state.value<{ online: boolean }>("d:device-a")?.online, false);
+});
+
+test("same-account token resets serialize and revoke the token minted by the prior reset", async () => {
+  const state = fakeState();
+  await seedFleetAccount(state);
+  let releaseFirst!: () => void;
+  let noteFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const firstStarted = new Promise<void>((resolve) => {
+    noteFirst = resolve;
+  });
+  const roots: Array<Record<string, unknown>> = [];
+  const fleet = new FleetDO(
+    state as unknown as DurableObjectState,
+    {
+      HUB_ORIGIN: "https://fleet.example",
+      REVOCATION: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          fetch: async (request: Request) => {
+            roots.push((await request.json()) as Record<string, unknown>);
+            if (roots.length === 1) {
+              noteFirst();
+              await firstGate;
+            }
+            return Response.json({ ok: true });
+          },
+        }),
+      },
+    } as unknown as ConstructorParameters<typeof FleetDO>[1],
+  );
+  fleet.list = async () => [
+    { id: "device-a", name: "device-a", os: "linux", online: true, lastSeen: 1 },
+  ];
+  const issue = () =>
+    fleet.fetch(
+      new Request("https://fleet/token-issue?user=account-a&aud=https%3A%2F%2Ffleet.example", {
+        method: "POST",
+      }),
+    );
+
+  const first = issue();
+  await firstStarted;
+  const second = issue();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(roots.length, 1, "the second reset must wait before reading or kicking");
+  releaseFirst();
+  const [firstResponse, secondResponse] = await Promise.all([first, second]);
+  assert.equal(firstResponse.status, 200);
+  assert.equal(secondResponse.status, 200);
+  assert.equal(roots.length, 2);
+  assert.ok((roots[1]!.revocation as { kid?: string } | null)?.kid);
+
+  const firstToken = ((await firstResponse.json()) as { token: string }).token;
+  const secondToken = ((await secondResponse.json()) as { token: string }).token;
+  assert.equal((await resolveFleetBearer(fleet, firstToken)).status, 401);
+  assert.equal((await resolveFleetBearer(fleet, secondToken)).status, 200);
+});
+
+test("ban waits for an in-flight reset and remains authoritative", async () => {
+  const state = fakeState({ cloneReads: true });
+  await seedFleetAccount(state);
+  let releaseKick!: () => void;
+  let noteKick!: () => void;
+  const kickGate = new Promise<void>((resolve) => {
+    releaseKick = resolve;
+  });
+  const kickStarted = new Promise<void>((resolve) => {
+    noteKick = resolve;
+  });
+  const fleet = new FleetDO(
+    state as unknown as DurableObjectState,
+    {
+      HUB_ORIGIN: "https://fleet.example",
+      REVOCATION: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          fetch: async () => {
+            noteKick();
+            await kickGate;
+            return Response.json({ ok: true });
+          },
+        }),
+      },
+    } as unknown as ConstructorParameters<typeof FleetDO>[1],
+  );
+  fleet.list = async () => [
+    { id: "device-a", name: "device-a", os: "linux", online: true, lastSeen: 1 },
+  ];
+
+  const reset = fleet.fetch(
+    new Request("https://fleet/token-issue?user=account-a&aud=https%3A%2F%2Ffleet.example", {
+      method: "POST",
+    }),
+  );
+  await kickStarted;
+  let banSettled = false;
+  const ban = fleet.setUserBanned("account-a", true).then((row) => {
+    banSettled = true;
+    return row;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(banSettled, false, "ban must queue behind the account mutation already in flight");
+
+  releaseKick();
+  const resetResponse = await reset;
+  assert.equal(resetResponse.status, 200);
+  const issuedToken = ((await resetResponse.json()) as { token: string }).token;
+  assert.deepEqual(await ban, {
+    id: "account-a",
+    banned: true,
+    bannedAt: state.value<{ bannedAt: number }>("u:account-a@example.test")?.bannedAt,
+  });
+  assert.equal(state.value<{ banned?: boolean }>("u:account-a@example.test")?.banned, true);
+  assert.equal((await resolveFleetBearer(fleet, issuedToken)).status, 403);
+
+  const rejected = await fleet.fetch(
+    new Request("https://fleet/token-issue?user=account-a&aud=https%3A%2F%2Ffleet.example", {
+      method: "POST",
+    }),
+  );
+  assert.equal(rejected.status, 403);
+  assert.deepEqual(await rejected.json(), { error: "banned" });
+});
+
+test("FleetDO delegates an unbounded account catalog through one revocation root", async () => {
+  const roots: Array<Record<string, unknown>> = [];
+  const fleet = new FleetDO(
+    fakeState() as unknown as DurableObjectState,
+    {
+      REVOCATION: {
+        idFromName: (id: string) => id,
+        get: () => ({
+          fetch: async (request: Request) => {
+            roots.push((await request.json()) as Record<string, unknown>);
+            return Response.json({ ok: true });
+          },
+        }),
+      },
+    } as unknown as ConstructorParameters<typeof FleetDO>[1],
+  );
+  fleet.list = async () =>
+    Array.from({ length: 2_050 }, (_, index) => ({
+      id: `device-${String(index + 1).padStart(2, "0")}`,
+      name: "device",
+      os: "linux",
+      online: index !== 2_049,
+      lastSeen: 1,
+    }));
+
+  await fleet.kickUserDevices("account-a", {
+    kid: "kid-old",
+    statement: { payload: "payload", sig: "sig" },
+  });
+  assert.equal(roots.length, 1, "FleetDO must spend one subrequest regardless of fleet size");
+  assert.equal((roots[0]!.devices as string[]).length, 2_050);
+  assert.equal((roots[0]!.devices as string[]).includes("device-2050"), true);
+});
+
+test("RevocationDO recursively bounds fanout and attempts every catalog DeviceDO", async () => {
+  const attempted: string[] = [];
+  const children: string[] = [];
+  const env = revocationEnv(attempted, children, "device-001");
+  const root = new RevocationDO(
+    {} as DurableObjectState,
+    env as unknown as ConstructorParameters<typeof RevocationDO>[1],
+  );
+  const devices = Array.from(
+    { length: REVOCATION_FANOUT * 2 + 1 },
+    (_, index) => `device-${String(index + 1).padStart(3, "0")}`,
+  );
+  const legacyZeroWidth = "legacy\u200bdevice";
+  const legacyLong = "legacy-" + "x".repeat(300);
+  devices.push(legacyZeroWidth, legacyLong);
+  const response = await root.fetch(
+    new Request("https://revocation/kick-tree", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ devices, job: "job-1", node: "root", revocation: { kid: "old" } }),
+    }),
+  );
+  assert.equal(response.status, 500, "one failed leaf must fail the entire reset");
+  assert.deepEqual(new Set(attempted), new Set(devices));
+  assert.ok(attempted.includes(legacyZeroWidth), "legacy ID must reach its exact DeviceDO name");
+  assert.ok(attempted.includes(legacyLong), "legacy long ID must not poison the whole batch");
+  assert.ok(children.length > 0, "a batch larger than the leaf fanout must recurse");
+  const firstLevel = children.filter((name) => /^job-1:root\.\d+$/.test(name));
+  assert.ok(firstLevel.length <= REVOCATION_FANOUT);
 });
 
 test("FleetDO prunes expired reservations at the PeerSession TTL boundary", async () => {
@@ -261,10 +559,124 @@ test("device WebSocket rejects oversized text before JSON parsing or forwarding"
   assert.deepEqual(closed, [[1009, "frame too large"]]);
 });
 
-test("device WebSocket rejects login and super actors before allocating a DeviceDO", async () => {
+test("DeviceDO kick closes every socket when an auth_revoked send fails", async () => {
+  const events: string[] = [];
+  const sockets = [
+    {
+      send: () => {
+        events.push("send:first");
+        throw new Error("stale socket");
+      },
+      close: (code: number, reason: string) => events.push(`close:first:${code}:${reason}`),
+    },
+    {
+      send: () => events.push("send:second"),
+      close: (code: number, reason: string) => events.push(`close:second:${code}:${reason}`),
+    },
+  ] as unknown as WebSocket[];
+  const response = await fakeDeviceDO(sockets).fetch(
+    new Request("https://device/kick", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kid: "kid-old",
+        statement: { payload: "payload", sig: "sig" },
+      }),
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(events, [
+    "send:first",
+    "close:first:1008:token reset",
+    "send:second",
+    "close:second:1008:token reset",
+  ]);
+});
+
+test("DeviceDO kick reports a close failure only after trying every socket", async () => {
+  const closed: string[] = [];
+  const sockets = [
+    {
+      send() {},
+      close: () => {
+        closed.push("first");
+        throw new Error("close failed");
+      },
+    },
+    {
+      send() {},
+      close: () => closed.push("second"),
+    },
+  ] as unknown as WebSocket[];
+  const response = await fakeDeviceDO(sockets).fetch(
+    new Request("https://device/kick", { method: "POST", body: "{}" }),
+  );
+
+  assert.equal(response.status, 500);
+  assert.deepEqual(await response.json(), { error: "device revocation incomplete" });
+  assert.deepEqual(closed, ["first", "second"]);
+});
+
+test("a kick that wins while claim is pending prevents the old kid from accepting later", async () => {
+  let claimStarted!: () => void;
+  let resolveClaim!: () => void;
+  const started = new Promise<void>((resolve) => {
+    claimStarted = resolve;
+  });
+  const claimGate = new Promise<void>((resolve) => {
+    resolveClaim = resolve;
+  });
+  const paths: string[] = [];
+  const device = fakeDeviceDO([], {
+    FLEET: {
+      idFromName: (name: string) => name,
+      get: () => ({
+        fetch: async (request: Request) => {
+          const path = new URL(request.url).pathname;
+          paths.push(path);
+          if (path === "/claim-device") {
+            claimStarted();
+            await claimGate;
+          }
+          return Response.json({ ok: true });
+        },
+      }),
+    },
+  } as unknown as ConstructorParameters<typeof DeviceDO>[1]);
+
+  const connecting = device.fetch(
+    new Request("https://device/socket?id=device-a", {
+      headers: {
+        Upgrade: "websocket",
+        "x-fleet-user": "account-a",
+        "x-fleet-kid": "kid-old",
+      },
+    }),
+  );
+  await started;
+  assert.equal(
+    (
+      await device.fetch(
+        new Request("https://device/kick", {
+          method: "POST",
+          body: JSON.stringify({ kid: "kid-old" }),
+        }),
+      )
+    ).status,
+    200,
+  );
+  resolveClaim();
+  const response = await connecting;
+  assert.equal(response.status, 401);
+  assert.deepEqual(paths, ["/claim-device", "/release-device"]);
+});
+
+test("device WebSocket rejects cookie actors and arbitrary Bearer credentials before allocating a DeviceDO", async () => {
   let deviceGets = 0;
+  const retiredSharedSecretName = ["HUB", "TOKEN"].join("_");
   const testEnv = {
-    HUB_TOKEN: "shared-super",
+    [retiredSharedSecretName]: "arbitrary-shared-secret",
     FLEET: {
       idFromName: (name: string) => name,
       get: () => ({
@@ -282,9 +694,17 @@ test("device WebSocket rejects login and super actors before allocating a Device
       },
     },
   } as unknown as Parameters<typeof fleetWorker.fetch>[1];
-  const superResponse = await fleetWorker.fetch(
+  const bearerResponse = await fleetWorker.fetch(
     new Request("https://fleet.test/v1/device?id=device-a", {
-      headers: { authorization: "Bearer shared-super", upgrade: "websocket" },
+      headers: { authorization: "Bearer arbitrary-shared-secret", upgrade: "websocket" },
+    }),
+    testEnv,
+  );
+  const listResponse = await fleetWorker.fetch(
+    new Request("https://fleet.test/v1/list_computers", {
+      method: "POST",
+      headers: { authorization: "Bearer arbitrary-shared-secret" },
+      body: "{}",
     }),
     testEnv,
   );
@@ -294,7 +714,8 @@ test("device WebSocket rejects login and super actors before allocating a Device
     }),
     testEnv,
   );
-  assert.equal(superResponse.status, 401);
+  assert.equal(bearerResponse.status, 401);
+  assert.equal(listResponse.status, 401, "a retired deployment secret must not regain super access");
   assert.equal(loginResponse.status, 401);
   assert.equal(deviceGets, 0, "missing per-account kid must not allocate a DeviceDO");
 
@@ -305,6 +726,244 @@ test("device WebSocket rejects login and super actors before allocating a Device
     }),
   );
   assert.equal(defenseInDepth.status, 401);
+});
+
+test("Worker scopes every Fleet-OAEP device listing to the resolved account", async () => {
+  const requests: Array<{ url: string; body: unknown }> = [];
+  const fleet = {
+    fetch: async (request: Request) => {
+      const url = new URL(request.url);
+      const body = request.method === "POST" ? await request.json().catch(() => undefined) : undefined;
+      requests.push({ url: `${url.pathname}${url.search}`, body });
+      if (url.pathname === "/resolve-wrap") {
+        return Response.json({ id: "account-a", kid: "kid-a" });
+      }
+      if (url.pathname === "/validate-mcp") return Response.json({ ok: true });
+      if (url.pathname === "/list") return Response.json({ computers: [] });
+      return Response.json({ error: "unexpected test request" }, { status: 500 });
+    },
+  };
+  const testEnv = {
+    FLEET: {
+      idFromName: (name: string) => name,
+      get: () => fleet,
+    },
+  } as unknown as Parameters<typeof fleetWorker.fetch>[1];
+
+  const response = await fleetWorker.fetch(
+    new Request("https://fleet.test/v1/list_computers", {
+      method: "POST",
+      headers: { authorization: "Fleet-OAEP kid-a.wrap-a" },
+      body: "{}",
+    }),
+    testEnv,
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(requests, [
+    { url: "/resolve-wrap", body: { kid: "kid-a", wrap: "wrap-a" } },
+    { url: "/validate-mcp", body: { id: "account-a", kid: "kid-a" } },
+    { url: "/list?user=account-a", body: undefined },
+  ]);
+});
+
+test("Worker resolves an account alias to the immutable id before dispatching", async () => {
+  const deviceGets: string[] = [];
+  const fleet = {
+    fetch: async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/resolve-wrap") {
+        return Response.json({ id: "account-a", kid: "kid-a" });
+      }
+      if (url.pathname === "/validate-mcp") return Response.json({ ok: true });
+      if (url.pathname === "/resolve-device") {
+        assert.equal(url.searchParams.get("user"), "account-a");
+        assert.equal(url.searchParams.get("ref"), "Singapore 128GB");
+        return Response.json({
+          id: "device-real",
+          alias: "Singapore 128GB",
+          name: "n251-234-193",
+          os: "linux",
+          online: true,
+          lastSeen: 1,
+          userId: "account-a",
+        });
+      }
+      return Response.json({ error: "unexpected test request" }, { status: 500 });
+    },
+  };
+  const testEnv = {
+    FLEET: { idFromName: (name: string) => name, get: () => fleet },
+    DEVICE: {
+      idFromName: (id: string) => id,
+      get: (id: string) => {
+        deviceGets.push(id);
+        return {
+          fetch: async (request: Request) => {
+            assert.equal(new URL(request.url).pathname, "/run");
+            return Response.json({ corr: "corr-a", status: "running" });
+          },
+        };
+      },
+    },
+  } as unknown as Parameters<typeof fleetWorker.fetch>[1];
+
+  const response = await fleetWorker.fetch(
+    new Request("https://fleet.test/v1/run", {
+      method: "POST",
+      headers: {
+        authorization: "Fleet-OAEP kid-a.wrap-a",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ device_id: "Singapore 128GB", command: "pwd" }),
+    }),
+    testEnv,
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(deviceGets, ["device-real"]);
+});
+
+test("Worker binds alias changes to the authenticated account", async () => {
+  const writes: unknown[] = [];
+  const fleet = {
+    fetch: async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/resolve-wrap") {
+        return Response.json({ id: "account-a", kid: "kid-a" });
+      }
+      if (url.pathname === "/validate-mcp") return Response.json({ ok: true });
+      if (url.pathname === "/set-alias") {
+        writes.push(await request.json());
+        return Response.json({ id: "device-real", alias: "Build Box" });
+      }
+      return Response.json({ error: "unexpected test request" }, { status: 500 });
+    },
+  };
+  const testEnv = {
+    FLEET: { idFromName: (name: string) => name, get: () => fleet },
+  } as unknown as Parameters<typeof fleetWorker.fetch>[1];
+
+  const response = await fleetWorker.fetch(
+    new Request("https://fleet.test/v1/set_computer_alias", {
+      method: "POST",
+      headers: {
+        authorization: "Fleet-OAEP kid-a.wrap-a",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ user_id: "account-b", device_id: "device-real", alias: "Build Box" }),
+    }),
+    testEnv,
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(writes, [
+    { user_id: "account-a", device_id: "device-real", alias: "Build Box" },
+  ]);
+});
+
+test("a delayed old-token body is revalidated after reset before device dispatch", async () => {
+  let releaseBody!: () => void;
+  let noteResolved!: () => void;
+  const resolved = new Promise<void>((resolve) => {
+    noteResolved = resolve;
+  });
+  let currentKid = "kid-old";
+  let deviceGets = 0;
+  const fleet = {
+    fetch: async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/resolve-wrap") {
+        noteResolved();
+        return Response.json({ id: "account-a", kid: "kid-old" });
+      }
+      if (url.pathname === "/validate-mcp") {
+        const body = (await request.json()) as { id?: string; kid?: string };
+        return body.id === "account-a" && body.kid === currentKid
+          ? Response.json({ ok: true })
+          : Response.json({ error: "Hub token was reset or revoked" }, { status: 401 });
+      }
+      if (url.pathname === "/resolve-device") {
+        return Response.json({
+          id: "device-real",
+          name: "device-real",
+          os: "linux",
+          online: true,
+          lastSeen: 1,
+          userId: "account-a",
+        });
+      }
+      return Response.json({ error: "unexpected test request" }, { status: 500 });
+    },
+  };
+  const testEnv = {
+    FLEET: { idFromName: (name: string) => name, get: () => fleet },
+    DEVICE: {
+      idFromName: (id: string) => id,
+      get: () => {
+        deviceGets += 1;
+        return { fetch: async () => Response.json({ corr: "bad", status: "running" }) };
+      },
+    },
+  } as unknown as Parameters<typeof fleetWorker.fetch>[1];
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      releaseBody = () => {
+        controller.enqueue(
+          new TextEncoder().encode(JSON.stringify({ device_id: "device-real", command: "pwd" })),
+        );
+        controller.close();
+      };
+    },
+  });
+  const request = new Request("https://fleet.test/v1/run", {
+    method: "POST",
+    headers: {
+      authorization: "Fleet-OAEP kid-old.wrap-old",
+      "content-type": "application/json",
+    },
+    body: stream,
+    duplex: "half",
+  } as RequestInit & { duplex: "half" });
+
+  const running = fleetWorker.fetch(request, testEnv);
+  await resolved;
+  currentKid = "kid-new";
+  releaseBody();
+  const response = await running;
+  assert.equal(response.status, 401);
+  assert.equal(deviceGets, 0);
+});
+
+test("a non-admin ops request is rejected before the global catalog is read", async () => {
+  const paths: string[] = [];
+  const fleet = {
+    fetch: async (request: Request) => {
+      const path = new URL(request.url).pathname;
+      paths.push(path);
+      if (path === "/resolve") {
+        return Response.json({ id: "account-a", email: "user@example.com" });
+      }
+      return Response.json({ error: "unexpected test request" }, { status: 500 });
+    },
+  };
+  const testEnv = {
+    ADMIN_EMAILS: "ops@example.com",
+    FLEET: {
+      idFromName: (name: string) => name,
+      get: () => fleet,
+    },
+  } as unknown as Parameters<typeof fleetWorker.fetch>[1];
+
+  const response = await fleetWorker.fetch(
+    new Request("https://fleet.test/v1/ops/overview", {
+      headers: { cookie: "fleet_session=session-a" },
+    }),
+    testEnv,
+  );
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(paths, ["/resolve"]);
 });
 
 test("device WebSocket rejects oversized peer control before touching its session", async () => {
@@ -1132,7 +1791,7 @@ test("interrupt atomically discards pending deliveries captured by the old round
   );
 });
 
-test("Worker keeps immutable migration history and exposes only generic PeerSessionDO", async () => {
+test("Worker keeps immutable migration history for generic peer and revocation DOs", async () => {
   const [worker, wrangler] = await Promise.all([
     readFile(new URL("./src/index.ts", import.meta.url), "utf8"),
     readFile(new URL("./wrangler.toml", import.meta.url), "utf8"),
@@ -1154,11 +1813,13 @@ test("Worker keeps immutable migration history and exposes only generic PeerSess
   assert.doesNotMatch(worker, /env\.TRANSFER/);
   assert.doesNotMatch(worker, /peer[-_]session[-_](?:upload|download|chunk|bytes)/i);
   assert.match(wrangler, /name = "PEER_SESSION"\s+class_name = "PeerSessionDO"/);
+  assert.match(wrangler, /name = "REVOCATION"\s+class_name = "RevocationDO"/);
   assert.match(wrangler, /tag = "v3"\s+new_sqlite_classes = \["TransferDO"\]/);
   assert.match(
     wrangler,
     /tag = "v4"\s+new_sqlite_classes = \["PeerSessionDO"\]\s+deleted_classes = \["TransferDO"\]/,
   );
+  assert.match(wrangler, /tag = "v5"\s+new_sqlite_classes = \["RevocationDO"\]/);
 });
 
 async function createAndAuthorize(control: PeerSessionDO, state: ReturnType<typeof fakeState>) {
@@ -1363,16 +2024,169 @@ async function ackDeviceDeliveries(
   }
 }
 
-function fakeState() {
+async function seedFleetUser(state: ReturnType<typeof fakeState>, kid: string) {
+  const email = "account-a@example.test";
+  await state.storage.put("id:account-a", email);
+  await state.storage.put(`u:${email}`, {
+    id: "account-a",
+    email,
+    salt: "salt",
+    pass: "pass",
+    tokenHash: `hash-${kid}`,
+    kid,
+  });
+}
+
+async function seedFleetAccount(state: ReturnType<typeof fakeState>) {
+  const email = "account-a@example.test";
+  await state.storage.put("id:account-a", email);
+  await state.storage.put(`u:${email}`, {
+    id: "account-a",
+    email,
+    salt: "salt",
+    pass: "pass",
+  });
+}
+
+function resolveFleetBearer(fleet: FleetDO, token: string) {
+  return fleet.fetch(
+    new Request("https://fleet/resolve-bearer", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token }),
+    }),
+  );
+}
+
+function claimFleetDevice(
+  fleet: FleetDO,
+  id: string,
+  kid: string,
+  connectionId = CONNECTION_OLD,
+) {
+  return fleet.fetch(
+    new Request("https://fleet/claim-device", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id,
+        userId: "account-a",
+        name: id,
+        os: "linux",
+        online: true,
+        kid,
+        connectionId,
+      }),
+    }),
+  );
+}
+
+function touchFleetDevice(
+  fleet: FleetDO,
+  id: string,
+  kid: string,
+  connectionId = CONNECTION_OLD,
+) {
+  return fleet.fetch(
+    new Request("https://fleet/touch-device", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id,
+        userId: "account-a",
+        name: id,
+        os: "linux",
+        online: true,
+        kid,
+        connectionId,
+      }),
+    }),
+  );
+}
+
+function releaseFleetDevice(
+  fleet: FleetDO,
+  id: string,
+  kid: string,
+  connectionId = CONNECTION_OLD,
+) {
+  return fleet.fetch(
+    new Request("https://fleet/release-device", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id,
+        userId: "account-a",
+        name: id,
+        os: "linux",
+        online: false,
+        kid,
+        connectionId,
+      }),
+    }),
+  );
+}
+
+function revocationEnv(attempted: string[], children: string[], failId = "") {
+  const env: Record<string, unknown> = {};
+  env.DEVICE = {
+    idFromName: (id: string) => id,
+    get: (id: string) => ({
+      fetch: async () => {
+        attempted.push(id);
+        return id === failId
+          ? Response.json({ error: "injected failure" }, { status: 500 })
+          : Response.json({ ok: true });
+      },
+    }),
+  };
+  env.REVOCATION = {
+    idFromName: (id: string) => id,
+    get: (id: string) => {
+      children.push(id);
+      return {
+        fetch: (request: Request) =>
+          new RevocationDO(
+            {} as DurableObjectState,
+            env as unknown as ConstructorParameters<typeof RevocationDO>[1],
+          ).fetch(request),
+      };
+    },
+  };
+  return env;
+}
+
+function fakeState({ cloneReads = false }: { cloneReads?: boolean } = {}) {
   const values = new Map<string, unknown>();
   let alarm: number | null = null;
   let tail = Promise.resolve();
+  const read = <T>(value: T): T => (cloneReads ? structuredClone(value) : value);
   const storage = {
-    get: async <T>(key: string) => values.get(key) as T | undefined,
-    put: async (key: string, value: unknown) => {
-      values.set(key, structuredClone(value));
+    get: async <T>(key: string | string[]) => {
+      if (Array.isArray(key)) {
+        return new Map(
+          key.filter((item) => values.has(item)).map((item) => [item, read(values.get(item) as T)]),
+        );
+      }
+      return read(values.get(key) as T | undefined);
+    },
+    put: async (key: string | Record<string, unknown>, value?: unknown) => {
+      if (typeof key === "string") {
+        values.set(key, structuredClone(value));
+        return;
+      }
+      for (const [entryKey, entryValue] of Object.entries(key)) {
+        values.set(entryKey, structuredClone(entryValue));
+      }
     },
     delete: async (key: string) => values.delete(key),
+    list: async ({ prefix = "", startAfter = "", limit = 128 } = {}) =>
+      new Map(
+        [...values]
+          .filter(([key]) => key.startsWith(prefix) && (!startAfter || key > startAfter))
+          .sort(([left], [right]) => left.localeCompare(right))
+          .slice(0, limit),
+      ),
     deleteAll: async () => {
       values.clear();
       alarm = null;
@@ -1473,8 +2287,8 @@ function mcpPeerEnv(
             }
             return Response.json({ ok: true });
           }
-          if (url.pathname === "/device") {
-            const id = url.searchParams.get("id") ?? "";
+          if (url.pathname === "/resolve-device") {
+            const id = url.searchParams.get("ref") ?? "";
             return Response.json({
               id,
               userId: "account-a",
@@ -1531,7 +2345,10 @@ function fakeMcpState() {
   };
 }
 
-function fakeDeviceDO() {
+function fakeDeviceDO(
+  sockets: WebSocket[] = [],
+  env: ConstructorParameters<typeof DeviceDO>[1] = {} as ConstructorParameters<typeof DeviceDO>[1],
+) {
   const previous = Reflect.get(globalThis, "WebSocketRequestResponsePair");
   class FakeWebSocketRequestResponsePair {
     constructor(_request: string, _response: string) {}
@@ -1539,8 +2356,11 @@ function fakeDeviceDO() {
   Reflect.set(globalThis, "WebSocketRequestResponsePair", FakeWebSocketRequestResponsePair);
   try {
     return new DeviceDO(
-      { setWebSocketAutoResponse() {} } as unknown as DurableObjectState,
-      {} as ConstructorParameters<typeof DeviceDO>[1],
+      {
+        setWebSocketAutoResponse() {},
+        getWebSockets: () => sockets,
+      } as unknown as DurableObjectState,
+      env,
     );
   } finally {
     if (previous === undefined) Reflect.deleteProperty(globalThis, "WebSocketRequestResponsePair");

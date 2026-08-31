@@ -88,7 +88,7 @@ test("login and authenticated reads return 403 when the row is banned", () => {
     "explicit OAEP auth must not pay for an empty cookie-session lookup",
   );
   const catchAll = worker.search(
-    /^\s{4}const resolved = await resolveActor\(request, env, fleet\);\r?\n\s{4}if \(!resolved\.actor\) return deny\(resolved\);/m,
+    /^\s{4}const resolved = await resolveActor\(request, fleet\);\r?\n\s{4}if \(!resolved\.actor\) return deny\(resolved\);/m,
   );
   assert.notEqual(catchAll, -1);
   assert.ok(worker.indexOf('url.pathname === "/v1/run"') > catchAll);

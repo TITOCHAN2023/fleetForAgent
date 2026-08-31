@@ -24,6 +24,10 @@ class_name = "McpDO"
 name = "PEER_SESSION"
 class_name = "PeerSessionDO"
 
+[[durable_objects.bindings]]
+name = "REVOCATION"
+class_name = "RevocationDO"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["DeviceDO", "FleetDO"]
@@ -35,3 +39,7 @@ new_sqlite_classes = ["McpDO"]
 [[migrations]]
 tag = "v3"
 new_sqlite_classes = ["PeerSessionDO"]
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["RevocationDO"]

@@ -19,7 +19,7 @@ test("unsigned actor cannot claim", () => {
   assert.equal(canClaimDevice(undefined, undefined), false);
 });
 
-test("HUB_TOKEN super id cannot steal a bound device over WebSocket", () => {
+test("an account id that looks special still follows ordinary ownership", () => {
   assert.equal(canClaimDevice("user-a", "*"), false);
   assert.equal(canClaimDevice("*", "*"), true);
   assert.equal(canClaimDevice("*", "user-a"), false);

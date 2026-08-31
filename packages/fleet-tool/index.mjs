@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   applyCliDevFlag,
+  createCliRpc,
   createOperator,
   FLEET_VERSION,
   fleetResultMeta,
@@ -24,7 +25,6 @@ import {
   measureHubFetch,
   newOperatorFingerprint,
   officialPlugin,
-  unwrapTimedRpc,
   wrapTransportRpc,
 } from "./operator.mjs";
 import { createRtcManager } from "./rtc.mjs";
@@ -63,7 +63,7 @@ const token = process.env.FLEET_TOKEN || "";
 
 const argv = applyCliDevFlag(process.argv.slice(2), process.env);
 
-async function hubHeaders({ signal } = {}) {
+async function hubHeaders({ signal, fingerprint = operatorFingerprint } = {}) {
   signal?.throwIfAborted?.();
   const authorization = await highSecAuthorization(
     token,
@@ -71,16 +71,16 @@ async function hubHeaders({ signal } = {}) {
     (input, init = {}) => fetch(input, { ...init, signal }),
   );
   signal?.throwIfAborted?.();
-  return fleetHubHeaders({ authorization, fingerprint: operatorFingerprint });
+  return fleetHubHeaders({ authorization, fingerprint });
 }
 
-async function rawHubRpc(path, body, { timed = false, signal } = {}) {
+async function rawHubRpc(path, body, { timed = false, signal, fingerprint = operatorFingerprint } = {}) {
   if (!url || !token) {
     throw new Error("Need FLEET_URL and FLEET_TOKEN (env or ~/.fleet/mcp.env)");
   }
   const payload = body ?? {};
   signal?.throwIfAborted?.();
-  const headers = await hubHeaders({ signal });
+  const headers = await hubHeaders({ signal, fingerprint });
   if (timed && isFleetDev(process.env)) {
     const measured = await measureHubFetch(`${url}${path}`, {
       method: "POST",
@@ -106,6 +106,8 @@ async function rawHubRpc(path, body, { timed = false, signal } = {}) {
   }
   return json;
 }
+
+const cliRpc = createCliRpc(rawHubRpc);
 
 const rtcManager = createRtcManager({
   hubPost: (path, body, options) => rawHubRpc(path, body, { timed: false, ...options }),
@@ -136,10 +138,6 @@ async function hubRpc(path, body, { timed = false, signal } = {}) {
   return wrapTransportRpc(relayed, isDeviceTransportPath(path) ? "ws" : null);
 }
 
-async function rpc(path, body) {
-  return unwrapTimedRpc(await hubRpc(path, body, { timed: false })).json;
-}
-
 if (argv.length) {
   if (!url || !token) {
     console.error("Need FLEET_URL and FLEET_TOKEN (env or ~/.fleet/mcp.env)");
@@ -156,21 +154,23 @@ if (argv.length) {
 async function cli(args) {
   const [cmd, a, ...rest] = args;
   if (cmd === "list") {
-    console.log(JSON.stringify(await rpc("/v1/list_computers", {}), null, 2));
+    console.log(JSON.stringify(await cliRpc("/v1/list_computers", {}), null, 2));
     return;
   }
   if (cmd === "run") {
     if (!a || rest.length === 0) throw new Error("usage: run <device_id> <command>");
-    const out = await rpc("/v1/run", { device_id: a, command: rest.join(" ") });
+    const out = await cliRpc("/v1/run", { device_id: a, command: rest.join(" ") });
     console.log(JSON.stringify(out, null, 2));
     return;
   }
   if (cmd === "result") {
-    console.log(JSON.stringify(await rpc("/v1/get_result", { device_id: a, corr: rest[0] }), null, 2));
+    if (!a || !rest[0]) throw new Error("usage: result <device_id> <corr>");
+    console.log(JSON.stringify(await cliRpc("/v1/get_result", { device_id: a, corr: rest[0] }), null, 2));
     return;
   }
   if (cmd === "screen") {
-    console.log(JSON.stringify(await rpc("/v1/read_screen", { device_id: a, corr: rest[0] }), null, 2));
+    if (!a || !rest[0]) throw new Error("usage: screen <device_id> <corr>");
+    console.log(JSON.stringify(await cliRpc("/v1/read_screen", { device_id: a, corr: rest[0] }), null, 2));
     return;
   }
   if (cmd === "send-file") {

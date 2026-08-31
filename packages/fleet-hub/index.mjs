@@ -5,7 +5,7 @@
  * Devices dial OUT to /v1/device. Operators call POST /v1/*.
  * Jobs do not run here. This is a mailbox.
  *
- *   HUB_TOKEN=... PORT=8787 node index.mjs
+ *   SELF_HOST_TOKEN=... PORT=8787 node index.mjs
  */
 import http from "node:http";
 import path from "node:path";
@@ -137,11 +137,12 @@ export function createHub({
     if (!id) return;
 
     if (parsed.type === "hello") {
+      const agentVer = agentVerFromBody(parsed.body);
       mark(id, {
         name: String(parsed.body?.hostname ?? fleet.get(id)?.name ?? id),
         os: String(parsed.body?.os ?? fleet.get(id)?.os ?? "linux"),
         online: true,
-        agentVer: String(parsed.body?.agent_ver ?? ""),
+        ...(agentVer !== undefined ? { agentVer } : {}),
         ...(Array.isArray(parsed.body?.caps) ? { caps: normalizeCaps(parsed.body.caps) } : {}),
         ...(normalizePermit(parsed.body?.permit) ? { permit: normalizePermit(parsed.body.permit) } : {}),
       });
@@ -723,13 +724,18 @@ export function isLoopbackHost(host) {
   return h === "localhost" || h === "127.0.0.1" || h === "::1";
 }
 
-/** Empty HUB_TOKEN is loopback-only. This Node hub has no per-account flt_1. */
+/** HUB_TOKEN is the deprecated pre-0.6 name; SELF_HOST_TOKEN wins when both exist. */
+export function selfHostToken(env = process.env) {
+  return String(env.SELF_HOST_TOKEN || env.HUB_TOKEN || "").trim();
+}
+
+/** Empty SELF_HOST_TOKEN is loopback-only. This Node hub has no per-account flt_1. */
 export function assertHubBind({ host, token } = {}) {
   const t = String(token || "").trim();
   const h = String(host || "0.0.0.0").trim() || "0.0.0.0";
   if (!t && !isLoopbackHost(h)) {
     throw new Error(
-      `HUB_TOKEN required when binding ${h} (empty token is loopback-only; this Node hub has no flt_1 multi-tenant)`,
+      `SELF_HOST_TOKEN required when binding ${h} (empty token is loopback-only; this Node hub has no flt_1 multi-tenant)`,
     );
   }
   return { host: h, token: t };
@@ -741,7 +747,10 @@ if (isMain) {
   const port = Number(process.env.PORT || 8787);
   let bind;
   try {
-    bind = assertHubBind({ host: process.env.HOST || "0.0.0.0", token: process.env.HUB_TOKEN || "" });
+    bind = assertHubBind({
+      host: process.env.HOST || "0.0.0.0",
+      token: selfHostToken(),
+    });
   } catch (err) {
     console.error(err instanceof Error ? err.message : err);
     process.exit(1);

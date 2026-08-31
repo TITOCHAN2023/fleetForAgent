@@ -54,6 +54,12 @@ test("heartbeat with version stores that agent_ver", () => {
   assert.equal(agentVerFromBody({ agent_ver: " 0.2.9 " }), "0.2.9");
 });
 
+test("agent version rejects control characters and oversized storage input", () => {
+  assert.equal(agentVerFromBody({ agent_ver: "0.6.3\nforged" }), undefined);
+  assert.equal(agentVerFromBody({ agent_ver: "x".repeat(65) }), undefined);
+  assert.equal(agentVerFromBody({ agent_ver: "版本-0.6.3" }), "版本-0.6.3");
+});
+
 test("heartbeat without version is compat — leave stored agentVer alone", () => {
   assert.equal(agentVerFromBody({}), undefined);
   assert.equal(agentVerFromBody(undefined), undefined);
@@ -75,6 +81,7 @@ test("hello arch is stored; heartbeat without arch keeps the stored value", () =
 test("computerPublic is the list_computers row and never leaks userId or IPs", () => {
   const row = computerPublic({
     id: "win-1",
+    alias: "build-box",
     name: "MySuperPC",
     os: "windows",
     online: true,
@@ -85,6 +92,7 @@ test("computerPublic is the list_computers row and never leaks userId or IPs", (
   });
   assert.deepEqual(row, {
     id: "win-1",
+    alias: "build-box",
     name: "MySuperPC",
     os: "windows",
     online: true,
@@ -104,9 +112,9 @@ test("worker heartbeat 404s a missing catalog row before DeviceDO offline", () =
   const deviceDo = src.indexOf('url.pathname === "/heartbeat" && request.method === "POST"');
   assert.ok(deviceDo > start);
   const slice = src.slice(start, deviceDo);
-  assert.match(slice, /computerPublic/);
+  assert.match(slice, /resolveOwnedDevice/);
   assert.match(slice, /not found/);
-  assert.ok(slice.indexOf("computerPublic") < slice.indexOf("env.DEVICE.get"));
+  assert.ok(slice.indexOf("resolveOwnedDevice") < slice.indexOf("env.DEVICE.get"));
 });
 
 test("caps split from SQL text and stay arrays on the public row", () => {

@@ -51,6 +51,7 @@ function assertNpmTarball(tgz) {
     "package/package.json",
     "package/index.mjs",
     "package/operator.mjs",
+    "package/rtc.mjs",
     "package/mcp-protocol.mjs",
     "package/file-transfer-cli.mjs",
     "package/file-transfer-contract.mjs",
@@ -62,12 +63,13 @@ function assertNpmTarball(tgz) {
     "package/bin/fleet-tool-windows-job-host-amd64.exe",
     "package/bin/fleet-tool-windows-job-host-arm64.exe",
     "package/tokenv1.mjs",
+    "package/README.md",
   ]) {
     assert.ok(listing.includes(name), `missing ${name}`);
   }
   const manifest = JSON.parse(tarballFile(tgz, "package/package.json"));
   assert.equal(manifest.name, "fleet-tool");
-  assert.equal(manifest.version, "0.6.1");
+  assert.equal(manifest.version, "0.6.3");
   assert.equal(manifest.bin?.["fleet-tool"], "./index.mjs");
   assertPEMachine(tgz, "package/bin/fleet-tool-windows-job-host-amd64.exe", 0x8664);
   assertPEMachine(tgz, "package/bin/fleet-tool-windows-job-host-arm64.exe", 0xaa64);
@@ -85,7 +87,7 @@ test("packer output matches the committed tarball contents", () => {
   try {
     packFleetTool({ outFile: fresh });
     assertNpmTarball(fresh);
-    for (const name of ["package/package.json", "package/index.mjs", "package/operator.mjs", "package/mcp-protocol.mjs", "package/file-transfer-cli.mjs", "package/file-transfer-contract.mjs", "package/file-transfer-rtc.mjs", "package/plugin-peer-api.mjs", "package/plugin-peer-plugin.mjs", "package/plugin-peer-runtime.mjs", "package/official-plugins.generated.mjs", "package/tokenv1.mjs"]) {
+    for (const name of ["package/package.json", "package/index.mjs", "package/operator.mjs", "package/rtc.mjs", "package/mcp-protocol.mjs", "package/file-transfer-cli.mjs", "package/file-transfer-contract.mjs", "package/file-transfer-rtc.mjs", "package/plugin-peer-api.mjs", "package/plugin-peer-plugin.mjs", "package/plugin-peer-runtime.mjs", "package/official-plugins.generated.mjs", "package/tokenv1.mjs", "package/README.md"]) {
       assert.equal(tarballFile(publicTgz, name), tarballFile(fresh, name), name);
     }
     for (const name of ["package/bin/fleet-tool-windows-job-host-amd64.exe", "package/bin/fleet-tool-windows-job-host-arm64.exe"]) {
@@ -231,11 +233,13 @@ test("wrangler keeps SPA fallback, explicit DO migrations, and token vars secret
     wrangler,
     /tag = "v4"\s+new_sqlite_classes = \["PeerSessionDO"\]\s+deleted_classes = \["TransferDO"\]/,
   );
+  assert.match(wrangler, /name = "REVOCATION"\s+class_name = "RevocationDO"/);
+  assert.match(wrangler, /tag = "v5"\s+new_sqlite_classes = \["RevocationDO"\]/);
   const varsBlock = wrangler.slice(wrangler.indexOf("\n[vars]"));
   const varsEnd = varsBlock.search(/\n\[\[|\n\[assets\]/);
   const vars = varsBlock.slice(0, varsEnd === -1 ? undefined : varsEnd);
   assert.match(vars, /HUB_ORIGIN = "https:\/\/fleet\.ginfo\.cc"/);
-  assert.doesNotMatch(vars, /HUB_TOKEN\s*=/);
+  assert.doesNotMatch(vars, /\b[A-Z0-9_]*TOKEN\s*=/);
   assert.doesNotMatch(vars, /ADMIN_EMAILS\s*=/);
   assert.doesNotMatch(vars, /flt_/);
 });

@@ -711,7 +711,7 @@ Ask 会话授权（`desktopShotGranted` / `desktopInputGranted`）**只**活到�
 - `type` 文本上限 4 KiB；更长 → `bad_request`。
 - 不把 `image_b64` 写入 `Agent.log`、托盘 tooltip、`protocol_events`、lab 事件。日志：`desktop screenshot 1280x720 jpeg 82KB ok`。
 - 另写无像素审计行：`audit desktop shot device=… bytes=82KB action=screenshot`（无 b64、无 JPEG）。
-- 不在 `destructive` 正则上拦截点击。HID 边界 = permit + `owns()`。Super `HUB_TOKEN`（`actor.super`）与 `run` 一样绕过用户 `owns()`——同一爆炸半径，不另开洞，设置/文档提一句。
+- 不在 `destructive` 正则上拦截点击。HID 边界 = permit + `owns()`。Worker 不存在跨账号机器控制身份；桌面和 `run` 一样必须通过当前账号的 `owns()`。
 - `publicSnapshot()` 继续不含帧。
 
 ### MCP（第三阶段，但 schema 现在定）
@@ -984,7 +984,7 @@ heartbeat/`ping` body 今天只有 `agent_ver`（`presenceEnvelope()`）。caps 
 | `permit=allow` 被持久化后遗忘 | 中 | **PR1** 设置页写明 GUI；Ask 下 shot/input 分授权 |
 | 无像素审计缺失 | 低 | `audit desktop …` 行（actor 不可用则 device+bytes+action） |
 
-Auth：无新 token 类型。仍是 flt_1 OAEP wrap + 设备 WSS。Super `HUB_TOKEN`（`actor.super`）与现有 `run` 一样绕过 per-user `owns()`——能截图/HID 任何在线设备；不扩大也不缩小。
+Auth：无新 token 类型。仍是 flt_1 OAEP wrap + 设备 WSS。所有 Worker 控制、截图和 HID 路由都必须通过 per-user `owns()`，没有跨账号绕过。
 
 ---
 
@@ -1109,7 +1109,7 @@ Feature flag：v1 用 caps + 工具是否发布，不另做远程 flag。Agent �
 11. **必须发新 Agent 构建才能截图（Windows 0.3.0）。** Hub（PR0）可先于 Agent。`FLEET_VERSION` 是 MCP 包版本，不与 0.3.0 绑死。
 12. **第一张真实截图 OS = Windows**（无 CGO BitBlt：进程启动 DPI、LockOSThread GDI、BGRA→RGBA、虚拟桌面公式、黑帧=`capture_failed`）。Linux/macOS stub 不上 cap。
 13. **MCP 仅在 `ok && image_b64` 时发 image block**；consent/error 纯 text + `isError`。409 文案含 os+矩阵，不是 “≥0.3.0”。对外 `caps` 恒为 `string[]`（app hub SQL text 必须 split）；`permit` 恒为 `"off"|"ask"|"allow"|null`。
-14. **桌面是设备级，不走 pane fingerprint。** 所有权 `owns()`；super token 与 `run` 同权。
+14. **桌面是设备级，不走 pane fingerprint。** 所有权统一走 `owns()`；Worker 不存在跨账号控制身份。
 
 ---
 

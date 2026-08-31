@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { WebSocket } from "ws";
-import { assertHubBind, createHub, isLoopbackHost } from "./index.mjs";
+import { assertHubBind, createHub, isLoopbackHost, selfHostToken } from "./index.mjs";
 
 async function listen(hub) {
   await new Promise((resolve) => hub.server.listen(0, "127.0.0.1", resolve));
@@ -51,14 +51,19 @@ async function waitType(inbox, type, ms = 1000) {
   throw new Error(`timeout waiting for ${type}: ${JSON.stringify(inbox)}`);
 }
 
-test("empty HUB_TOKEN cannot bind a public interface", () => {
+test("empty SELF_HOST_TOKEN cannot bind a public interface", () => {
   assert.equal(isLoopbackHost("127.0.0.1"), true);
   assert.equal(isLoopbackHost("localhost"), true);
   assert.equal(isLoopbackHost("::1"), true);
   assert.equal(isLoopbackHost("0.0.0.0"), false);
   assert.deepEqual(assertHubBind({ host: "127.0.0.1", token: "" }), { host: "127.0.0.1", token: "" });
-  assert.throws(() => assertHubBind({ host: "0.0.0.0", token: "" }), /HUB_TOKEN required/);
+  assert.throws(() => assertHubBind({ host: "0.0.0.0", token: "" }), /SELF_HOST_TOKEN required/);
   assert.deepEqual(assertHubBind({ host: "0.0.0.0", token: "secret" }), { host: "0.0.0.0", token: "secret" });
+});
+
+test("standalone Hub keeps the legacy HUB_TOKEN env name during migration", () => {
+  assert.equal(selfHostToken({ HUB_TOKEN: "old" }), "old");
+  assert.equal(selfHostToken({ HUB_TOKEN: "old", SELF_HOST_TOKEN: "new" }), "new");
 });
 
 test("health is open and names the node backend", async (t) => {
@@ -474,6 +479,15 @@ test("heartbeat without agent_ver keeps the hello version (old 0.2.8 compat)", a
     }),
   );
   await waitAgentVer(http, "win-1", "0.2.5");
+  dev.ws.send(
+    JSON.stringify({
+      v: 1,
+      type: "hello",
+      id: "h-old",
+      t: now,
+      body: { os: "windows", hostname: "MySuperPC" },
+    }),
+  );
   now = 3_000;
   dev.ws.send(JSON.stringify({ v: 1, type: "ping", id: "p-old", t: now, body: {} }));
   await waitType(dev.inbox, "pong");

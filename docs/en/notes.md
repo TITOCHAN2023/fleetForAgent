@@ -20,7 +20,7 @@ A ring (~200 lines) sits on the machine. The wire sees snapshots (~4 Hz), drop i
 
 ## 5. Hash the token. Reset is a kill switch
 
-Store the hash. Plaintext is shown once. Reset invalidates immediately and kicks live sockets (`1008 token reset`). Production wrap is Fleet-OAEP, not a long-lived Bearer in logs. **Never** put `HUB_TOKEN` in wrangler `[vars]`.
+Store the hash. Plaintext is shown once. Reset invalidates immediately and kicks live sockets (`1008 token reset`). Production wrap is Fleet-OAEP, not a long-lived Bearer in logs. The public Worker has no shared machine-control secret and no ownership bypass; `ADMIN_EMAILS` authorizes only the cookie-session ops view.
 
 ## 6. Two different “cannot open” bugs on macOS
 

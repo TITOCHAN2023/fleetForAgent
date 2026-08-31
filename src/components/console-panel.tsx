@@ -33,10 +33,11 @@ export function ConsolePanel({
   if (!device) {
     lines.push({ id: "empty", kind: "sys", text: t("console.empty") });
   } else {
+    const label = device.alias || device.slug;
     lines.push({
       id: "banner",
       kind: "sys",
-      text: `connected  ${device.slug}  ${device.os}/${device.arch}  ${device.status}  egress=internet  no-intranet-ip`,
+      text: `connected  ${label}  ${device.os}/${device.arch}  ${device.status}  egress=internet  no-intranet-ip`,
     });
     for (const c of cmds) {
       lines.push({ id: `${c.id}-c`, kind: "cmd", text: c.command });
@@ -67,7 +68,9 @@ export function ConsolePanel({
         <div>
           <p className="text-sm font-medium">{t("console.title")}</p>
           <p className="font-mono text-xs text-subtle">
-            {device ? `${device.slug} · ${t("console.egress")}` : t("console.unselected")}
+            {device
+              ? `${device.alias || device.slug} · ${t("console.egress")}`
+              : t("console.unselected")}
           </p>
         </div>
         <p className="hidden text-xs text-subtle sm:block">{t("console.hint")}</p>
@@ -125,7 +128,7 @@ export function ConsolePanel({
               }
             }
           }}
-          placeholder={device ? `${device.slug}$` : t("console.unselected")}
+          placeholder={device ? `${device.alias || device.slug}$` : t("console.unselected")}
           className="font-mono"
         />
         <ButtonRun pending={pending} disabled={!device} />

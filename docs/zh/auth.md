@@ -52,9 +52,9 @@ Agent 和本地 stdio MCP 不会把整串原样当 `Authorization: Bearer` 发�
 
 重置 token 会删掉旧密钥，并断开该账号下所有设备的 WebSocket（`1008 token reset`）。旧的 `flt_` hex Bearer 会被拒绝，报 `HIGH_SEC` 错误（英文）：请升级 Agent / MCP 客户端，再重新签发 token。
 
-`HUB_ORIGIN` 写在 `packages/fleet-worker/wrangler.toml` 的 `[vars]`。可选的 `HUB_TOKEN` 仍只是 HTTP list/run 的超级令牌，抢不走设备 WebSocket。
+`HUB_ORIGIN` 写在 `packages/fleet-worker/wrangler.toml` 的 `[vars]`。公网 Worker 没有跨账号共享的机器控制凭据：OAEP 与 MCP 身份始终解析到单一账号，网页登录 cookie 也只属于同一账号。
 
-可选的 `ADMIN_EMAILS` 是另一回事：cookie 登录会话的邮箱才能打开同一 Worker 的 `/ops`。空 = 没有管理员。不是 `HUB_TOKEN` / `actor.super` / `Fleet-OAEP`。
+可选的 `ADMIN_EMAILS` 只允许匹配邮箱的 cookie 会话打开同一 Worker 的 `/ops`。空 = 没有管理员。它不会在该用户原有的账号内网页控制能力之外增加任何机器控制权限，Authorization 头也不能获得 Ops 权限。
 
 ```bash
 npx wrangler secret put ADMIN_EMAILS

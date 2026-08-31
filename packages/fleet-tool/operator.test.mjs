@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createSessionBook } from "../fleet-worker/src/session.mjs";
 import {
+  CLI_CONTROL_FINGERPRINT,
   CWD_MARK,
   FLEET_VERSION,
   MISSING_DEVICE_MESSAGE,
@@ -13,6 +14,7 @@ import {
   buildPrompts,
   buildTools,
   clampWaitMs,
+  createCliRpc,
   createOperator,
   getPrompt,
   MCP_INSTRUCTIONS,
@@ -45,7 +47,9 @@ function mockRpc(handlers) {
   const calls = [];
   async function rpc(path, body) {
     calls.push({ path, body });
-    const fn = handlers[path];
+    const fn = handlers[path] || (path === "/v1/get_computer"
+      ? (payload) => ({ id: payload.device_id, alias: "", online: true })
+      : null);
     if (!fn) throw new Error(`unexpected rpc ${path}`);
     return fn(body, calls);
   }
@@ -174,15 +178,16 @@ test("run wait_ms omitted waits and returns the finished payload", async () => {
   assert.equal(out.ok, true);
   assert.equal(out.device_id, "mac-1");
   assert.ok(peeks >= 3);
+  const runCall = calls.find((c) => c.path === "/v1/run");
   assert.deepEqual(
     calls.filter((c) => c.path === "/v1/run").map((c) => c.path),
     ["/v1/run"],
   );
   assert.ok(calls.some((c) => c.path === "/v1/get_result"));
-  assert.equal("wait_ms" in calls[0].body, false);
+  assert.equal("wait_ms" in runCall.body, false);
   assert.ok(calls.filter((c) => c.path === "/v1/get_result").every((c) => !("wait_ms" in c.body)));
   assert.ok(calls.filter((c) => c.path === "/v1/get_result").every((c) => c.body.corr === "c1"));
-  assertSentCommand(calls[0].body.command, "pwd");
+  assertSentCommand(runCall.body.command, "pwd");
 });
 
 test("run wait_ms=0 is immediate corr and does not poll get_result", async () => {
@@ -200,11 +205,12 @@ test("run wait_ms=0 is immediate corr and does not poll get_result", async () =>
   assert.equal(zero.status, "running");
   assert.equal(zero.device_id, "mac-1");
   assert.deepEqual(
-    calls.map((c) => c.path),
+    calls.filter((c) => c.path !== "/v1/get_computer").map((c) => c.path),
     ["/v1/run"],
   );
-  assert.equal("wait_ms" in calls[0].body, false);
-  assertSentCommand(calls[0].body.command, "uname");
+  const runCall = calls.find((c) => c.path === "/v1/run");
+  assert.equal("wait_ms" in runCall.body, false);
+  assertSentCommand(runCall.body.command, "uname");
 });
 
 test("run wait_ms returns the full result when get_result finishes", async () => {
@@ -241,7 +247,7 @@ test("finished /v1/run skips get_result", async () => {
   assert.equal(out.ok, true);
   assert.equal(out.corr, "c-fast");
   assert.deepEqual(
-    calls.map((c) => c.path),
+    calls.filter((c) => c.path !== "/v1/get_computer").map((c) => c.path),
     ["/v1/run"],
   );
 });
@@ -302,8 +308,9 @@ test("wait cancel returns still-running without killing", async () => {
   const out = await pending;
   assert.equal(out.status, "running");
   assert.equal("isError" in out, false);
-  assert.ok(calls.every((c) => c.path === "/v1/get_result"));
-  assert.ok(calls.every((c) => !("wait_ms" in c.body)));
+  const resultCalls = calls.filter((c) => c.path === "/v1/get_result");
+  assert.ok(resultCalls.length > 0);
+  assert.ok(resultCalls.every((c) => !("wait_ms" in c.body)));
 });
 
 test("wait tool polls get_result; omitted wait_ms uses the 30s cap", async () => {
@@ -318,8 +325,9 @@ test("wait tool polls get_result; omitted wait_ms uses the 30s cap", async () =>
   assert.equal("isError" in out, false);
   assert.ok(time.t >= WAIT_MAX_MS);
   assert.ok(time.t <= WAIT_TOOL_DEFAULT_MS + WAIT_POLL_MS);
-  assert.ok(calls.every((c) => c.path === "/v1/get_result"));
-  assert.ok(calls.every((c) => !("corr" in c.body)));
+  const resultCalls = calls.filter((c) => c.path === "/v1/get_result");
+  assert.ok(resultCalls.length > 0);
+  assert.ok(resultCalls.every((c) => !("corr" in c.body)));
 });
 
 test("get_result wait_ms omitted is a single snapshot; wait_ms long-polls", async () => {
@@ -330,12 +338,12 @@ test("get_result wait_ms omitted is a single snapshot; wait_ms long-polls", asyn
   const out = await op.callTool("get_result", { device_id: "mac-1" });
   assert.equal(out.status, "pending");
   assert.equal(out.device_id, "mac-1");
-  assert.equal(calls.length, 1);
-  assert.equal("corr" in calls[0].body, false);
+  assert.equal(calls.filter((c) => c.path === "/v1/get_result").length, 1);
+  assert.equal("corr" in calls.find((c) => c.path === "/v1/get_result").body, false);
 
   const zero = await op.callTool("get_result", { device_id: "mac-1", wait_ms: 0 });
   assert.equal(zero.status, "pending");
-  assert.equal(calls.length, 2);
+  assert.equal(calls.filter((c) => c.path === "/v1/get_result").length, 2);
 
   const time = clock();
   let peeks = 0;
@@ -386,6 +394,7 @@ test("explicit device_id updates last-used; later calls can omit it", async () =
 test("set_computer and get_current_computer are process memory only", async () => {
   const { rpc, calls } = mockRpc({
     "/v1/run": () => ({ corr: "c6", status: "running" }),
+    "/v1/get_computer": (body) => ({ id: body.device_id, alias: "", online: true }),
     "/v1/list_computers": () => ({ computers: [{ id: "solo", online: true }] }),
   });
   const op = createOperator({ rpc });
@@ -405,8 +414,65 @@ test("set_computer and get_current_computer are process memory only", async () =
   assertSentCommand(sent.command, "uname");
 });
 
+test("set_computer resolves an alias once and remembers the immutable device id", async () => {
+  const { rpc, calls } = mockRpc({
+    "/v1/get_computer": (body) => {
+      assert.equal(body.device_id, "Singapore 128GB");
+      return { id: "device-real", alias: "Singapore 128GB", online: true };
+    },
+    "/v1/run": () => ({ corr: "alias-job", status: "running" }),
+  });
+  const op = createOperator({ rpc });
+
+  assert.deepEqual(await op.callTool("set_computer", { device_id: "Singapore 128GB" }), {
+    ok: true,
+    device_id: "device-real",
+    alias: "Singapore 128GB",
+  });
+  const run = await op.callTool("run", { command: "hostname", wait_ms: 0 });
+  assert.equal(run.device_id, "device-real");
+  assert.equal(calls.find((call) => call.path === "/v1/run").body.device_id, "device-real");
+});
+
+test("run pins an alias to its immutable id before polling even if the alias is rebound", async () => {
+  const time = clock();
+  let aliasTarget = "device-a";
+  let peeks = 0;
+  const calls = [];
+  const rpc = async (path, body) => {
+    calls.push({ path, body: { ...body } });
+    if (path === "/v1/get_computer") {
+      return { id: body.device_id === "build" ? aliasTarget : body.device_id, alias: "build", online: true };
+    }
+    if (path === "/v1/run") {
+      aliasTarget = "device-b";
+      return { corr: "alias-job", status: "running" };
+    }
+    if (path === "/v1/get_result") {
+      peeks += 1;
+      return peeks < 2
+        ? { corr: "alias-job", status: "pending" }
+        : { corr: "alias-job", status: "done", ok: true, exit_code: 0, stdout: "device-a\n" };
+    }
+    throw new Error(`unexpected ${path}`);
+  };
+  const op = createOperator({ rpc, now: time.now, sleep: time.sleep });
+
+  const result = await op.callTool("run", { device_id: "build", command: "hostname", wait_ms: 5000 });
+  assert.equal(result.device_id, "device-a");
+  assert.equal(op.getState().lastUsed, "device-a");
+  assert.ok(calls.filter((call) => call.path === "/v1/run" || call.path === "/v1/get_result")
+    .every((call) => call.body.device_id === "device-a"));
+  assert.equal(calls.filter((call) => call.path === "/v1/get_computer").length, 1);
+
+  await op.callTool("run", { command: "pwd", wait_ms: 0 });
+  assert.equal(calls.at(-1).path, "/v1/run");
+  assert.equal(calls.at(-1).body.device_id, "device-a");
+  assert.equal(calls.filter((call) => call.path === "/v1/get_computer").length, 1);
+});
+
 test("FLEET_DEVICE_ID is a start default and is not written back", async () => {
-  const { rpc } = mockRpc({
+  const { rpc, calls } = mockRpc({
     "/v1/run": () => ({ corr: "c7", status: "running" }),
   });
   const env = { FLEET_DEVICE_ID: "env-box" };
@@ -422,6 +488,8 @@ test("FLEET_DEVICE_ID is a start default and is not written back", async () => {
   assert.equal(still.last_used, null);
   assert.equal(still.env_default, "env-box");
   assert.equal(still.source, "env");
+  assert.equal(op.getState().lastUsed, null);
+  assert.equal(calls.find((call) => call.path === "/v1/run").body.device_id, "env-box");
 
   await op.callTool("run", { device_id: "mac-2", command: "true", wait_ms: 0 });
   const after = await op.callTool("get_current_computer");
@@ -449,6 +517,7 @@ test("no last-used and no env fails closed; does not auto-pick the only online m
 
 test("remembered device offline fails explicitly with no fallback", async () => {
   const { rpc, calls } = mockRpc({
+    "/v1/get_computer": (body) => ({ id: body.device_id, alias: "", online: body.device_id !== "dead" }),
     "/v1/run": (body) => {
       if (body.device_id === "dead") throw new Error("offline");
       return { corr: "other", status: "running" };
@@ -480,7 +549,7 @@ test("type, result, and screen use the internally issued corr, never a model-sup
   await op.callTool("type", { corr: "job-a", keys: "x" });
   await op.callTool("get_result", { corr: "job-a" });
   await op.callTool("read_screen", { corr: "job-a" });
-  const bodies = calls.filter((c) => c.path !== "/v1/run").map((c) => c.body);
+  const bodies = calls.filter((c) => ["/v1/type", "/v1/get_result", "/v1/read_screen"].includes(c.path)).map((c) => c.body);
   assert.ok(bodies.length >= 3);
   assert.ok(bodies.every((b) => b.corr === "job-a"));
   assert.ok(bodies.every((b) => !("fingerprint" in b)));
@@ -491,6 +560,7 @@ test("concurrent runs on one device poll only their own corr", async () => {
   const calls = [];
   const rpc = async (path, body) => {
     calls.push({ path, body: { ...body } });
+    if (path === "/v1/get_computer") return { id: body.device_id, alias: "", online: true };
     if (path === "/v1/run") {
       if (body.command === "slow") {
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -528,6 +598,7 @@ test("two operator processes on one device receive only their own results", asyn
   const results = new Map();
   let seq = 0;
   const rpcFor = (fingerprint) => async (path, body) => {
+    if (path === "/v1/get_computer") return { id: body.device_id, alias: "", online: true };
     if (path === "/v1/run") {
       const corr = `job-${++seq}`;
       sessions.claim(fingerprint, corr);
@@ -563,6 +634,7 @@ test("two operator processes on one device receive only their own results", asyn
 
 test("get_result after set_computer uses last-used; hub isolates by fingerprint header", async () => {
   const { rpc, calls } = mockRpc({
+    "/v1/get_computer": (body) => ({ id: body.device_id, alias: "", online: true }),
     "/v1/run": (body) => ({ corr: String(body.command).includes("one") ? "job-a" : "job-b", status: "running" }),
     "/v1/get_result": (body) => ({ status: "pending", seen: body.device_id }),
   });
@@ -834,15 +906,15 @@ test("FLEET_DEV still-running reply is plain text plus trailer", async () => {
   const out = await op.callTool("run", { device_id: "mac-1", command: "htop", wait_ms: 0 });
   assert.equal(out.status, "running");
   assert.equal(out.dev.poll_count, 0);
-  assert.equal(out.dev.hops.length, 1);
-  assertHopFields(out.dev.hops[0], { path: "/v1/run", wait_ms: 40, split: "body" });
+  const runHop = out.dev.hops.find((hop) => hop.path === "/v1/run");
+  assertHopFields(runHop, { path: "/v1/run", wait_ms: 40, split: "body" });
   const text = formatMcpText("run", out, env);
   const lines = text.split("\n");
   assert.equal(lines[0], "still running");
   assert.equal(text.includes("corr="), false);
   assert.equal(text.includes("c-tui"), false);
   assert.equal(lines[1], "# fleet-dev");
-  assert.match(lines[2], /# hop \/v1\/run\s+out=\d+ in=\d+ send=0ms wait=40ms recv=0ms total=40ms/);
+  assert.match(text, /# hop \/v1\/run\s+out=\d+ in=\d+ send=0ms wait=40ms recv=0ms total=40ms/);
   assert.match(text, /# poll=0 total=\d+ms/);
 });
 
@@ -897,7 +969,7 @@ test("timed rpc hop keeps the headers split", async () => {
   const env = { FLEET_DEV: "1" };
   const op = createOperator({ rpc, env });
   const out = await op.callTool("run", { device_id: "mac-1", command: "pwd", wait_ms: 0 });
-  assertHopFields(out.dev.hops[0], {
+  assertHopFields(out.dev.hops.find((hop) => hop.path === "/v1/run"), {
     path: "/v1/run",
     send_ms: 1,
     wait_ms: 80,
@@ -925,6 +997,7 @@ test("transport wrappers preserve timed hops without leaking into business JSON"
 
 test("MCP result transport is per invocation and absent from default text", async () => {
   const rpc = async (path, body) => {
+    if (path === "/v1/get_computer") return { id: body.device_id, alias: "", online: true };
     assert.equal(path, "/v1/run");
     if (body.device_id === "slow-rtc") {
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -985,8 +1058,24 @@ test("applyCliDevFlag sets FLEET_DEV and strips --dev", () => {
   assert.equal(isFleetDev({}), false);
 });
 
-test("MCP version is 0.6.1", () => {
-  assert.equal(FLEET_VERSION, "0.6.1");
+test("MCP version is 0.6.3 and one-shot CLI control has a stable private scope", () => {
+  assert.equal(FLEET_VERSION, "0.6.3");
+  assert.equal(CLI_CONTROL_FINGERPRINT, "fleet-cli-v1");
+});
+
+test("one-shot CLI RPC injects the stable scope without changing MCP fingerprints", async () => {
+  const seen = [];
+  const rpc = createCliRpc(async (path, body, options) => {
+    seen.push({ path, body, options });
+    return { ok: true };
+  });
+  assert.deepEqual(await rpc("/v1/get_result", { device_id: "d1", corr: "c1" }), { ok: true });
+  assert.deepEqual(seen, [{
+    path: "/v1/get_result",
+    body: { device_id: "d1", corr: "c1" },
+    options: { fingerprint: CLI_CONTROL_FINGERPRINT },
+  }]);
+  assert.notEqual(newOperatorFingerprint(), CLI_CONTROL_FINGERPRINT);
 });
 
 test("official plugin registry pins every platform artifact to SHA-256", () => {
@@ -1050,12 +1139,15 @@ test("plugin tools send ids and actions but never client-supplied artifact URLs"
   });
   const op = createOperator({ rpc });
   await op.callTool("install_plugin", { device_id: "mac-1", plugin_id: "fleet.acp", url: "https://evil.test/x" });
-  assert.deepEqual(calls[0], {
+  assert.deepEqual(calls.find((call) => call.path === "/v1/plugin"), {
     path: "/v1/plugin",
     body: { device_id: "mac-1", operation: "install", plugin_id: "fleet.acp" },
   });
   await op.callTool("get_plugin_task", { corr: "p1" });
-  assert.deepEqual(calls[1], { path: "/v1/plugin_result", body: { device_id: "mac-1", corr: "p1" } });
+  assert.deepEqual(calls.find((call) => call.path === "/v1/plugin_result"), {
+    path: "/v1/plugin_result",
+    body: { device_id: "mac-1", corr: "p1" },
+  });
 });
 
 test("desktop_screenshot success keeps image_b64; formatMcpText strips it", async () => {
@@ -1109,7 +1201,7 @@ test("desktop_action 409 unsupported cap is isError with code", async () => {
   assert.equal(row.isError, true);
   assert.equal(row.code, "UNSUPPORTED_CAP");
   assert.equal(row.os, "linux");
-  assert.equal(calls.length, 1);
+  assert.equal(calls.filter((call) => call.path === "/v1/desktop_action").length, 1);
 });
 
 test("buildTools ships desktop_screenshot and desktop_action", () => {
@@ -1146,7 +1238,13 @@ test("local file endpoints delegate to the local streaming manager", async () =>
       return { transfer_id: id, phase: "cancelled" };
     },
   };
-  const op = createOperator({ rpc: async () => assert.fail("Hub rpc should stay inside the transfer manager"), fileTransfer });
+  const op = createOperator({
+    rpc: async (path, body) => {
+      assert.equal(path, "/v1/get_computer");
+      return { id: body.device_id, alias: "" };
+    },
+    fileTransfer,
+  });
   const source = { kind: "tool", path: "/tmp/source.bin" };
   const target = { kind: "device", device_id: "device-a", directory: "/tmp/incoming" };
   assert.equal((await op.callTool("start_file_transfer", { source, target })).transfer_id, "t-1");
@@ -1163,7 +1261,13 @@ test("stdio cancellation signal reaches local transfer start and blocks an alrea
       return { transfer_id: "t-signal", phase: "waiting_approval" };
     },
   };
-  const op = createOperator({ rpc: async () => assert.fail("unexpected Hub RPC"), fileTransfer });
+  const op = createOperator({
+    rpc: async (path, body) => {
+      assert.equal(path, "/v1/get_computer");
+      return { id: body.device_id, alias: "" };
+    },
+    fileTransfer,
+  });
   const input = {
     source: { kind: "tool", path: "/tmp/source.bin" },
     target: { kind: "device", device_id: "device-a", directory: "/tmp/incoming" },
@@ -1211,6 +1315,7 @@ test("every ordinary Hub RPC receives the tools/call cancellation signal", async
 
 test("remote MCP can coordinate device-to-device but cannot claim a Tool disk", async () => {
   const { rpc, calls } = mockRpc({
+    "/v1/get_computer": (body) => ({ id: body.device_id, alias: "", online: true }),
     "/v1/plugin-peer-session/create": (body) => ({ session: { session_id: body.session_id, phase: "waiting_approval", body } }),
   });
   const op = createOperator({ rpc });
@@ -1218,14 +1323,14 @@ test("remote MCP can coordinate device-to-device but cannot claim a Tool disk", 
     source: { kind: "device", device_id: "source-a", path: "/srv/a.bin" },
     target: { kind: "device", device_id: "target-b", directory: "/srv/incoming" },
   });
-  assert.equal(row.transfer_id, calls[0].body.session_id);
-  assert.equal(calls[0].path, "/v1/plugin-peer-session/create");
-  assert.equal(calls[0].body.initiator, "source");
-  assert.deepEqual(calls[0].body.source.input, { path: "/srv/a.bin", chunk_size: 32768 });
-  assert.equal(calls[0].body.target.input.directory, "/srv/incoming");
-  assert.equal(calls[0].body.target.input.transfer_id, calls[0].body.session_id);
-  assert.match(calls[0].body.target.input.source, /^[0-9a-f]{64}$/);
-  assert.equal("name" in calls[0].body.target.input, false);
+  const create = calls.find((call) => call.path === "/v1/plugin-peer-session/create");
+  assert.equal(row.transfer_id, create.body.session_id);
+  assert.equal(create.body.initiator, "source");
+  assert.deepEqual(create.body.source.input, { path: "/srv/a.bin", chunk_size: 32768 });
+  assert.equal(create.body.target.input.directory, "/srv/incoming");
+  assert.equal(create.body.target.input.transfer_id, create.body.session_id);
+  assert.match(create.body.target.input.source, /^[0-9a-f]{64}$/);
+  assert.equal("name" in create.body.target.input, false);
   await assert.rejects(
     () =>
       op.callTool("start_file_transfer", {

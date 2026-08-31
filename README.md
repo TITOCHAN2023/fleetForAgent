@@ -71,7 +71,7 @@ http://127.0.0.1:8080 is for hacking. A hub on loopback cannot reach Windows, Li
 | `migrations/` | Auth + fleet schema (PGLite locally, Postgres in prod) |
 ## Ops
 
-Admins whose cookie-session email is in `ADMIN_EMAILS` see a muted Ops switch in the site header (no `/ops` URL to remember). The ops view is usage and last-seen freshness, searchable, newest activity first. Empty secret = no admins; everyone else gets 404. Privacy: no device names, hostnames, or IPs. Ban: 「操作不了你的机子，只是用于异常账号识别」 / “Cannot operate your machines. This is only for identifying abnormal accounts.” Not `HUB_TOKEN`.
+Admins whose cookie-session email is in `ADMIN_EMAILS` see a muted Ops switch in the site header (no `/ops` URL to remember). The ops view is usage and last-seen freshness, searchable, newest activity first. Empty secret = no admins; everyone else gets 404. Privacy: no device names, hostnames, or IPs. Ban: 「操作不了你的机子，只是用于异常账号识别」 / “Cannot operate your machines. This is only for identifying abnormal accounts.” The public Worker has no shared cross-account machine-control credential; the ops allowlist grants no extra machine-control authority.
 
 ```bash
 npx wrangler secret put ADMIN_EMAILS

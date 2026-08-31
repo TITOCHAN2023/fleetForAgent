@@ -2,11 +2,11 @@
 
 Relay only. Machines dial **out** over WebSocket. Operators call HTTPS.
 
-Same protocol as `packages/fleet-hub` (plain Node). Pick one backend.
+It shares the v1 Envelope and core routes with `packages/fleet-hub`, but not its authentication model: this Worker is multi-account and uses per-account `flt_1`; the Node hub is a single-user relay.
 
 Jobs do **not** run on the Worker. The device keeps a pane buffer (tmux-style snapshot). The wire is latest-wins at ~4 Hz. `POST /v1/run` returns `accepted` immediately.
 
-Agent 0.6.1 and fleet-tool 0.6.1 may negotiate a direct WebRTC DataChannel through this Worker for shell, pane, desktop, and task plugin traffic. WSS remains connected for control, signed token revocation, and fallback. New peers ACK terminal DataChannel replies; an unacknowledged result is replayed once through WSS, while healthy direct traffic still bypasses the Worker. The DataChannel carries the unchanged v1 Envelope, so those handlers do not fork. Optional `RTC_STUN_URLS` is a comma-separated public `[vars]` value, never a secret. There is no TURN relay in this version.
+Agent 0.6.1 and fleet-tool 0.6.3 may negotiate a direct WebRTC DataChannel through this Worker for shell, pane, desktop, and task plugin traffic. WSS remains connected for control, signed token revocation, and fallback. New peers ACK terminal DataChannel replies; an unacknowledged result is replayed once through WSS, while healthy direct traffic still bypasses the Worker. The DataChannel carries the unchanged v1 Envelope, so those handlers do not fork. The shipped public `[vars]` config uses `stun:stun.cloudflare.com:3478` by default; replace `RTC_STUN_URLS` with up to four comma-separated STUN URLs when self-hosting. It is not a secret. There is no TURN relay in this version.
 
 Current task fallback covers missing capability, setup failure, and synchronous send failure. It does not safely cover a request write accepted by the DataChannel but not yet confirmed by the Agent. The future hardened path requires an Agent receive ACK, the same caller-generated `corr` on both paths, a persisted Worker claim before execution, and bounded Agent/Worker idempotent replay. It must narrow today's generic plugin fast path to `invoke` of task actions and force list/install/uninstall onto WSS-only. Generic peer DATA has the opposite policy: it is direct-only and never falls back through this Worker.
 
@@ -29,7 +29,6 @@ cd packages/fleet-worker
 npm install
 npx wrangler login
 npx wrangler deploy
-npx wrangler secret put HUB_TOKEN
 npx wrangler secret put ADMIN_EMAILS
 ```
 
@@ -43,7 +42,7 @@ Same Worker (`fleet-hub` on `fleet.ginfo.cc`). Not a new Worker or repo.
 
 `GET /ops` is an in-Worker page for usage and last-seen freshness (online/offline, OS / arch / agent version, stale vs recent). It does **not** claim packet loss, congestion, or traffic Mbps. Ban marks a row for abnormal-account identification; it cannot operate machines.
 
-Only a **cookie session** whose email is listed in the `ADMIN_EMAILS` secret can open `/ops` or `/v1/ops/*`. `Authorization` (`Fleet-OAEP` hub tokens, `HUB_TOKEN`) is ignored. Everyone else gets 404 — the page does not exist. Empty / unset secret means no admins (forks stay closed). Comma or whitespace separated; compared case-insensitively. Admins see a muted **Ops** control in the site header (no URL to type); it switches to the ops view, which searches accounts/devices and lists them by most recently active.
+Only a **cookie session** whose email is listed in the `ADMIN_EMAILS` secret can open `/ops` or `/v1/ops/*`. Authorization credentials are ignored by this route, and membership grants no extra machine-control authority beyond the user's existing account-scoped access. Everyone else gets 404 — the page does not exist. Empty / unset secret means no admins (forks stay closed). Comma or whitespace separated; compared case-insensitively. Admins see a muted **Ops** control in the site header (no URL to type); it switches to the ops view, which searches accounts/devices and lists them by most recently active.
 
 ```bash
 npx wrangler secret put ADMIN_EMAILS

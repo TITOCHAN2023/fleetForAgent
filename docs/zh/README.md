@@ -17,7 +17,7 @@ English: [../en/README.md](../en/README.md)
 ![Fleet 架构](../media/architecture.svg)
 
 1. **Tool** — Cursor、Claude、MCP。`FLEET_URL` + `FLEET_TOKEN`。
-2. **Server** — [fleet.ginfo.cc](https://fleet.ginfo.cc)（或你自己的 Worker）。转发任务。
+2. **Server** — [fleet.ginfo.cc](https://fleet.ginfo.cc)（或配置好 OAuth 和按账号签发 Token 的 Worker）。负责转发任务。更简单的单用户自托管路径是 Node 中枢。
 3. **Agent** — Windows amd64、Linux amd64/arm64、macOS arm64/amd64 上主动连 `WSS /v1/device`。设备侧不开端口。
 
 讲解视频：[architecture.mp4](../media/architecture.mp4)
@@ -33,7 +33,7 @@ English: [../en/README.md](../en/README.md)
 FLEET_URL=https://fleet.ginfo.cc FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
 ```
 
-同一 Worker 上的 `/ops` 给 `ADMIN_EMAILS` 里的登录邮箱看用量和 last-seen 新鲜度，并可以 Ban。空 secret = 没有管理员。不是单独的 Worker。Ban 操作不了机器。
+同一 Worker 上的 `/ops` 给 `ADMIN_EMAILS` 里的登录邮箱看用量和 last-seen 新鲜度，并可以 Ban。空 secret = 没有管理员。不是单独的 Worker。Ops 和 Ban 都不会增加机器控制权限。
 
 完整步骤：[deploy.md](deploy.md) · [auth.md](auth.md)
 

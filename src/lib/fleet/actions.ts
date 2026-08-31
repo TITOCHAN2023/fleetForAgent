@@ -6,11 +6,14 @@ import { dispatchHello } from "./hub";
 import { resolveNode } from "./world";
 import { assertCanAddDevice, makeDeviceSlug } from "./cap";
 import { isOnline, sendToDevice } from "./live";
+import { setDeviceAliasForUser } from "./device-alias.server";
 
 export type DeviceDto = {
   id: string;
   slug: string;
   name: string;
+  alias: string | null;
+  agentVer: string | null;
   os: OsKind;
   arch: string;
   locationTag: string;
@@ -53,6 +56,8 @@ type DeviceRow = {
   id: string;
   slug: string;
   name: string;
+  alias: string | null;
+  agent_ver: string | null;
   os: string;
   arch: string;
   location_tag: string;
@@ -99,6 +104,8 @@ function mapDevice(row: DeviceRow): DeviceDto {
     id: row.id,
     slug: row.slug,
     name: row.name,
+    alias: row.alias ?? null,
+    agentVer: row.agent_ver?.trim() || null,
     os: row.os as OsKind,
     arch: row.arch,
     locationTag: row.location_tag,
@@ -153,7 +160,8 @@ export const listDevices = createServerFn({ method: "GET" })
     await dropDemoSeeds(context.userId);
     const sql = await getSql();
     const rows = await sql<DeviceRow>`
-      select d.id, d.slug, d.name, d.os, d.arch, d.location_tag, d.status, d.caps, d.last_seen,
+      select d.id, d.slug, d.name, d.alias, d.agent_ver, d.os, d.arch,
+             d.location_tag, d.status, d.caps, d.last_seen,
              s.selected_device_id
       from devices d
       left join hub_sessions s on s.user_id = d.user_id
@@ -182,6 +190,13 @@ export const selectDevice = createServerFn({ method: "POST" })
     return { ok: true as const, id };
   });
 
+export const setDeviceAlias = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: { id: string; alias: string }) => input)
+  .handler(async ({ context, data }) => {
+    return setDeviceAliasForUser(context.userId, data.id, data.alias);
+  });
+
 export const toggleDevice = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { id: string; status: "online" | "offline" }) => input)
@@ -198,7 +213,8 @@ export const toggleDevice = createServerFn({ method: "POST" })
     await recordEvent(context.userId, data.id, "up", env);
     if (data.status === "online") {
       const row = await sql<DeviceRow>`
-        select d.id, d.slug, d.name, d.os, d.arch, d.location_tag, d.status, d.caps, d.last_seen,
+        select d.id, d.slug, d.name, d.alias, d.agent_ver, d.os, d.arch,
+               d.location_tag, d.status, d.caps, d.last_seen,
                s.selected_device_id
         from devices d
         left join hub_sessions s on s.user_id = d.user_id
@@ -251,7 +267,8 @@ export const runCommand = createServerFn({ method: "POST" })
       };
     }
     const rows = await sql<DeviceRow>`
-      select d.id, d.slug, d.name, d.os, d.arch, d.location_tag, d.status, d.caps, d.last_seen,
+      select d.id, d.slug, d.name, d.alias, d.agent_ver, d.os, d.arch,
+             d.location_tag, d.status, d.caps, d.last_seen,
              s.selected_device_id
       from devices d
       left join hub_sessions s on s.user_id = d.user_id
@@ -426,8 +443,8 @@ export const redeemJoinCode = createServerFn({ method: "POST" })
     const id = crypto.randomUUID();
     const arch = data.arch || (data.os === "darwin" ? "arm64" : "x86_64");
     await sql`
-      insert into devices (id, user_id, slug, name, os, arch, location_tag, status, caps)
-      values (${id}, ${context.userId}, ${slug}, ${data.name.trim() || slug}, ${data.os}, ${arch}, ${data.locationTag}, ${"online"}, ${"shell"})
+      insert into devices (id, user_id, slug, name, os, arch, location_tag, status, caps, agent_ver)
+      values (${id}, ${context.userId}, ${slug}, ${data.name.trim() || slug}, ${data.os}, ${arch}, ${data.locationTag}, ${"online"}, ${"shell"}, ${"0.1.0"})
     `;
     await sql`update enroll_codes set used_at = now() where id = ${row.id} and user_id = ${context.userId}`;
     const hello = makeEnvelope("hello", {
@@ -455,8 +472,8 @@ export const addDevice = createServerFn({ method: "POST" })
     const arch = data.arch || (data.os === "darwin" ? "arm64" : "x86_64");
     const name = data.name.trim() || slug;
     await sql`
-      insert into devices (id, user_id, slug, name, os, arch, location_tag, status, caps)
-      values (${id}, ${context.userId}, ${slug}, ${name}, ${data.os}, ${arch}, ${data.locationTag}, ${"online"}, ${"shell"})
+      insert into devices (id, user_id, slug, name, os, arch, location_tag, status, caps, agent_ver)
+      values (${id}, ${context.userId}, ${slug}, ${name}, ${data.os}, ${arch}, ${data.locationTag}, ${"online"}, ${"shell"}, ${"0.2.0"})
     `;
     const hello = dispatchHello({
       name,
@@ -497,4 +514,3 @@ export const removeDevice = createServerFn({ method: "POST" })
     await recordEvent(context.userId, id, "up", env);
     return { ok: true as const };
   });
-

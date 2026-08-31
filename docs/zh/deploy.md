@@ -56,27 +56,32 @@ git clone https://github.com/TITOCHAN2023/fleetForAgent.git
 cd fleetForAgent/packages/fleet-worker
 npm install
 npx wrangler login
+```
+
+部署前先替换 `wrangler.toml` 里的两个生产域配置：把 `HUB_ORIGIN` 改成你的完整公网 origin，把 `[[routes]].pattern` 改成对应主机名。然后在你自己的 Google / X OAuth 应用里登记回调：
+
+```text
+https://your.example/v1/auth/callback/google
+https://your.example/v1/auth/callback/x
+```
+
+OAuth 回调域、`HUB_ORIGIN` 和 route 主机名必须指向同一个网站，否则登录会失败，或签发出 audience 错误的 `flt_1`。确认后再部署：
+
+```bash
 npx wrangler deploy
 ```
 
-`wrangler.toml` 里 `workers_dev = false`，不会再出 `*.workers.dev`。绑定自己的域名（Cloudflare Dashboard → Workers → Triggers → Custom Domain），Agent 填那个 origin。本仓库生产域是 `https://fleet.ginfo.cc`。本地预览可把 `workers_dev` 改回 `true`。
+`wrangler.toml` 里 `workers_dev = false`，不会再出 `*.workers.dev`。在 Cloudflare 绑定这个自定义域名，Agent 填它的 origin。本仓库生产域是 `https://fleet.ginfo.cc`。要用 workers.dev 预览，就打开 `workers_dev`、移除自定义 route，并让 OAuth 与 `HUB_ORIGIN` 统一使用 workers.dev origin。
 
-### 令牌（建议生产打开）
+### 鉴权
 
 ```bash
-npx wrangler secret put HUB_TOKEN
 npx wrangler secret put ADMIN_EMAILS
 ```
 
-`ADMIN_EMAILS` 是 cookie 登录邮箱列表（逗号或空白分隔），只有这些邮箱能打开同一 Worker 上的 `/ops`。空 / 未设 = 没有管理员。不是 `HUB_TOKEN` / `Fleet-OAEP`。不要把邮箱写进 `[vars]`。
+公网 Worker 不存在部署级的机器控制万能凭据。先按[鉴权文档](auth.md)配置 OAuth，登录后在设置页给每个账号签发自己的 `flt_1`。Agent 和本地 Tool 使用 Fleet-OAEP；远程 MCP 只在初始化会话时接受 Bearer。所有机器路由始终按账号隔离。
 
-设了 `HUB_TOKEN` 之后，设备连接和控制面调用都要带：
-
-```
-Authorization: Bearer <HUB_TOKEN>
-```
-
-本机 Agent 设置页有「Hub token」栏。不设 secret 时 Worker 没有鉴权，只适合先自己跑通。
+`ADMIN_EMAILS` 是 cookie 登录邮箱列表（逗号或空白分隔），只有这些邮箱能打开同一 Worker 上的 `/ops`。空 / 未设 = 没有管理员。它不能鉴权机器控制请求，也不会在该用户原有的账号内权限之外增加控制能力。不要把邮箱写进 `[vars]`。
 
 本地调试：
 
@@ -87,9 +92,9 @@ npx wrangler dev --port 8787
 
 Agent 填 `http://127.0.0.1:8787`（会转成 `ws://…/v1/device`）。
 
-### 可选的点对点数据通道和自建 STUN
+### 默认点对点数据通道和可选自建 STUN
 
-Agent 0.6.1 与本地 `fleet-tool` 0.6.1 会先保留原来的 WSS 控制连接，再尝试建立 WebRTC DataChannel。RTC 信令结束不会取消已建立会话；直连成功后，`run`、pane、桌面和插件仍传同一份 `{ v, type, id, corr, t, body }`。新版双方会协商终态结果 ACK：DataChannel 写入成功但 Tool 没收到时，Agent 才会经 WSS 补投一次并关闭坏掉的直连；健康直连的业务数据仍不经过 Worker。旧客户端不协商 ACK，保持原行为。打洞失败、超时或缺少 `rtc_v1` 时，继续回到原来的 Worker → WSS 路径。远程 `/mcp` 和 `/mcp/sse` 运行在 Worker 内，没有 UDP socket，继续走中枢。
+Agent 0.6.1 与本地 `fleet-tool` 0.6.3 会先保留原来的 WSS 控制连接，再尝试建立 WebRTC DataChannel。RTC 信令结束不会取消已建立会话；直连成功后，`run`、pane、桌面和插件仍传同一份 `{ v, type, id, corr, t, body }`。新版双方会协商终态结果 ACK：DataChannel 写入成功但 Tool 没收到时，Agent 才会经 WSS 补投一次并关闭坏掉的直连；健康直连的业务数据仍不经过 Worker。旧客户端不协商 ACK，保持原行为。打洞失败、超时或缺少 `rtc_v1` 时，继续回到原来的 Worker → WSS 路径。远程 `/mcp` 和 `/mcp/sse` 运行在 Worker 内，没有 UDP socket，继续走中枢。
 
 ```mermaid
 flowchart LR
@@ -100,7 +105,13 @@ flowchart LR
   H -. "现有 WSS 兜底" .-> A
 ```
 
-STUN 只告诉双方各自的公网映射，不转发命令内容。第一版不配 TURN，避免又造一条中心数据面。可以在有固定公网 IP 的小 VPS 上装 coturn，只开放 UDP 3478：
+STUN 只告诉双方各自的公网映射，不转发命令内容。Worker 默认通过公开变量下发 Cloudflare STUN：
+
+```toml
+RTC_STUN_URLS = "stun:stun.cloudflare.com:3478"
+```
+
+Agent 和 Tool 无需单独配置；它们会在每次新建 RTC 会话时从 Worker 获取这个地址。第一版不配 TURN，避免又造一条中心数据面。需要自建时，可以在有固定公网 IP 的小 VPS 上装 coturn，只开放 UDP 3478：
 
 ```bash
 sudo apt-get update
@@ -117,7 +128,7 @@ EOF
 sudo systemctl enable --now coturn
 ```
 
-把示例 IP 换成服务器真实公网 IP，给它加一个只做 DNS 解析的域名，并在 Worker 的 `[vars]` 中加入：
+把示例 IP 换成服务器真实公网 IP，给它加一个只做 DNS 解析的域名，并替换 Worker `[vars]` 中的默认值：
 
 ```toml
 RTC_STUN_URLS = "stun:stun.example.com:3478"
@@ -132,14 +143,16 @@ UDP 3478 必须在 VPS 防火墙和云安全组同时放行。STUN 宕机不会�
 ```bash
 cd packages/fleet-hub
 npm install
-HUB_TOKEN=change-me PORT=8787 HOST=0.0.0.0 npm start
+SELF_HOST_TOKEN=change-me PORT=8787 HOST=0.0.0.0 npm start
 ```
 
 本机 Agent 填 `http://127.0.0.1:8787`。放到公网时前面加 Caddy / nginx 做 HTTPS，Agent 填 `hub.example.com`。
 
 控制面路径和 Worker 完全一样：`/v1/health`、`/v1/list_computers`、`/v1/run`、`/v1/get_result`、`/v1/read_screen`、`/v1/type`。设备仍是 `WSS /v1/device`。
 
-这是共享 `HUB_TOKEN` 的单用户中继，没有 `flt_1`、没有按账号隔离。空 `HUB_TOKEN` **只能绑 loopback**（`HOST=127.0.0.1`）；绑 `0.0.0.0` 或公网必须设 token。
+这是使用 `SELF_HOST_TOKEN` 的单用户中继，没有 `flt_1`、没有按账号隔离。空 `SELF_HOST_TOKEN` **只能绑 loopback**（`HOST=127.0.0.1`）；绑 `0.0.0.0` 或公网必须设 token。Agent 和 Tool 仍使用现有的 `FLEET_TOKEN` 配置项，填入同一个值。
+
+旧安装在迁移期间仍可继续使用已弃用的 `HUB_TOKEN` 环境变量；新安装应使用 `SELF_HOST_TOKEN`。两者同时存在时，以 `SELF_HOST_TOKEN` 为准。
 
 systemd 示例：
 
@@ -147,7 +160,7 @@ systemd 示例：
 [Service]
 WorkingDirectory=/opt/fleet/packages/fleet-hub
 Environment=PORT=8787
-Environment=HUB_TOKEN=change-me
+Environment=SELF_HOST_TOKEN=change-me
 ExecStart=/usr/bin/node index.mjs
 Restart=always
 ```
@@ -213,7 +226,7 @@ gh release create v0.x.0 public/dl/FleetAgent-* public/dl/fleet-agent-linux-amd6
 
 ## 3. 列机器、选一台、执行
 
-Worker 和 Node 中枢走同一套路径。把 `$HUB` 换成 `https://fleet-hub.<account>.workers.dev` 或 `https://hub.example.com`。
+Worker 和 Node 中枢走同一套路径，但鉴权不同。Worker 请用 `fleet-tool` 配合 `FLEET_URL` 和账号自己的 `flt_1`，由 Tool 完成 Fleet-OAEP challenge。下面的裸 Bearer curl 只适用于单用户 Node 中枢：设置 `$HUB=https://hub.example.com`，并让 `$SELF_HOST_TOKEN` 等于 Node 进程使用的值。
 
 健康检查：
 
@@ -225,7 +238,7 @@ curl $HUB/v1/health
 
 ```bash
 curl -X POST $HUB/v1/list_computers \
-  -H "authorization: Bearer $HUB_TOKEN" \
+  -H "authorization: Bearer $SELF_HOST_TOKEN" \
   -H "content-type: application/json" \
   -d '{}'
 ```
@@ -234,7 +247,7 @@ curl -X POST $HUB/v1/list_computers \
 
 ```bash
 curl -X POST $HUB/v1/run \
-  -H "authorization: Bearer $HUB_TOKEN" \
+  -H "authorization: Bearer $SELF_HOST_TOKEN" \
   -H "content-type: application/json" \
   -d '{"device_id":"<id>","command":"uname -a"}'
 ```
@@ -243,7 +256,7 @@ curl -X POST $HUB/v1/run \
 
 ```bash
 curl -X POST $HUB/v1/get_result \
-  -H "authorization: Bearer $HUB_TOKEN" \
+  -H "authorization: Bearer $SELF_HOST_TOKEN" \
   -H "content-type: application/json" \
   -d '{"device_id":"<id>","corr":"<corr>"}'
 ```
@@ -263,7 +276,7 @@ curl -X POST $HUB/v1/get_result \
 
 ```bash
 # 立刻返回 { corr, status: running }
-curl -X POST $HUB/v1/run -H "authorization: Bearer $HUB_TOKEN" \
+curl -X POST $HUB/v1/run -H "authorization: Bearer $SELF_HOST_TOKEN" \
   -H "content-type: application/json" \
   -d '{"device_id":"<id>","command":"yes"}'
 
@@ -304,7 +317,7 @@ npm run build
 - 本机三级权限在设备上执行，中枢改不了。它统一管理 run/type，以及所有插件安装、卸载、task 和 peer 操作；`allow` 只省掉额外点击，不放松危险命令策略和插件来源、action/runtime、SHA-256 等硬校验。
 - 危险命令拦截和插件 permit 决策都只在设备 Agent 执行。Worker、RTC 和 WSS 只是传递同一份 Envelope，换传输不能绕开这套决策。
 - 重置 Token 会先写撤销墓碑并下发签名的 `auth_revoked`，随后断开 WSS。Agent 把它当最高优先级事件，立即关闭全部 DataChannel，旧 Token 不再自动重连。
-- Worker 的 `HUB_TOKEN` 是可选超级操作员。Node 中枢绑公网时必须设 `HUB_TOKEN`（空 token 只能 loopback）。
+- Worker 的机器访问永远按账号隔离；可选的 Ops 白名单不会增加机器控制权限。单用户 Node 中枢绑公网时必须设 `SELF_HOST_TOKEN`（空 token 只能 loopback），拿到它就能完全控制该实例。
 - 机器之间互相 ping 不通是正常的：没有内网 overlay。
 
 ---

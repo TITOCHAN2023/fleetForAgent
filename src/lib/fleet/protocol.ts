@@ -34,7 +34,7 @@ export const TOOLS = [
   {
     name: "list_computers",
     description:
-      "List every machine in the fleet. Returns id, name, os, location tag, and online state. Never returns IPs.",
+      "List every machine in the fleet. Returns immutable id, optional alias, name, Agent version, OS, location tag, and online state. Never returns IPs.",
     input: {},
   },
   {

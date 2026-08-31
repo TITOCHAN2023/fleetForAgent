@@ -110,8 +110,8 @@ test("Worker exposes the mirror only behind resolved account auth and injects it
     worker.indexOf('if (url.pathname === "/v1/rtc/config"'),
   );
   assert.match(authorized, /isPluginArtifactPath\(url\.pathname\)/);
-  assert.match(authorized, /actor\.super/);
   assert.match(authorized, /serveOfficialPluginArtifact\(request\)/);
+  assert.doesNotMatch(worker, /actor\.super/);
   assert.match(worker, /operation === "install"[\s\S]*withPluginArtifactMirrors/);
   assert.doesNotMatch(
     await readFile(new URL("./public/plugin-registry.json", import.meta.url), "utf8"),

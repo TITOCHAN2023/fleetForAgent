@@ -80,20 +80,6 @@ test("non-matching session → 404", async () => {
   assert.match(await page.text(), /Not Found/);
 });
 
-test("HUB_TOKEN super is not an ops admin", async () => {
-  const res = await handleOpsRoute({
-    path: "/v1/ops/overview",
-    method: "GET",
-    actor: { id: "*", super: true },
-    adminEmails: "ops@example.com",
-  });
-  assert.equal(res.status, 404);
-  assert.equal(
-    isOpsAdmin({ id: "*", super: true, email: "ops@example.com" }, "ops@example.com"),
-    false,
-  );
-});
-
 test("id looking like an admin email is not an ops admin", () => {
   assert.equal(isOpsAdmin({ id: "ops@example.com" }, "ops@example.com"), false);
   assert.equal(
@@ -359,7 +345,7 @@ test("worker gates /ops before assets and /v1/ops before the catch-all actor", (
   const assets = worker.indexOf("env.ASSETS.fetch");
   const overview = worker.indexOf('url.pathname === "/v1/ops/overview"');
   const catchAll = worker.search(
-    /^\s{4}const resolved = await resolveActor\(request, env, fleet\);\r?\n\s{4}if \(!resolved\.actor\) return deny\(resolved\);/m,
+    /^\s{4}const resolved = await resolveActor\(request, fleet\);\r?\n\s{4}if \(!resolved\.actor\) return deny\(resolved\);/m,
   );
   assert.ok(ops !== -1 && ops < assets);
   assert.ok(overview !== -1 && overview < catchAll);
@@ -385,12 +371,30 @@ test("dispatchOps uses the cookie session and ignores Authorization", () => {
   assert.ok(end > start);
   const fn = worker.slice(start, end);
   assert.match(fn, /resolveSession/);
+  const adminGate = fn.indexOf("isOpsAdmin");
+  const catalogRead = fn.indexOf("ops-catalog");
+  assert.ok(
+    adminGate !== -1 && catalogRead !== -1 && adminGate < catalogRead,
+    "reject non-admins before scanning the global ops catalog",
+  );
   assert.equal(fn.includes("resolveActor"), false);
   assert.equal(fn.includes("parseAuthorization"), false);
   assert.equal(fn.includes("resolve-wrap"), false);
-  assert.equal(fn.includes("HUB_TOKEN"), false);
   assert.match(worker, /async function resolveSession/);
   assert.match(readme, /cookie/i);
+});
+
+test("Worker has no deployment-wide machine-control credential or actor bypass", () => {
+  const retiredName = ["HUB", "TOKEN"].join("_");
+  for (const [name, text] of [
+    ["Worker source", worker],
+    ["wrangler config", wrangler],
+    ["Worker README", readme],
+    ["dev vars example", varsExample],
+  ]) {
+    assert.equal(text.includes(retiredName), false, `${name} must not restore the retired secret`);
+  }
+  assert.doesNotMatch(worker, /actor\.super/);
 });
 
 test("committed config does not list admin emails or put ADMIN_EMAILS in vars", () => {

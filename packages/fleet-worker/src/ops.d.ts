@@ -2,7 +2,7 @@ export const BAN_COPY_ZH: string;
 export const BAN_COPY_EN: string;
 export const FRESHNESS_NOTE: string;
 
-export type OpsActor = { id?: string; email?: string; super?: boolean; banned?: boolean } | null | undefined;
+export type OpsActor = { id?: string; email?: string; banned?: boolean } | null | undefined;
 
 export function parseAdminEmails(raw: string | null | undefined): string[];
 export function isOpsAdmin(actor: OpsActor, adminEmailsRaw: string | null | undefined): boolean;

@@ -20,7 +20,7 @@ Agent 主动开 `WSS /v1/device`。不开入站端口，不用 VPN，`list_compu
 
 ## 5. Token 存哈希。重置就是切断
 
-只存哈希。明文只显示一次。重置立刻作废，并把在线 socket 踢掉（`1008 token reset`）。生产上是 Fleet-OAEP，不是日志里一长串 Bearer。**禁止**把 `HUB_TOKEN` 写进 wrangler `[vars]`。
+只存哈希。明文只显示一次。重置立刻作废，并把在线 socket 踢掉（`1008 token reset`）。生产上是 Fleet-OAEP，不是日志里一长串 Bearer。公网 Worker 没有共享机器控制 secret，也没有所有权绕过；`ADMIN_EMAILS` 只授权 cookie 会话进入 Ops 视图。
 
 ## 6. macOS「打不开」是两件不同的事
 

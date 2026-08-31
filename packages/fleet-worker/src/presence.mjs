@@ -51,13 +51,20 @@ export const HEARTBEAT_WAIT_MAX_MS = 10_000;
 export const DESKTOP_WAIT_MS = 8_000;
 export const COMPUTER_USE_CAP = "computer_use";
 
-/** Non-empty agent_ver from a ping/heartbeat body. Missing/blank → undefined (keep stored). */
+/** Short printable agent_ver from hello/ping. Missing/invalid → undefined (keep stored). */
 export function agentVerFromBody(body) {
   if (!body || typeof body !== "object") return undefined;
   if (!Object.prototype.hasOwnProperty.call(body, "agent_ver")) return undefined;
   if (body.agent_ver == null) return undefined;
   const s = String(body.agent_ver).trim();
-  return s === "" ? undefined : s;
+  if (
+    s === "" ||
+    new TextEncoder().encode(s).byteLength > 64 ||
+    /[\p{Cc}\p{Cf}\p{Cs}]/u.test(s)
+  ) {
+    return undefined;
+  }
+  return s;
 }
 
 /** Non-empty arch (GOARCH) from hello / heartbeat. Missing/blank → undefined (keep stored). */
@@ -106,6 +113,7 @@ export function computerPublic(row) {
   if (!row || typeof row !== "object" || !row.id) return null;
   return {
     id: row.id,
+    alias: row.alias == null ? "" : String(row.alias),
     name: row.name,
     os: row.os,
     online: Boolean(row.online),

@@ -1,6 +1,6 @@
 /**
- * In-Worker ops console. Cookie session + ADMIN_EMAILS only — not HUB_TOKEN,
- * actor.super, or Fleet-OAEP. Empty ADMIN_EMAILS = nobody is an admin.
+ * In-Worker ops console. Cookie session + ADMIN_EMAILS only — never an
+ * Authorization credential. Empty ADMIN_EMAILS = nobody is an admin.
  * Non-admins get 404 (no teaser).
  */
 
@@ -33,7 +33,7 @@ export function parseAdminEmails(raw) {
 }
 
 export function isOpsAdmin(actor, adminEmailsRaw) {
-  if (!actor || actor.super || actor.banned) return false;
+  if (!actor || actor.banned) return false;
   const email = String(actor.email || "")
     .trim()
     .toLowerCase();

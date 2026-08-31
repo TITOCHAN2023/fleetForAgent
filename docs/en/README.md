@@ -17,7 +17,7 @@ Install an Agent on each computer, then import the tool with **this URL + a hub 
 ![Fleet architecture](../media/architecture.svg)
 
 1. **Tool** — Cursor, Claude, MCP. `FLEET_URL` + `FLEET_TOKEN`.
-2. **Server** — [fleet.ginfo.cc](https://fleet.ginfo.cc) (or your own Worker). Relays jobs.
+2. **Server** — [fleet.ginfo.cc](https://fleet.ginfo.cc) (or a Worker with OAuth and per-account token issuance configured). Relays jobs. The simpler single-user self-host path is the Node hub.
 3. **Agents** — outbound `WSS /v1/device` on Windows amd64, Linux amd64/arm64, macOS arm64/amd64. No inbound ports.
 
 Explainer video: [architecture.mp4](../media/architecture.mp4)
@@ -33,7 +33,7 @@ Explainer video: [architecture.mp4](../media/architecture.mp4)
 FLEET_URL=https://fleet.ginfo.cc FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
 ```
 
-The same Worker can serve `/ops` (usage, last-seen freshness, Ban) for emails in the `ADMIN_EMAILS` secret. Empty secret = no admins. Not a separate Worker. Ban cannot operate machines.
+The same Worker can serve `/ops` (usage, last-seen freshness, Ban) for emails in the `ADMIN_EMAILS` secret. Empty secret = no admins. Not a separate Worker. Ops and Ban add no machine-control authority.
 
 Details: [deploy.md](deploy.md) · [auth.md](auth.md)
 

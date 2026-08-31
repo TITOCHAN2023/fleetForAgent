@@ -44,6 +44,14 @@ test("hub site explains multi-os fleet and ships a Help page", () => {
   assert.match(html, /anatomyRsa/);
   assert.match(html, /Fleet-OAEP/);
   assert.match(html, /class="prompt/);
+  assert.match(html, /\/v1\/set_computer_alias/);
+  assert.match(html, /JSON\.stringify\(\{ device_id: deviceId, alias \}\)/);
+  assert.match(html, /await loadComputers\(\)/);
+  assert.match(html, /data-alias-device=/);
+  assert.match(html, /maxlength="64"/);
+  assert.match(html, /agentVer/);
+  assert.match(html, /\.machine \{[^}]*display: grid;[^}]*grid-template-columns: minmax\(0, 1fr\) auto/);
+  assert.doesNotMatch(html, /window\.prompt/);
   assert.match(html, /\/logo\.png/);
   assert.match(html, /ops-switch/);
   assert.match(html, /href="\/ops"/);
@@ -75,6 +83,106 @@ test("hub site explains multi-os fleet and ships a Help page", () => {
     html.indexOf('t("mcpStdioConfig")') < html.indexOf('t("quickTitle")'),
     "AI-side MCP configs must render above device installers",
   );
+});
+
+test("machine cards show aliases, original identity, and Agent version without HTML injection", () => {
+  const start = html.indexOf("function fleetView()");
+  const end = html.indexOf("function aliasPromptView()", start);
+  assert.ok(start > 0 && end > start);
+  const fleetView = new Function(`
+    const state = { computers: [
+      { id: 'id<&"', name: 'host<&"', alias: 'SG <prod> & "fast"', os: 'linux<&"', agentVer: '0.6.1<&"', online: true },
+      { id: 'plain-id', name: 'Builder', alias: '', os: 'windows', agentVer: '', online: false },
+    ] };
+    const copy = { fleet: 'Machines', empty: 'empty', online: 'online', offline: 'offline', agentVersion: 'Agent', setAlias: 'Set alias', editAlias: 'Edit alias' };
+    function t(k) { return copy[k] || k; }
+    function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\\"/g,"&quot;"); }
+    ${html.slice(start, end)}
+    return fleetView;
+  `)();
+
+  const out = fleetView();
+  assert.match(out, /SG &lt;prod&gt; &amp; &quot;fast&quot;/);
+  assert.match(out, /host&lt;&amp;&quot; · id&lt;&amp;&quot; · linux&lt;&amp;&quot; · Agent 0\.6\.1&lt;&amp;&quot;/);
+  assert.match(out, /data-alias-device="id&lt;&amp;&quot;"/);
+  assert.match(out, />Edit alias</);
+  assert.match(out, />Builder</);
+  assert.match(out, /plain-id · windows · Agent —/);
+  assert.match(out, />Set alias</);
+  assert.doesNotMatch(out, /SG <prod>/);
+  assert.doesNotMatch(out, /host<&"/);
+});
+
+test("alias editor escapes catalog fields and supports save, clear, cancel, and inline errors", () => {
+  const start = html.indexOf("function aliasPromptView()");
+  const end = html.indexOf("function render()", start);
+  assert.ok(start > 0 && end > start);
+  const aliasPromptView = new Function(`
+    const state = {
+      computers: [{ id: 'id<&"', name: 'host<&"', alias: 'old<&"' }],
+      aliasEditor: { deviceId: 'id<&"', value: 'new<&"', busy: false, error: 'bad<&"' },
+    };
+    const copy = { aliasTitle: 'Machine alias', originalName: 'Original name', deviceId: 'Device ID', aliasLabel: 'Alias', aliasPlaceholder: 'Alias here', aliasHint: 'hint', clearAlias: 'Clear', promptCancel: 'Cancel', savingAlias: 'Saving', saveAlias: 'Save' };
+    function t(k) { return copy[k] || k; }
+    function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\\"/g,"&quot;"); }
+    ${html.slice(start, end)}
+    return aliasPromptView;
+  `)();
+
+  const out = aliasPromptView();
+  assert.match(out, /role="dialog"/);
+  assert.match(out, /maxlength="64"/);
+  assert.match(out, /value="new&lt;&amp;&quot;"/);
+  assert.match(out, />host&lt;&amp;&quot;</);
+  assert.match(out, />id&lt;&amp;&quot;</);
+  assert.match(out, />bad&lt;&amp;&quot;</);
+  assert.match(out, /data-alias-action="clear"/);
+  assert.match(out, /data-alias-action="cancel"/);
+  assert.match(out, /type="submit"/);
+  assert.doesNotMatch(out, /host<&"|new<&"|bad<&"/);
+});
+
+test("alias save posts the stable contract and reloads the canonical machine list", async () => {
+  const start = html.indexOf("async function loadComputers()");
+  const end = html.indexOf("async function boot()", start);
+  assert.ok(start > 0 && end > start);
+  const runtime = new Function(`
+    const calls = [];
+    const state = {
+      computers: [{ id: 'device-a', name: 'host-a', alias: '' }],
+      aliasEditor: { deviceId: 'device-a', value: '', busy: false, error: '' },
+    };
+    async function api(path, options) {
+      calls.push({ path, options });
+      if (path === '/v1/set_computer_alias') return { ok: true, device_id: 'device-a', alias: 'SG box' };
+      return { computers: [{ id: 'device-a', name: 'host-a', alias: 'SG box', agentVer: '0.6.1' }] };
+    }
+    function render() {}
+    function t(k) { return k; }
+    function $(selector) { return null; }
+    function requestAnimationFrame(fn) { fn(); }
+    ${html.slice(start, end)}
+    return { calls, state, saveComputerAlias };
+  `)();
+
+  await runtime.saveComputerAlias("  SG box  ");
+  assert.equal(runtime.calls.length, 2);
+  assert.equal(runtime.calls[0].path, "/v1/set_computer_alias");
+  assert.deepEqual(JSON.parse(runtime.calls[0].options.body), {
+    device_id: "device-a",
+    alias: "SG box",
+  });
+  assert.equal(runtime.calls[1].path, "/v1/list_computers");
+  assert.equal(runtime.state.computers[0].alias, "SG box");
+  assert.equal(runtime.state.computers[0].agentVer, "0.6.1");
+  assert.equal(runtime.state.aliasEditor, null);
+
+  runtime.state.aliasEditor = { deviceId: "device-a", value: "SG box", busy: false, error: "" };
+  await runtime.saveComputerAlias("");
+  assert.deepEqual(JSON.parse(runtime.calls[2].options.body), {
+    device_id: "device-a",
+    alias: "",
+  });
 });
 
 test("plugin page reads the pinned public registry without exposing artifact URLs", () => {

@@ -58,6 +58,9 @@ test("Worker MCP SSE lists shared tools and checks session authorization", async
 test("Worker MCP SSE exposes WSS provenance in result metadata", async () => {
   const session = new McpSseSession({
     rpc: async (path) => {
+      if (path === "/v1/get_computer") {
+        return { id: "box-a", name: "box-a", os: "linux", online: true };
+      }
       assert.equal(path, "/v1/run");
       return wrapTransportRpc({ corr: "c-ws", status: "running" }, "ws");
     },

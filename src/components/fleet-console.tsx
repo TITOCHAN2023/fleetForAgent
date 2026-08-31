@@ -15,6 +15,7 @@ import {
   removeDevice,
   runCommand,
   selectDevice,
+  setDeviceAlias,
   toggleDevice,
   type DeviceDto,
 } from "@/lib/fleet/actions";
@@ -99,6 +100,14 @@ export function FleetConsole({ initialTab }: { initialTab?: string } = {}) {
     onSuccess: invalidateAll,
     onError: (e: Error) => toast.error(e.message),
   });
+  const aliasMut = useMutation({
+    mutationFn: (p: { id: string; alias: string }) => setDeviceAlias({ data: p }),
+    onSuccess: () => {
+      toast.success(t("fleet.aliasSaved"));
+      void qc.invalidateQueries({ queryKey: ["devices"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
   const addMut = useMutation({
     mutationFn: (p: { name: string; os: OsKind; locationTag: string }) =>
       addDevice({ data: p }),
@@ -178,6 +187,9 @@ export function FleetConsole({ initialTab }: { initialTab?: string } = {}) {
               devices={devices}
               onSelect={(id) => selectMut.mutate(id)}
               onToggle={(id, status) => toggleMut.mutate({ id, status })}
+              onSetAlias={async (id, alias) => {
+                await aliasMut.mutateAsync({ id, alias });
+              }}
               onAdd={async (p) => {
                 await addMut.mutateAsync(p);
               }}
@@ -341,9 +353,11 @@ function ToolsView({
   const { t } = useI18n();
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const payload = devices.map((d) => ({
-    id: d.slug,
+    id: d.id,
+    alias: d.alias,
     name: d.name,
     os: d.os,
+    agentVer: d.agentVer,
     where: d.locationTag,
     online: d.status === "online",
     arch: d.arch,
@@ -371,7 +385,9 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz`}
       <section className="rounded-xl border border-border bg-surface p-5">
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-base font-medium">{t("tools.list")}</h2>
-          <Badge tone="ok">{selected ? `selected ${selected.slug}` : "unselected"}</Badge>
+          <Badge tone="ok">
+            {selected ? `selected ${selected.alias || selected.slug}` : "unselected"}
+          </Badge>
         </div>
         <pre className="mt-4 overflow-auto rounded-md bg-elevated p-4 font-mono text-xs leading-relaxed text-muted">
           {JSON.stringify(payload, null, 2)}

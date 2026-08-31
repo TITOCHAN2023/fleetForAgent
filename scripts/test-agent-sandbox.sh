@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 go_image="${FLEET_TEST_GO_IMAGE:-golang:1.23-bookworm}"
 
-docker run --rm \
+docker run --rm --init \
   --read-only \
   --cap-drop ALL \
   --security-opt no-new-privileges \

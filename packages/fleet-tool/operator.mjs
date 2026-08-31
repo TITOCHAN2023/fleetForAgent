@@ -6,7 +6,12 @@ import { createFileTransferPeerConfig } from "./file-transfer-contract.mjs";
  * Do not write hub_sessions, ~/.fleet, or a workspace file.
  */
 
-export const FLEET_VERSION = "0.6.1";
+export const FLEET_VERSION = "0.6.3";
+export const CLI_CONTROL_FINGERPRINT = "fleet-cli-v1";
+
+export function createCliRpc(rawRpc) {
+  return (path, body) => rawRpc(path, body, { fingerprint: CLI_CONTROL_FINGERPRINT });
+}
 
 export { PLUGIN_REGISTRY_SOURCE };
 export const OFFICIAL_PLUGIN_CATALOG = GENERATED_PLUGIN_CATALOG;
@@ -510,17 +515,17 @@ function waitMsSchema({ defaultMs, role }) {
 }
 
 export function buildTools() {
-  const deviceId = { type: "string", description: "Target machine. Optional after set_computer or a prior explicit device_id in this process. FLEET_DEVICE_ID is a start-of-process default only." };
+  const deviceId = { type: "string", description: "Target machine id or account-local alias. Optional after set_computer or a prior explicit device_id in this process. FLEET_DEVICE_ID is a start-of-process default only." };
   return [
     {
       name: "list_computers",
-      description: "List machines in this hub account (id, name, os, online, lastSeen, agentVer). Never returns IPs. Call this first, then set_computer.",
+      description: "List machines in this hub account (id, alias, name, os, online, lastSeen, agentVer). Never returns IPs. Call this first, then set_computer.",
       inputSchema: { type: "object", properties: {} },
     },
     {
       name: "get_computer",
       description:
-        "Status of one machine from the same catalog as list_computers: online, lastSeen, agentVer, name, os. Never returns IPs. Optional device_id after set_computer or a prior explicit device_id in this process.",
+        "Status of one machine from the same catalog as list_computers: id, alias, online, lastSeen, agentVer, name, os. Accepts a real id or account-local alias. Never returns IPs. Optional device_id after set_computer or a prior explicit device_id in this process.",
       inputSchema: {
         type: "object",
         properties: { device_id: deviceId },
@@ -600,7 +605,7 @@ export function buildTools() {
     {
       name: "set_computer",
       description:
-        "Remember a device for later tool calls in this MCP process only. Not written to the hub account, disk, or other clients.",
+        "Resolve a real device id or account-local alias, then remember the immutable id for later calls in this MCP process only. Not written to disk or other clients.",
       inputSchema: {
         type: "object",
         required: ["device_id"],
@@ -852,7 +857,9 @@ export function createOperator({
   let lastUsed = trimId(state.lastUsed) || null;
   let lastCwd = trimId(state.lastCwd) || null;
   const envDefault = trimId(env.FLEET_DEVICE_ID) || null;
+  let envResolved = null;
   const corrByDevice = new Map();
+  const canonicalIds = new Set();
   if (state.corrByDevice && typeof state.corrByDevice === "object" && !Array.isArray(state.corrByDevice)) {
     for (const [rawDeviceId, rawCorr] of Object.entries(state.corrByDevice)) {
       const deviceId = trimId(rawDeviceId);
@@ -894,6 +901,16 @@ export function createOperator({
     return row;
   }
 
+  async function canonicalDevice(reference, trace, signal) {
+    const ref = trimId(reference);
+    if (!ref) throw new Error("device_id required");
+    const row = await callRpc(trace, "/v1/get_computer", { device_id: ref }, { signal });
+    const id = trimId(row?.id);
+    if (!id) throw new Error(`device not found: ${ref}`);
+    canonicalIds.add(id);
+    return { id, row };
+  }
+
   function withDev(out, trace) {
     let result = out;
     if (fleetDev && trace) {
@@ -928,7 +945,7 @@ export function createOperator({
 
   function currentDevice() {
     if (lastUsed) return { device_id: lastUsed, source: "last_used" };
-    if (envDefault) return { device_id: envDefault, source: "env" };
+    if (envDefault) return { device_id: envResolved || envDefault, source: "env" };
     return { device_id: null, source: "none" };
   }
 
@@ -941,6 +958,26 @@ export function createOperator({
     if (lastUsed) return lastUsed;
     if (envDefault) return envDefault;
     throw new Error(MISSING_DEVICE_MESSAGE);
+  }
+
+  async function targetDevice(args, trace, signal, { fresh = false } = {}) {
+    const explicit = trimId(args?.device_id);
+    const source = explicit ? "explicit" : lastUsed ? "last_used" : "env";
+    const reference = explicit || lastUsed || envResolved || envDefault;
+    if (!reference) throw new Error(MISSING_DEVICE_MESSAGE);
+    if (!fresh && canonicalIds.has(reference)) {
+      if (source === "env") envResolved = reference;
+      else lastUsed = reference;
+      return { id: reference, row: null };
+    }
+    const resolved = await canonicalDevice(reference, trace, signal);
+    if (reference !== resolved.id && corrByDevice.has(reference)) {
+      if (!corrByDevice.has(resolved.id)) corrByDevice.set(resolved.id, corrByDevice.get(reference));
+      corrByDevice.delete(reference);
+    }
+    if (source === "env") envResolved = resolved.id;
+    else lastUsed = resolved.id;
+    return resolved;
   }
 
   function decorateResult(row, deviceId) {
@@ -1026,22 +1063,19 @@ export function createOperator({
     }
 
     if (name === "get_computer") {
-      const deviceId = resolveDevice(args);
-      const row = await callRpc(trace, "/v1/get_computer", { device_id: deviceId }, { signal: hooks.signal });
+      const { id: deviceId, row } = await targetDevice(args, trace, hooks.signal, { fresh: true });
       return withDev(withDevice(row, deviceId), trace);
     }
 
     if (name === "heartbeat") {
-      const deviceId = resolveDevice(args);
+      const { id: deviceId } = await targetDevice(args, trace, hooks.signal);
       const row = await callRpc(trace, "/v1/heartbeat", { device_id: deviceId }, { signal: hooks.signal });
       return withDev(withDevice(row, deviceId), trace);
     }
 
     if (name === "set_computer") {
-      const deviceId = trimId(args.device_id);
-      if (!deviceId) throw new Error("device_id required");
-      lastUsed = deviceId;
-      return { ok: true, device_id: deviceId };
+      const { id: deviceId, row } = await targetDevice(args, trace, hooks.signal, { fresh: true });
+      return { ok: true, device_id: deviceId, alias: trimId(row?.alias) || null };
     }
 
     if (name === "get_current_computer") {
@@ -1058,26 +1092,26 @@ export function createOperator({
     if (name === "run") {
       const command = args.command == null ? "" : String(args.command);
       if (!command) throw new Error("command required");
-      const deviceId = resolveDevice(args);
+      const { id: deviceId } = await targetDevice(args, trace, hooks.signal);
       const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? RUN_WAIT_DEFAULT_MS);
       return withDev(await execOnDevice(deviceId, command, waitMs, trace, hooks), trace);
     }
 
     if (name === "get_result") {
-      const deviceId = resolveDevice(args);
+      const { id: deviceId } = await targetDevice(args, trace, hooks.signal);
       const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? WAIT_DEFAULT_MS);
       if (waitMs <= 0) return withDev(await peekResult(deviceId, trace, 0, "", hooks.signal), trace);
       return withDev(await waitForResult(deviceId, waitMs, trace, undefined, hooks), trace);
     }
 
     if (name === "wait") {
-      const deviceId = resolveDevice(args);
+      const { id: deviceId } = await targetDevice(args, trace, hooks.signal);
       const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? WAIT_TOOL_DEFAULT_MS);
       return withDev(await waitForResult(deviceId, waitMs, trace, undefined, hooks), trace);
     }
 
     if (name === "read_screen") {
-      const deviceId = resolveDevice(args);
+      const { id: deviceId } = await targetDevice(args, trace, hooks.signal);
       const body = { device_id: deviceId };
       const corr = currentCorr(deviceId);
       if (corr) body.corr = corr;
@@ -1087,7 +1121,7 @@ export function createOperator({
 
     if (name === "type") {
       if (args.keys == null && args.key == null) throw new Error("keys or key required");
-      const deviceId = resolveDevice(args);
+      const { id: deviceId } = await targetDevice(args, trace, hooks.signal);
       const body = { device_id: deviceId };
       if (args.keys != null) body.keys = args.keys;
       if (args.key != null && String(args.key) !== "") body.key = String(args.key);
@@ -1099,7 +1133,7 @@ export function createOperator({
     }
 
     if (name === "desktop_screenshot") {
-      const deviceId = resolveDevice(args);
+      const { id: deviceId } = await targetDevice(args, trace, hooks.signal);
       const body = { device_id: deviceId };
       if (args.max_width != null) body.max_width = args.max_width;
       if (args.max_height != null) body.max_height = args.max_height;
@@ -1108,7 +1142,7 @@ export function createOperator({
     }
 
     if (name === "desktop_action") {
-      const deviceId = resolveDevice(args);
+      const { id: deviceId } = await targetDevice(args, trace, hooks.signal);
       const body = { device_id: deviceId, action: args.action };
       for (const k of ["x", "y", "x2", "y2", "text", "key", "keys", "scroll_x", "scroll_y", "duration_ms", "frame_id"]) {
         if (args[k] != null) body[k] = args[k];
@@ -1126,7 +1160,7 @@ export function createOperator({
     }
 
     if (name === "get_plugin_task") {
-      const deviceId = resolveDevice(args);
+      const { id: deviceId } = await targetDevice(args, trace, hooks.signal);
       const corr = trimId(args.corr);
       if (!corr) throw new Error("corr required");
       const row = await callRpc(trace, "/v1/plugin_result", { device_id: deviceId, corr }, { signal: hooks.signal });
@@ -1134,9 +1168,23 @@ export function createOperator({
     }
 
     if (name === "start_file_transfer") {
-      const source = args.source && typeof args.source === "object" ? args.source : null;
-      const target = args.target && typeof args.target === "object" ? args.target : null;
+      let source = args.source && typeof args.source === "object" ? args.source : null;
+      let target = args.target && typeof args.target === "object" ? args.target : null;
       if (!source || !target) throw new Error("source and target required");
+      const canonical = new Map();
+      const canonicalEndpoint = async (endpoint) => {
+        if (endpoint.kind !== "device") return endpoint;
+        const reference = trimId(endpoint.device_id);
+        if (!reference) return endpoint;
+        let deviceId = canonical.get(reference);
+        if (!deviceId) {
+          deviceId = (await canonicalDevice(reference, trace, hooks.signal)).id;
+          canonical.set(reference, deviceId);
+        }
+        return { ...endpoint, device_id: deviceId };
+      };
+      source = await canonicalEndpoint(source);
+      target = await canonicalEndpoint(target);
       if (fileTransfer?.start) {
         if (hooks.signal?.aborted || hooks.isCancelled?.()) throw new Error("tool call cancelled");
         return fileTransfer.start({ source, target }, { signal: hooks.signal });
@@ -1197,7 +1245,7 @@ export function createOperator({
     }
 
     if (["list_plugins", "install_plugin", "uninstall_plugin", "invoke_plugin", "configure_acp", "delegate_to_acp"].includes(name)) {
-      const deviceId = resolveDevice(args);
+      const { id: deviceId } = await targetDevice(args, trace, hooks.signal);
       const body = { device_id: deviceId };
       if (name === "list_plugins") body.operation = "list";
       if (name === "install_plugin" || name === "uninstall_plugin") {

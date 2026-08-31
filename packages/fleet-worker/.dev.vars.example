@@ -1,5 +1,3 @@
 # Copy to .dev.vars for local `npx wrangler dev`.
-# Production: npx wrangler secret put HUB_TOKEN
 # Production: npx wrangler secret put ADMIN_EMAILS
 # Empty ADMIN_EMAILS = no admins. Do not put emails in [vars].
-# HUB_TOKEN=change-me

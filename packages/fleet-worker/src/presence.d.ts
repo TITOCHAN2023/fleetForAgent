@@ -17,6 +17,7 @@ export function unsupportedCapBody(row: unknown): {
 };
 export function computerPublic(row: unknown): {
   id: string;
+  alias: string;
   name: unknown;
   os: unknown;
   online: boolean;

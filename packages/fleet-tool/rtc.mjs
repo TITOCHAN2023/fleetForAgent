@@ -245,13 +245,18 @@ export function createRtcManager({
   const retryAt = new Map();
   let claimsPromise;
 
+  function canonicalDeviceId(value) {
+    return String(value || "").trim();
+  }
+
   async function claims() {
     claimsPromise ||= verifyTokenV1(token);
     return claimsPromise;
   }
 
-  async function doEstablish(deviceId, signal) {
+  async function doEstablish(reference, signal) {
     throwIfAborted(signal);
+    let deviceId = canonicalDeviceId(reference);
     const existing = sessions.get(deviceId);
     if (existing?.open && existing.directReady && !existing.closed) return existing;
     if ((retryAt.get(deviceId) || 0) > Date.now()) return null;
@@ -263,10 +268,14 @@ export function createRtcManager({
       if (!signal?.aborted) retryAt.set(deviceId, Date.now() + 60_000);
       throw error;
     }
+    const resolvedId = String(config?.device_id || deviceId).trim();
+    if (resolvedId) deviceId = resolvedId;
     if (!config?.available) {
       retryAt.set(deviceId, Date.now() + 60_000);
       return null;
     }
+    const canonical = sessions.get(deviceId);
+    if (canonical?.open && canonical.directReady && !canonical.closed) return canonical;
     retryAt.delete(deviceId);
     const iceServers = (Array.isArray(config.stun_urls) ? config.stun_urls : []).map((urls) => ({
       urls,
@@ -349,13 +358,14 @@ export function createRtcManager({
 
   async function establish(rawDeviceId, { signal } = {}) {
     throwIfAborted(signal);
-    const deviceId = String(rawDeviceId || "").trim();
+    const reference = String(rawDeviceId || "").trim();
+    const deviceId = canonicalDeviceId(reference);
     const current = sessions.get(deviceId);
     if (current?.open && current.directReady && !current.closed) return current;
     if ((retryAt.get(deviceId) || 0) > Date.now()) return null;
     const active = connecting.get(deviceId);
     if (active) return abortable(active, signal);
-    const pending = doEstablish(deviceId, signal).finally(() => {
+    const pending = doEstablish(reference, signal).finally(() => {
       if (connecting.get(deviceId) === pending) connecting.delete(deviceId);
     });
     connecting.set(deviceId, pending);
@@ -363,7 +373,7 @@ export function createRtcManager({
   }
 
   function existing(deviceId) {
-    return sessions.get(String(deviceId || "")) || null;
+    return sessions.get(canonicalDeviceId(deviceId)) || null;
   }
 
   function sendDirect(deviceId, session, message) {
@@ -379,10 +389,11 @@ export function createRtcManager({
 
   async function tryRpc(path, body = {}, { signal } = {}) {
     throwIfAborted(signal);
-    const deviceId = String(body.device_id || "").trim();
-    if (!deviceId || ["/v1/list_computers", "/v1/get_computer", "/v1/heartbeat"].includes(path)) {
+    const reference = String(body.device_id || "").trim();
+    if (!reference || ["/v1/list_computers", "/v1/get_computer", "/v1/heartbeat"].includes(path)) {
       return { handled: false };
     }
+    let deviceId = canonicalDeviceId(reference);
     let session = existing(deviceId);
     if (path === "/v1/get_result" && session) {
       const corr = String(body.corr || session.lastCorr || "");
@@ -409,7 +420,8 @@ export function createRtcManager({
     }
     if (!session?.open || !session.directReady || session.closed) {
       try {
-        session = await establish(deviceId, { signal });
+        session = await establish(reference, { signal });
+        if (session?.deviceId) deviceId = session.deviceId;
       } catch {
         throwIfAborted(signal);
         return { handled: false };

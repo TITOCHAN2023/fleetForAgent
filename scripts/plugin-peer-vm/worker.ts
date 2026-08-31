@@ -3,10 +3,11 @@ import worker, {
   FleetDO,
   McpDO,
   PeerSessionDO,
+  RevocationDO,
   type Env,
 } from "../../packages/fleet-worker/src/index";
 
-export { DeviceDO, FleetDO, McpDO, PeerSessionDO };
+export { DeviceDO, FleetDO, McpDO, PeerSessionDO, RevocationDO };
 
 type VMEnv = Env & {
   VM_SEED_KEY?: string;

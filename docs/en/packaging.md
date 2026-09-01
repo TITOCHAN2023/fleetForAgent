@@ -55,12 +55,12 @@ Do not tell users “if the dmg will not open, download the zip and use it as a 
 ## Release
 
 ```bash
-VERSION=0.6.1 npm run release:agent
-gh release create v0.6.1 \
+VERSION=0.6.2 npm run release:agent
+gh release create v0.6.2 \
   public/dl/FleetAgent-* \
   public/dl/fleet-agent-linux-*.tar.gz \
   public/dl/checksums.txt \
-  public/dl/checksums-0.6.1.txt
+  public/dl/checksums-0.6.2.txt
 ```
 
 macOS menu bar needs **CGO_ENABLED=1** (local clang). Windows tray is syscall, Linux tray is DBus; both stay `CGO_ENABLED=0` for cross-compile. Windows adds `-H windowsgui`.

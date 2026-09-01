@@ -173,6 +173,15 @@ pack_linux() {
   local arch="$1"
   local stage="$SRC/dist/linuxpack-${arch}"
   local archive="$OUT/fleet-agent-linux-${arch}.tar.gz"
+  local -a tar_owner_args
+
+  # A Mac can expose either the system bsdtar or GNU tar through PATH. Select
+  # the implementation's native flags and fail closed for an unknown writer.
+  case "$(tar --version 2>&1)" in
+    *"GNU tar"*) tar_owner_args=(--owner=0 --group=0 --numeric-owner) ;;
+    *bsdtar*|*libarchive*) tar_owner_args=(--uid 0 --gid 0 --numeric-owner) ;;
+    *) die "unsupported tar implementation; GNU tar or bsdtar required" ;;
+  esac
 
   rm -rf "$stage"
   mkdir -p "$stage"
@@ -187,7 +196,7 @@ pack_linux() {
   rm -f "$raw_archive"
   COPYFILE_DISABLE=1 tar \
     --format=ustar --no-xattrs \
-    --owner=0 --group=0 --numeric-owner \
+    "${tar_owner_args[@]}" \
     -C "$stage" -cf "$raw_archive" fleet-agent fleet
   gzip -n -9 < "$raw_archive" > "$archive"
   rm -f "$raw_archive"

@@ -43,3 +43,10 @@ test("macOS release validation serializes process and PTY packages", () => {
     /- name: Test Agent on macOS[\s\S]*?working-directory: packages\/fleet-agent[\s\S]*?run: go test -p 1 \.\/\.\.\./,
   );
 });
+
+test("macOS release packaging selects ownership flags by tar implementation", () => {
+  const source = readFileSync(join(root, "scripts/package-agent.sh"), "utf8");
+  assert.match(source, /\*"GNU tar"\*\) tar_owner_args=\(--owner=0 --group=0 --numeric-owner\)/);
+  assert.match(source, /\*bsdtar\*\|\*libarchive\*\) tar_owner_args=\(--uid 0 --gid 0 --numeric-owner\)/);
+  assert.match(source, /unsupported tar implementation; GNU tar or bsdtar required/);
+});

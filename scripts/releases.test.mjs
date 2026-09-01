@@ -1,13 +1,21 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { gunzipSync } from "node:zlib";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const dl = join(root, "public/dl");
+const dl = process.env.FLEET_RELEASE_ASSET_DIR || join(root, "public/dl");
+// Installer binaries are intentionally excluded from git. The normal source
+// suite therefore skips artifact assertions in a clean checkout, while
+// package-agent.sh runs this same file after creating every release asset.
+const releaseArtifactsRequired = process.env.FLEET_REQUIRE_RELEASE_ASSETS === "1";
+const releaseTest =
+  releaseArtifactsRequired || existsSync(join(dl, "FleetAgent-windows-amd64.exe"))
+    ? test
+    : test.skip;
 
 function tarText(block, start, length) {
   const nul = block.indexOf(0, start);
@@ -57,7 +65,7 @@ function tarEntries(path) {
   return entries;
 }
 
-test("windows release is a PE executable", () => {
+releaseTest("windows release is a PE executable", () => {
   const p = join(dl, "FleetAgent-windows-amd64.exe");
   const buf = readFileSync(p);
   assert.equal(buf[0], 0x4d);
@@ -65,14 +73,14 @@ test("windows release is a PE executable", () => {
   assert.ok(statSync(p).size > 1_000_000);
 });
 
-test("mac releases exist for arm64 and amd64", () => {
+releaseTest("mac releases exist for arm64 and amd64", () => {
   for (const name of ["FleetAgent-macos-arm64.dmg", "FleetAgent-macos-amd64.dmg", "FleetAgent-macos-arm64.zip", "FleetAgent-macos-amd64.zip"]) {
     const n = statSync(join(dl, name)).size;
     assert.ok(n > 100_000, name);
   }
 });
 
-test("mac dmg is a disk image, not a renamed zip", () => {
+releaseTest("mac dmg is a disk image, not a renamed zip", () => {
   for (const name of ["FleetAgent-macos-arm64.dmg", "FleetAgent-macos-amd64.dmg"]) {
     const buf = readFileSync(join(dl, name));
     assert.notEqual(buf[0], 0x50, `${name} starts with P (zip PK header) — do not copy zip to .dmg`);
@@ -80,7 +88,7 @@ test("mac dmg is a disk image, not a renamed zip", () => {
   }
 });
 
-test("mac zip is actually zip", () => {
+releaseTest("mac zip is actually zip", () => {
   for (const name of ["FleetAgent-macos-arm64.zip", "FleetAgent-macos-amd64.zip"]) {
     const buf = readFileSync(join(dl, name));
     assert.equal(buf[0], 0x50);
@@ -88,7 +96,7 @@ test("mac zip is actually zip", () => {
   }
 });
 
-test("linux tarballs are clean root-owned ustar archives", () => {
+releaseTest("linux tarballs are clean root-owned ustar archives", () => {
   for (const arch of ["amd64", "arm64"]) {
     const path = join(dl, `fleet-agent-linux-${arch}.tar.gz`);
     assert.ok(statSync(path).size > 100_000);
@@ -103,7 +111,7 @@ test("linux tarballs are clean root-owned ustar archives", () => {
   }
 });
 
-test("checksums exactly cover and verify every installer", () => {
+releaseTest("checksums exactly cover and verify every installer", () => {
   const expected = [
     "FleetAgent-windows-amd64.exe",
     "FleetAgent-windows-arm64.exe",

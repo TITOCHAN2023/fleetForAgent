@@ -214,7 +214,7 @@ pack_linux arm64
 )
 cp "$OUT/checksums.txt" "$OUT/checksums-${VERSION}.txt"
 
-node --test "$ROOT/scripts/releases.test.mjs"
+FLEET_REQUIRE_RELEASE_ASSETS=1 node --test "$ROOT/scripts/releases.test.mjs"
 if [ "${FLEET_RELEASE_DEFER_DOCKER_TEST:-0}" = "1" ]; then
   echo "Docker release test deferred; the release workflow must run it on Linux before publishing."
 else

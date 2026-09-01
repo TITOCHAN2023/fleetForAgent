@@ -143,7 +143,10 @@ jobs:
 
       - name: Test Agent on macOS
         working-directory: packages/fleet-agent
-        run: go test ./...
+        # macOS package tests exercise PTYs and process groups. Keep packages
+        # serial so independent test binaries cannot contend for those OS
+        # resources on a shared GitHub runner.
+        run: go test -p 1 ./...
 
       - name: Build Agent installers and versioned Tool archive
         env:

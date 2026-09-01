@@ -15,6 +15,21 @@ import (
 	"time"
 )
 
+func waitTestDescendantPID(path string, timeout time.Duration) int {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(path)
+		if err == nil {
+			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(raw)))
+			if parseErr == nil && pid > 0 {
+				return pid
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return 0
+}
+
 func TestPluginPeerAbortKillsDescendantProcessGroup(t *testing.T) {
 	pidFile := t.TempDir() + "/child.pid"
 	cmd := exec.Command("/bin/sh", "-c", `sleep 60 & echo $! > "$1"; wait`, "fleet-peer-test", pidFile)
@@ -36,23 +51,13 @@ func TestPluginPeerAbortKillsDescendantProcessGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	peer.tree = tree
-	deadline := time.Now().Add(2 * time.Second)
-	var childPID int
-	for time.Now().Before(deadline) {
-		raw, readErr := os.ReadFile(pidFile)
-		if readErr == nil {
-			childPID, err = strconv.Atoi(strings.TrimSpace(string(raw)))
-			if err == nil && childPID > 0 {
-				break
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	childPID := waitTestDescendantPID(pidFile, 10*time.Second)
 	if childPID <= 0 {
 		peer.Abort()
 		t.Fatal("plugin descendant did not start")
 	}
 	peer.Abort()
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		err = syscall.Kill(childPID, 0)
 		if errors.Is(err, syscall.ESRCH) {
@@ -147,18 +152,7 @@ func TestPluginPeerCleanCancelSweepsDescendantProcessGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	peer.tree = tree
-	deadline := time.Now().Add(2 * time.Second)
-	var childPID int
-	for time.Now().Before(deadline) {
-		raw, readErr := os.ReadFile(pidFile)
-		if readErr == nil {
-			childPID, err = strconv.Atoi(strings.TrimSpace(string(raw)))
-			if err == nil && childPID > 0 {
-				break
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	childPID := waitTestDescendantPID(pidFile, 10*time.Second)
 	if childPID <= 0 {
 		peer.Abort()
 		t.Fatal("plugin descendant did not start")
@@ -179,7 +173,7 @@ func TestPluginPeerCleanCancelSweepsDescendantProcessGroup(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("canceled status reader did not finish")
 	}
-	deadline = time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		err = syscall.Kill(childPID, 0)
 		if errors.Is(err, syscall.ESRCH) {
@@ -190,22 +184,31 @@ func TestPluginPeerCleanCancelSweepsDescendantProcessGroup(t *testing.T) {
 	t.Fatalf("plugin descendant %d survived clean-cancel process-group sweep: %v", childPID, err)
 }
 
-func TestTaskPluginTimeoutKillsDescendantProcessGroup(t *testing.T) {
+func TestTaskPluginCancellationKillsDescendantProcessGroup(t *testing.T) {
 	pidFile := t.TempDir() + "/child.pid"
-	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cmd := exec.Command("/bin/sh", "-c", `sleep 60 & echo $! > "$1"; wait`, "fleet-task-test", pidFile)
-	err := runPluginCommand(ctx, cmd)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("runPluginCommand error = %v, want deadline exceeded", err)
+	done := make(chan error, 1)
+	go func() { done <- runPluginCommand(ctx, cmd) }()
+	childPID := waitTestDescendantPID(pidFile, 10*time.Second)
+	if childPID <= 0 {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+		t.Fatal("task plugin descendant did not start")
 	}
-	raw, readErr := os.ReadFile(pidFile)
-	if readErr != nil {
-		t.Fatalf("read descendant pid: %v", readErr)
+	cancel()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runPluginCommand did not stop after context cancellation")
 	}
-	childPID, parseErr := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if parseErr != nil || childPID <= 0 {
-		t.Fatalf("invalid descendant pid %q: %v", raw, parseErr)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("runPluginCommand error = %v, want context canceled", err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -215,7 +218,7 @@ func TestTaskPluginTimeoutKillsDescendantProcessGroup(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("task plugin descendant %d survived timeout: %v", childPID, err)
+	t.Fatalf("task plugin descendant %d survived cancellation: %v", childPID, err)
 }
 
 func TestTaskPluginCleanExitKillsDescendantProcessGroup(t *testing.T) {

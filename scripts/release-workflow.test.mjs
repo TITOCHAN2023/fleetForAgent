@@ -35,3 +35,11 @@ test("release publication is rerunnable and verifies every uploaded asset", () =
   assert.match(source, /test -f "\$asset"/);
   assert.match(source, /grep -Fxc "\$name" "\$published"/);
 });
+
+test("macOS release validation serializes process and PTY packages", () => {
+  const source = readFileSync(join(root, ".github/workflows/release-agent.yml"), "utf8");
+  assert.match(
+    source,
+    /- name: Test Agent on macOS[\s\S]*?working-directory: packages\/fleet-agent[\s\S]*?run: go test -p 1 \.\/\.\.\./,
+  );
+});

@@ -96,7 +96,7 @@ CLI and UI share one state. Do not edit config.json while it runs.
   fleet quit                 exit the daemon
   fleet restart              this process respawns on its own listen addr
   fleet update [--check] [--force] [--url URL] [--sha256 HEX]
-  fleet autoupdate on|off    persist the idle auto-update toggle (default on)
+  fleet autoupdate on|off    persist the idle auto-update toggle (default off)
   fleet rollback             swap in the previous binary and restart
   fleet status [--json]
   fleet enable | disable

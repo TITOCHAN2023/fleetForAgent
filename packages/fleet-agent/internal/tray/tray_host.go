@@ -96,7 +96,7 @@ func onTrayReady(c Controller) {
 	tray.deny.Hide()
 	systray.AddSeparator()
 	tray.restart = systray.AddMenuItem("Restart", "Respawn this agent on its listen address")
-	tray.autoUpdate = systray.AddMenuItemCheckbox("Auto-update", "When idle, install a newer version advertised by the hub", true)
+	tray.autoUpdate = systray.AddMenuItemCheckbox("Auto-update", "When idle, install a newer version advertised by the hub", false)
 	systray.AddSeparator()
 	tray.quit = systray.AddMenuItem("Quit Fleet Agent", "")
 

@@ -1,0 +1,287 @@
+name: Fleet Agent release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22.22.0"
+  GO_VERSION: "1.25.0"
+
+jobs:
+  validate:
+    name: Validate source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the exact tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            packages/fleet-agent/go.sum
+            packages/fleet-tool/windows-job-host/go.sum
+
+      - name: Verify immutable tag and Agent version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "$RELEASE_TAG^{commit}")"
+          test "$RELEASE_TAG" = "v$(sed -nE 's/^var agentVersion = "([^"]+)"$/\1/p' packages/fleet-agent/main.go)"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Install locked Worker dependencies
+        run: npm ci --prefix packages/fleet-worker
+
+      - name: Test
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build website
+        run: npm run build
+
+      - name: Bundle Worker without deploying
+        working-directory: packages/fleet-worker
+        env:
+          WRANGLER_SEND_METRICS: "false"
+        run: npm exec -- wrangler deploy --dry-run --outdir "$RUNNER_TEMP/fleet-worker-bundle"
+
+      - name: Test Agent
+        working-directory: packages/fleet-agent
+        run: go test ./...
+
+  validate-windows:
+    name: Validate native Windows behavior
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Check out the exact tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            packages/fleet-agent/go.sum
+            packages/fleet-tool/windows-job-host/go.sum
+
+      - name: Test Agent Windows behavior
+        working-directory: packages/fleet-agent
+        run: go test ./...
+
+      - name: Test Tool Windows process ownership
+        run: node --test packages/fleet-tool/plugin-peer-plugin.test.mjs
+
+      - name: Vet Tool Windows Job host
+        working-directory: packages/fleet-tool/windows-job-host
+        run: go vet ./...
+
+  build-assets:
+    name: Build release assets on macOS
+    needs:
+      - validate
+      - validate-windows
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - name: Check out the exact tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            packages/fleet-agent/go.sum
+            packages/fleet-tool/windows-job-host/go.sum
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Test Agent on macOS
+        working-directory: packages/fleet-agent
+        run: go test ./...
+
+      - name: Build Agent installers and versioned Tool archive
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          FLEET_RELEASE_DEFER_DOCKER_TEST: "1"
+        run: npm run release:agent
+
+      - name: Upload untrusted build outputs for isolated verification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fleet-release-${{ github.ref_name }}
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            public/dl/FleetAgent-windows-amd64.exe
+            public/dl/FleetAgent-windows-arm64.exe
+            public/dl/FleetAgent-macos-arm64.dmg
+            public/dl/FleetAgent-macos-amd64.dmg
+            public/dl/FleetAgent-macos-arm64.zip
+            public/dl/FleetAgent-macos-amd64.zip
+            public/dl/fleet-agent-linux-amd64.tar.gz
+            public/dl/fleet-agent-linux-arm64.tar.gz
+            public/dl/checksums.txt
+            public/dl/checksums-*.txt
+            packages/fleet-agent/dist/release/fleet-tool-*.tgz
+            packages/fleet-agent/dist/release/fleet-tool-*.tgz.sha256
+
+  verify-linux-assets:
+    name: Verify Linux release assets in isolated containers
+    needs: build-assets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the exact tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Download release outputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fleet-release-${{ github.ref_name }}
+          path: .
+
+      - name: Verify checksums after artifact transport
+        run: |
+          (cd public/dl && sha256sum --check checksums.txt)
+          (cd packages/fleet-agent/dist/release && sha256sum --check fleet-tool-*.tgz.sha256)
+
+      - name: Enable arm64 container emulation
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        with:
+          platforms: arm64
+
+      - name: Execute Linux assets without network or writable root
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: bash scripts/test-agent-release.sh public/dl "${VERSION#v}"
+
+  publish:
+    name: Attest and publish GitHub Release
+    needs: verify-linux-assets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Check out the exact tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Download verified release outputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fleet-release-${{ github.ref_name }}
+          path: .
+
+      - name: Verify checksums before publication
+        run: |
+          (cd public/dl && sha256sum --check checksums.txt)
+          (cd packages/fleet-agent/dist/release && sha256sum --check fleet-tool-*.tgz.sha256)
+
+      - name: Generate GitHub build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            public/dl/FleetAgent-*
+            public/dl/fleet-agent-*
+            packages/fleet-agent/dist/release/fleet-tool-*.tgz
+            public/dl/checksums*.txt
+            packages/fleet-agent/dist/release/fleet-tool-*.tgz.sha256
+
+      - name: Create release from the verified tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          version="${GITHUB_REF_NAME#v}"
+          tool_archives=(packages/fleet-agent/dist/release/fleet-tool-*.tgz)
+          tool_checksums=(packages/fleet-agent/dist/release/fleet-tool-*.tgz.sha256)
+          test "${#tool_archives[@]}" = "1"
+          test "${#tool_checksums[@]}" = "1"
+
+          assets=(
+            public/dl/FleetAgent-windows-amd64.exe
+            public/dl/FleetAgent-windows-arm64.exe
+            public/dl/FleetAgent-macos-arm64.dmg
+            public/dl/FleetAgent-macos-amd64.dmg
+            public/dl/FleetAgent-macos-arm64.zip
+            public/dl/FleetAgent-macos-amd64.zip
+            public/dl/fleet-agent-linux-amd64.tar.gz
+            public/dl/fleet-agent-linux-arm64.tar.gz
+            public/dl/checksums.txt
+            "public/dl/checksums-${version}.txt"
+            "${tool_archives[0]}"
+            "${tool_checksums[0]}"
+          )
+
+          for asset in "${assets[@]}"; do
+            test -f "$asset"
+          done
+
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" \
+              --verify-tag \
+              --generate-notes \
+              --title "Fleet $GITHUB_REF_NAME"
+          fi
+
+          gh release upload "$GITHUB_REF_NAME" --clobber "${assets[@]}"
+
+          published="$RUNNER_TEMP/fleet-release-assets.txt"
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > "$published"
+          for asset in "${assets[@]}"; do
+            name="${asset##*/}"
+            test "$(grep -Fxc "$name" "$published")" = "1"
+          done

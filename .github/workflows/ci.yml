@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web-and-protocol:
+    name: Web, Worker, Tool, and protocol tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.22.0"
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Install locked Worker dependencies
+        run: npm ci --prefix packages/fleet-worker
+
+      - name: Test
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Bundle Worker without deploying
+        working-directory: packages/fleet-worker
+        env:
+          WRANGLER_SEND_METRICS: "false"
+        run: npm exec -- wrangler deploy --dry-run --outdir "$RUNNER_TEMP/fleet-worker-bundle"
+
+  agent-linux:
+    name: Agent tests (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25.0"
+          cache-dependency-path: packages/fleet-agent/go.sum
+
+      - name: Verify modules
+        working-directory: packages/fleet-agent
+        run: go mod verify
+
+      - name: Test
+        working-directory: packages/fleet-agent
+        run: go test ./...
+
+      - name: Vet
+        working-directory: packages/fleet-agent
+        run: go vet ./...

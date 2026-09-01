@@ -112,8 +112,8 @@ func TestLoadKeepsDeviceIDAndPermit(t *testing.T) {
 	if a.permit != PermitAllow {
 		t.Fatalf("permit=%q", a.permit)
 	}
-	if !a.autoUpdate {
-		t.Fatal("missing autoUpdate key must default on")
+	if a.autoUpdate {
+		t.Fatal("missing autoUpdate key must default off")
 	}
 	if a.hubInput != "https://fleet.ginfo.cc" {
 		t.Fatalf("hub=%q", a.hubInput)

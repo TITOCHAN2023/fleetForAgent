@@ -168,7 +168,6 @@ type autoUpdateLab struct {
 
 func newAutoUpdateLab(t *testing.T, oldBin, archive, asset, sum string) *autoUpdateLab {
 	t.Helper()
-	setUpdateChannel("")
 	hub := startLabHub(t)
 	dl := startAssetServer(t, archive, asset, sum)
 	lab := &autoUpdateLab{

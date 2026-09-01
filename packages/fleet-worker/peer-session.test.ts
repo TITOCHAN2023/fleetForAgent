@@ -16,14 +16,24 @@ import {
 } from "./src/peer-session.ts";
 import fleetWorker, {
   DEVICE_WS_TEXT_MAX_BYTES,
+  DEVICE_ACTIVE_SESSION_TTL_MS,
+  DEVICE_RESULT_TTL_MS,
+  DEVICE_STORED_PAYLOAD_MAX_BYTES,
   DeviceDO,
+  FLEET_SESSION_IDLE_MS,
+  FLEET_SESSION_MAX_AGE_MS,
   FleetDO,
   isTaskPluginAction,
+  MCP_HTTP_TOUCH_MS,
   McpDO,
+  OAUTH_PENDING_LIMIT,
+  OAUTH_PENDING_SOURCE_LIMIT,
   PEER_SESSION_ACCOUNT_LIMIT,
   REVOCATION_FANOUT,
   RevocationDO,
 } from "./src/index.ts";
+import { handleOAuth } from "./src/oauth.ts";
+import { MCP_SESSION_IDLE_MS, MCP_SESSION_MAX_AGE_MS } from "./src/mcp-sse.mjs";
 
 const SESSION = "00000000-0000-4000-8000-000000000001";
 const CONNECTION_OLD = "00000000-0000-4000-8000-000000000011";
@@ -59,6 +69,226 @@ test("task dispatch rejects peer actions while preserving legacy task manifests"
     false,
   );
   assert.equal(isTaskPluginAction({ actions: ["run"] }, "missing"), false);
+});
+
+test("FleetDO migrates legacy cookie sessions and enforces idle and absolute expiry", async () => {
+  const state = fakeState();
+  const fleet = new FleetDO(
+    state as unknown as DurableObjectState,
+    {} as ConstructorParameters<typeof FleetDO>[1],
+  );
+  await seedFleetAccount(state);
+
+  await state.storage.put("sess:legacy", "account-a");
+  assert.equal(
+    (
+      await fleet.resolve(
+        new Request("https://fleet/resolve", {
+          headers: { cookie: "fleet_session=legacy" },
+        }),
+      )
+    )?.id,
+    "account-a",
+  );
+  assert.deepEqual(state.value<{ userId: string }>("sess:legacy")?.userId, "account-a");
+  assert.ok(
+    state.keys().some((key) => key.startsWith("~expiry:fleet:index:")),
+    "the migrated row must have an alarm index",
+  );
+
+  const now = Date.now();
+  await state.storage.put("sess:idle", {
+    userId: "account-a",
+    issuedAt: now - 1_000,
+    lastSeenAt: now - FLEET_SESSION_IDLE_MS - 1,
+  });
+  await state.storage.put("sess:absolute", {
+    userId: "account-a",
+    issuedAt: now - FLEET_SESSION_MAX_AGE_MS - 1,
+    lastSeenAt: now,
+  });
+  for (const sid of ["idle", "absolute"]) {
+    assert.equal(
+      await fleet.resolve(
+        new Request("https://fleet/resolve", {
+          headers: { cookie: `fleet_session=${sid}` },
+        }),
+      ),
+      null,
+    );
+    assert.equal(state.value(`sess:${sid}`), undefined);
+  }
+});
+
+test("FleetDO OAuth pending state is bounded, browser-bound, and single-use", async () => {
+  const state = fakeState();
+  const fleet = new FleetDO(
+    state as unknown as DurableObjectState,
+    {} as ConstructorParameters<typeof FleetDO>[1],
+  );
+  const oauthState = "s".repeat(43);
+  const binding = "b".repeat(43);
+  const source = "o".repeat(43);
+  const put = await fleet.fetch(
+    new Request("https://fleet/oauth-pending", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        state: oauthState,
+        provider: "google",
+        binding_hash: binding,
+        source_hash: source,
+        exp: Date.now() + 60_000,
+      }),
+    }),
+  );
+  assert.equal(put.status, 200);
+  assert.equal(
+    (
+      await fleet.fetch(
+        new Request(
+          `https://fleet/oauth-pending?state=${oauthState}&binding_hash=${"c".repeat(43)}`,
+        ),
+      )
+    ).status,
+    404,
+  );
+  assert.ok(state.value(`oauth:${oauthState}`), "a forged callback must not consume real state");
+  assert.equal(
+    (
+      await fleet.fetch(
+        new Request(`https://fleet/oauth-pending?state=${oauthState}&binding_hash=${binding}`),
+      )
+    ).status,
+    200,
+  );
+  assert.equal(state.value(`oauth:${oauthState}`), undefined);
+
+  for (let index = 0; index < OAUTH_PENDING_LIMIT; index += 1) {
+    await state.storage.put(`oauth:${String(index).padStart(32, "0")}`, {
+      provider: "google",
+      bindingHash: binding,
+      exp: Date.now() + 60_000,
+    });
+  }
+  const full = await fleet.fetch(
+    new Request("https://fleet/oauth-pending", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        state: "n".repeat(43),
+        provider: "google",
+        binding_hash: binding,
+        source_hash: source,
+        exp: Date.now() + 60_000,
+      }),
+    }),
+  );
+  assert.equal(full.status, 429);
+});
+
+test("OAuth pending admission isolates one anonymous source and ignores forged IP headers", async () => {
+  const state = fakeState();
+  const fleet = new FleetDO(
+    state as unknown as DurableObjectState,
+    {} as ConstructorParameters<typeof FleetDO>[1],
+  );
+  const oauthEnv = {
+    GOOGLE_CLIENT_ID: "client-id",
+    FLEET: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: (request: Request) => fleet.fetch(request) }),
+    },
+  } as unknown as Parameters<typeof handleOAuth>[1];
+
+  for (let index = 0; index < OAUTH_PENDING_SOURCE_LIMIT; index += 1) {
+    const request = new Request("https://fleet.test/v1/auth/google", {
+      headers: { "cf-connecting-ip": `198.51.100.${index + 1}` },
+    });
+    assert.equal((await handleOAuth(request, oauthEnv))?.status, 302);
+  }
+  const forgedBypass = await handleOAuth(
+    new Request("https://fleet.test/v1/auth/google", {
+      headers: { "cf-connecting-ip": "203.0.113.99" },
+    }),
+    oauthEnv,
+  );
+  assert.equal(forgedBypass?.status, 503, "a client-set IP header must not create a new bucket");
+
+  const trustedRequest = new Request("https://fleet.test/v1/auth/google", {
+    headers: { "cf-connecting-ip": "203.0.113.99" },
+  });
+  Object.defineProperty(trustedRequest, "cf", { value: { colo: "SIN" } });
+  assert.equal((await handleOAuth(trustedRequest, oauthEnv))?.status, 302);
+});
+
+test("OAuth admission does not commit state when transactional alarm publication fails", async () => {
+  const state = fakeState();
+  const fleet = new FleetDO(
+    state as unknown as DurableObjectState,
+    {} as ConstructorParameters<typeof FleetDO>[1],
+  );
+  await fleet.fetch(new Request("https://fleet/noop"));
+  await fleet.alarm();
+  state.failNextAlarm();
+  const oauthState = "f".repeat(43);
+  await assert.rejects(
+    fleet.fetch(
+      new Request("https://fleet/oauth-pending", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          state: oauthState,
+          provider: "google",
+          binding_hash: "b".repeat(43),
+          source_hash: "s".repeat(43),
+          exp: Date.now() + 60_000,
+        }),
+      }),
+    ),
+    /injected alarm failure/,
+  );
+  assert.equal(state.value(`oauth:${oauthState}`), undefined);
+  assert.equal(state.value(`~expiry:fleet:meta:oauth:${oauthState}`), undefined);
+});
+
+test("OAuth start binds state to an HttpOnly callback cookie", async () => {
+  const state = fakeState();
+  const fleet = new FleetDO(
+    state as unknown as DurableObjectState,
+    {} as ConstructorParameters<typeof FleetDO>[1],
+  );
+  const oauthEnv = {
+    GOOGLE_CLIENT_ID: "client-id",
+    FLEET: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: (request: Request) => fleet.fetch(request) }),
+    },
+  } as unknown as Parameters<typeof handleOAuth>[1];
+  const started = await handleOAuth(new Request("https://fleet.test/v1/auth/google"), oauthEnv);
+  assert.equal(started?.status, 302);
+  const location = new URL(started!.headers.get("location")!);
+  const oauthState = location.searchParams.get("state")!;
+  const setCookie = started!.headers.get("set-cookie")!;
+  assert.match(setCookie, new RegExp(`^fleet_oauth_${oauthState}=`));
+  assert.match(setCookie, /HttpOnly; Secure; SameSite=Lax/);
+  const cookiePair = setCookie.split(";", 1)[0]!;
+  const bindingValue = cookiePair.slice(cookiePair.indexOf("=") + 1);
+
+  const forged = await handleOAuth(
+    new Request(`https://fleet.test/v1/auth/callback/google?code=x&state=${oauthState}`),
+    oauthEnv,
+  );
+  assert.equal(forged?.status, 400);
+  assert.ok(state.value(`oauth:${oauthState}`), "missing browser cookie must not consume state");
+  assert.match(forged!.headers.get("set-cookie") ?? "", /Max-Age=0/);
+
+  const bindingHash = createHash("sha256").update(bindingValue).digest("base64url");
+  const consumed = await fleet.fetch(
+    new Request(`https://fleet/oauth-pending?state=${oauthState}&binding_hash=${bindingHash}`),
+  );
+  assert.equal(consumed.status, 200);
+  assert.equal(state.value(`oauth:${oauthState}`), undefined);
 });
 
 test("FleetDO atomically admits only 32 concurrent peer session reservations", async () => {
@@ -184,10 +414,7 @@ test("FleetDO claim rejects a revoked kid before creating a catalog row", async 
   await seedFleetUser(state, "kid-old");
 
   assert.equal((await claimFleetDevice(fleet, "device-a", "kid-old")).status, 200);
-  assert.equal(
-    state.value<{ connectionId?: string }>("d:device-a")?.connectionId,
-    CONNECTION_OLD,
-  );
+  assert.equal(state.value<{ connectionId?: string }>("d:device-a")?.connectionId, CONNECTION_OLD);
   assert.equal(state.value("udi:account-a:device-a"), "d:device-a");
 
   await state.storage.put("revoked:kid-old", Date.now());
@@ -204,15 +431,9 @@ test("an old connection generation cannot touch or release its replacement", asy
     {} as ConstructorParameters<typeof FleetDO>[1],
   );
   await seedFleetUser(state, "kid-old");
-  assert.equal(
-    (await claimFleetDevice(fleet, "device-a", "kid-old", CONNECTION_OLD)).status,
-    200,
-  );
+  assert.equal((await claimFleetDevice(fleet, "device-a", "kid-old", CONNECTION_OLD)).status, 200);
 
-  assert.equal(
-    (await claimFleetDevice(fleet, "device-a", "kid-old", CONNECTION_NEW)).status,
-    200,
-  );
+  assert.equal((await claimFleetDevice(fleet, "device-a", "kid-old", CONNECTION_NEW)).status, 200);
   const staleTouch = await touchFleetDevice(fleet, "device-a", "kid-old", CONNECTION_OLD);
   assert.equal(staleTouch.status, 409);
   assert.deepEqual(await staleTouch.json(), { error: "stale device connection" });
@@ -476,6 +697,229 @@ test("Streamable HTTP MCP preserves the Hub key when creating a device peer sess
   assert.equal(peerCalls[0]!.headers.get("x-fleet-kid"), "kid-a");
 });
 
+test("Streamable HTTP MCP alarm deletes an abandoned durable session", async () => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    const state = fakeMcpState();
+    const control = new McpDO(
+      state as unknown as DurableObjectState,
+      mcpPeerEnv([]) as unknown as ConstructorParameters<typeof McpDO>[1],
+    );
+    const opened = await control.fetch(
+      new Request("https://mcp/http-open", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-fleet-actor": "account-a",
+          "x-fleet-kid": "kid-a",
+        },
+        body: JSON.stringify(initializeMessage(1)),
+      }),
+    );
+    assert.equal(opened.status, 200);
+    assert.ok(state.value("http:session"));
+    assert.equal(state.alarm(), now + MCP_SESSION_IDLE_MS + MCP_HTTP_TOUCH_MS);
+
+    now += MCP_SESSION_IDLE_MS + MCP_HTTP_TOUCH_MS;
+    await control.alarm();
+    assert.equal(state.value("http:session"), undefined);
+    assert.equal(state.alarm(), null);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("Streamable HTTP MCP coalesces meaningful touches and never persists ping notifications", async () => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    const state = fakeMcpState();
+    const control = new McpDO(
+      state as unknown as DurableObjectState,
+      mcpPeerEnv([]) as unknown as ConstructorParameters<typeof McpDO>[1],
+    );
+    await control.fetch(
+      new Request("https://mcp/http-open", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-fleet-actor": "account-a",
+          "x-fleet-kid": "kid-a",
+        },
+        body: JSON.stringify(initializeMessage(1)),
+      }),
+    );
+    const baseline = state.counts();
+    for (const message of [
+      { jsonrpc: "2.0", id: 2, method: "ping" },
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+    ]) {
+      await control.fetch(
+        new Request("https://mcp/http-message", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(message),
+        }),
+      );
+    }
+    assert.deepEqual(state.counts(), baseline);
+
+    now += MCP_HTTP_TOUCH_MS - 1;
+    await control.fetch(
+      new Request("https://mcp/http-message", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" }),
+      }),
+    );
+    assert.deepEqual(state.counts(), baseline, "touches inside the window must stay in memory");
+
+    now += 1;
+    await control.fetch(
+      new Request("https://mcp/http-message", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/list" }),
+      }),
+    );
+    assert.deepEqual(state.counts(), {
+      puts: baseline.puts + 1,
+      alarmWrites: baseline.alarmWrites + 1,
+    });
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("Streamable HTTP MCP idle alarm defers while meaningful dispatch is in flight", async () => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    const state = fakeMcpState();
+    const control = new McpDO(
+      state as unknown as DurableObjectState,
+      mcpPeerEnv([]) as unknown as ConstructorParameters<typeof McpDO>[1],
+    );
+    await control.fetch(
+      new Request("https://mcp/http-open", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-fleet-actor": "account-a",
+          "x-fleet-kid": "kid-a",
+        },
+        body: JSON.stringify(initializeMessage(1)),
+      }),
+    );
+
+    let releaseSecond!: () => void;
+    let markEntered!: () => void;
+    const secondGate = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    const secondControl = new McpDO(
+      state as unknown as DurableObjectState,
+      mcpPeerEnv([], {
+        validateMcp: () => {
+          markEntered();
+          return secondGate;
+        },
+      }) as unknown as ConstructorParameters<typeof McpDO>[1],
+    );
+    now += MCP_SESSION_IDLE_MS + MCP_HTTP_TOUCH_MS - 1;
+    const pending = secondControl.fetch(
+      new Request("https://mcp/http-message", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+      }),
+    );
+    await entered;
+    now += 1;
+    await secondControl.alarm();
+    assert.ok(state.value("http:session"), "idle alarm must not delete an executing request");
+    releaseSecond();
+    assert.equal((await pending).status, 200);
+    assert.ok(state.value("http:session"));
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("Streamable HTTP MCP absolute max-age hard-cuts an in-flight dispatch", async () => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    const state = fakeMcpState();
+    const control = new McpDO(
+      state as unknown as DurableObjectState,
+      mcpPeerEnv([]) as unknown as ConstructorParameters<typeof McpDO>[1],
+    );
+    const open = control.fetch(
+      new Request("https://mcp/http-open", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-fleet-actor": "account-a",
+          "x-fleet-kid": "kid-a",
+        },
+        body: JSON.stringify(initializeMessage(1)),
+      }),
+    );
+    await open;
+
+    let releaseSecond!: () => void;
+    let markEntered!: () => void;
+    const secondGate = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    const secondControl = new McpDO(
+      state as unknown as DurableObjectState,
+      mcpPeerEnv([], {
+        validateMcp: () => {
+          markEntered();
+          return secondGate;
+        },
+      }) as unknown as ConstructorParameters<typeof McpDO>[1],
+    );
+    now += MCP_SESSION_MAX_AGE_MS - 1;
+    const stored = state.value<{ lastActivityAt: number }>("http:session")!;
+    stored.lastActivityAt = now;
+    await state.storage.put("http:session", stored);
+    const pending = secondControl.fetch(
+      new Request("https://mcp/http-message", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+      }),
+    );
+    await entered;
+    now += 1;
+    await secondControl.alarm();
+    assert.equal(state.value("http:session"), undefined);
+    releaseSecond();
+    await pending;
+    assert.equal(
+      state.value("http:session"),
+      undefined,
+      "completion must not resurrect the session",
+    );
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 test("MCP reservation failure blocks create and lookup before touching PeerSessionDO", async () => {
   const state = fakeMcpState();
   const peerCalls: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
@@ -553,10 +997,350 @@ test("device WebSocket rejects oversized text before JSON parsing or forwarding"
   const closed: Array<[number, string]> = [];
   const device = fakeDeviceDO();
   await device.webSocketMessage(
-    { close: (code: number, reason: string) => closed.push([code, reason]) } as unknown as WebSocket,
+    {
+      close: (code: number, reason: string) => closed.push([code, reason]),
+    } as unknown as WebSocket,
     "x".repeat(DEVICE_WS_TEXT_MAX_BYTES + 1),
   );
   assert.deepEqual(closed, [[1009, "frame too large"]]);
+});
+
+test("DeviceDO moves completed ownership into the short-lived result and GC removes every trace", async () => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    const { device, state } = fakeDeviceHarness();
+    const ws = {
+      deserializeAttachment: () => ({}),
+      send() {},
+      close() {},
+    } as unknown as WebSocket;
+    const corr = "corr-complete";
+    await device.webSocketMessage(
+      ws,
+      JSON.stringify({
+        v: 1,
+        type: "rtc_claim",
+        id: "claim",
+        corr,
+        t: now,
+        body: { sid: SESSION, operator_id: "operator-a" },
+      }),
+    );
+    await device.webSocketMessage(
+      ws,
+      JSON.stringify({
+        v: 1,
+        type: "screen",
+        id: "screen",
+        corr,
+        t: now,
+        body: { text: "private screen" },
+      }),
+    );
+    await device.webSocketMessage(
+      ws,
+      JSON.stringify({
+        v: 1,
+        type: "result",
+        id: "result",
+        corr,
+        t: now,
+        body: { ok: true, exit_code: 0, stdout: "done" },
+      }),
+    );
+
+    assert.equal(
+      state.value(`own:${corr}`),
+      undefined,
+      "completed ownership must not leak separately",
+    );
+    assert.equal(state.value("alive:operator-a"), undefined);
+    assert.equal(state.value<Record<string, unknown>>(`res:${corr}`)?.__fleet_owner, "operator-a");
+    assert.equal(
+      state.value("screen:last"),
+      undefined,
+      "the unused global screen copy is forbidden",
+    );
+    const foreign = await device.fetch(
+      new Request(`https://device/result?corr=${corr}`, {
+        headers: { "X-Fleet-Operator": "operator-b" },
+      }),
+    );
+    assert.deepEqual(await foreign.json(), { status: "pending" });
+    const response = await device.fetch(
+      new Request(`https://device/result?corr=${corr}`, {
+        headers: { "X-Fleet-Operator": "operator-a" },
+      }),
+    );
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as Record<string, unknown>;
+    assert.equal(body.stdout, "done");
+    assert.equal(body.__fleet_owner, undefined, "internal ownership must never cross the API");
+
+    now += DEVICE_RESULT_TTL_MS + 1;
+    await device.alarm();
+    for (const key of [
+      `res:${corr}`,
+      `screen:${corr}`,
+      "live:operator-a",
+      `own:${corr}`,
+      "alive:operator-a",
+    ]) {
+      assert.equal(state.value(key), undefined, `${key} must expire`);
+    }
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("DeviceDO expires abandoned correlation ownership and live pointers", async () => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    const { device, state } = fakeDeviceHarness();
+    await device.webSocketMessage(
+      { deserializeAttachment: () => ({}) } as unknown as WebSocket,
+      JSON.stringify({
+        v: 1,
+        type: "rtc_claim",
+        id: "claim",
+        corr: "corr-abandoned",
+        t: now,
+        body: { sid: SESSION, operator_id: "operator-a" },
+      }),
+    );
+    assert.equal(state.value("own:corr-abandoned"), "operator-a");
+    assert.equal(state.value("live:operator-a"), "corr-abandoned");
+    assert.deepEqual(state.value("alive:operator-a"), ["corr-abandoned"]);
+
+    now += DEVICE_ACTIVE_SESSION_TTL_MS + 1;
+    await device.alarm();
+    assert.equal(state.value("own:corr-abandoned"), undefined);
+    assert.equal(state.value("live:operator-a"), undefined);
+    assert.equal(state.value("alive:operator-a"), undefined);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("DeviceDO alarm adopts and expires rows written by pre-TTL Workers", async () => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    const { device, state } = fakeDeviceHarness();
+    await state.storage.put("res:legacy", { ok: true, exit_code: 0, stdout: "old" });
+    await state.storage.put("screen:legacy", { text: "old screen" });
+    await state.storage.put("own:legacy", "operator-a");
+    await state.storage.put("live:operator-a", "legacy");
+    await state.storage.put("alive:operator-a", ["legacy"]);
+    await state.storage.put(`rtc:${SESSION}`, { exp: now + 60_000 });
+
+    await device.fetch(new Request("https://device/noop"));
+    await device.alarm();
+    for (const key of [
+      "res:legacy",
+      "screen:legacy",
+      "own:legacy",
+      "live:operator-a",
+      "alive:operator-a",
+      `rtc:${SESSION}`,
+    ]) {
+      assert.ok(
+        state.keys().includes(`~expiry:device:meta:${key}`),
+        `${key} must receive a legacy expiry index`,
+      );
+    }
+
+    now += DEVICE_ACTIVE_SESSION_TTL_MS + 1;
+    await device.alarm();
+    for (const key of [
+      "res:legacy",
+      "screen:legacy",
+      "own:legacy",
+      "live:operator-a",
+      "alive:operator-a",
+      `rtc:${SESSION}`,
+    ]) {
+      assert.equal(state.value(key), undefined, `${key} must be collected`);
+    }
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("DeviceDO periodically reconciles legacy rows created after the first migration pass", async () => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    const { device, state } = fakeDeviceHarness();
+    await device.fetch(new Request("https://device/noop"));
+    await device.alarm();
+    assert.ok((state.alarm() ?? 0) > now, "an empty pass must retain a reconcile alarm");
+
+    await state.storage.put("screen:late-legacy", { text: "late" });
+    assert.equal(state.value("~expiry:device:meta:screen:late-legacy"), undefined);
+    now = state.alarm()!;
+    await device.alarm();
+    assert.ok(
+      state.value("~expiry:device:meta:screen:late-legacy"),
+      "a legacy row written by an older Worker version must eventually be indexed",
+    );
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("DeviceDO expiry row and alarm publication fail atomically", async () => {
+  const { device, state } = fakeDeviceHarness();
+  await device.fetch(new Request("https://device/noop"));
+  await device.alarm();
+  state.failNextAlarm();
+  await assert.rejects(
+    device.webSocketMessage(
+      { deserializeAttachment: () => ({}) } as unknown as WebSocket,
+      JSON.stringify({
+        v: 1,
+        type: "screen",
+        id: "screen",
+        corr: "alarm-failure",
+        t: Date.now(),
+        body: { text: "must not commit" },
+      }),
+    ),
+    /injected alarm failure/,
+  );
+  assert.equal(state.value("screen:alarm-failure"), undefined);
+  assert.equal(state.value("~expiry:device:meta:screen:alarm-failure"), undefined);
+  assert.equal(
+    state.keys().some((key) => key.includes(":alarm-failure")),
+    false,
+  );
+});
+
+test("DeviceDO degrades an oversized command result instead of throwing from storage", async () => {
+  const { device, state } = fakeDeviceHarness();
+  const ws = { deserializeAttachment: () => ({}) } as unknown as WebSocket;
+  const corr = "corr-large";
+  await device.webSocketMessage(
+    ws,
+    JSON.stringify({
+      v: 1,
+      type: "rtc_claim",
+      id: "claim",
+      corr,
+      t: Date.now(),
+      body: { sid: SESSION, operator_id: "operator-a" },
+    }),
+  );
+  await device.webSocketMessage(
+    ws,
+    JSON.stringify({
+      v: 1,
+      type: "result",
+      id: "result",
+      corr,
+      t: Date.now(),
+      body: {
+        ok: true,
+        exit_code: 0,
+        stdout: "x".repeat(DEVICE_STORED_PAYLOAD_MAX_BYTES + 1),
+      },
+    }),
+  );
+  const stored = state.value<Record<string, unknown>>(`res:${corr}`)!;
+  assert.equal(stored.code, "STORED_PAYLOAD_TOO_LARGE");
+  assert.equal(stored.truncated, true);
+  assert.equal(stored.stdout, "");
+  assert.ok(JSON.stringify(stored).length < 2_000);
+  const response = await device.fetch(
+    new Request(`https://device/result?corr=${corr}`, {
+      headers: { "X-Fleet-Operator": "operator-a" },
+    }),
+  );
+  const body = (await response.json()) as Record<string, unknown>;
+  assert.equal(body.status, "done");
+  assert.equal(body.code, "STORED_PAYLOAD_TOO_LARGE");
+  assert.equal(body.__fleet_owner, undefined);
+});
+
+test("DeviceDO screen snapshots overwrite in place without rebuilding expiry on every frame", async () => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    const { device, state } = fakeDeviceHarness();
+    const ws = { deserializeAttachment: () => ({}) } as unknown as WebSocket;
+    const frame = (text: string) =>
+      JSON.stringify({
+        v: 1,
+        type: "screen",
+        id: text,
+        corr: "corr-screen",
+        t: now,
+        body: { text },
+      });
+    await device.webSocketMessage(ws, frame("one"));
+    const firstMeta = structuredClone(
+      state.value<{ expiresAt: number; indexKey: string }>(
+        "~expiry:device:meta:screen:corr-screen",
+      ),
+    );
+    now += 1_000;
+    await device.webSocketMessage(ws, frame("two"));
+    assert.deepEqual(state.value("~expiry:device:meta:screen:corr-screen"), firstMeta);
+    assert.deepEqual(state.value("screen:corr-screen"), { text: "two" });
+    assert.equal(state.keys().filter((key) => key.startsWith("~expiry:device:index:")).length, 1);
+    assert.equal(state.value("screen:last"), undefined);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("DeviceDO expires successful RTC signaling without waiting for rtc_closed", async () => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    const sent: string[] = [];
+    const socket = {
+      deserializeAttachment: () => ({
+        userId: "account-a",
+        kid: "kid-a",
+        deviceId: "device-a",
+        caps: ["rtc_v1"],
+      }),
+      send: (value: string) => sent.push(value),
+    } as unknown as WebSocket;
+    const { device, state } = fakeDeviceHarness([socket]);
+    const response = await device.fetch(
+      new Request("https://device/rtc-offer", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sid: SESSION,
+          offer: sdp("a"),
+          user_id: "account-a",
+          kid: "kid-a",
+          device_id: "device-a",
+          operator_id: "operator-a",
+        }),
+      }),
+    );
+    assert.equal(response.status, 200);
+    assert.ok(state.value(`rtc:${SESSION}`));
+    assert.equal(sent.length, 1);
+
+    now += 60_001;
+    await device.alarm();
+    assert.equal(state.value(`rtc:${SESSION}`), undefined);
+  } finally {
+    Date.now = realNow;
+  }
 });
 
 test("DeviceDO kick closes every socket when an auth_revoked send fails", async () => {
@@ -715,7 +1499,11 @@ test("device WebSocket rejects cookie actors and arbitrary Bearer credentials be
     testEnv,
   );
   assert.equal(bearerResponse.status, 401);
-  assert.equal(listResponse.status, 401, "a retired deployment secret must not regain super access");
+  assert.equal(
+    listResponse.status,
+    401,
+    "a retired deployment secret must not regain super access",
+  );
   assert.equal(loginResponse.status, 401);
   assert.equal(deviceGets, 0, "missing per-account kid must not allocate a DeviceDO");
 
@@ -733,7 +1521,8 @@ test("Worker scopes every Fleet-OAEP device listing to the resolved account", as
   const fleet = {
     fetch: async (request: Request) => {
       const url = new URL(request.url);
-      const body = request.method === "POST" ? await request.json().catch(() => undefined) : undefined;
+      const body =
+        request.method === "POST" ? await request.json().catch(() => undefined) : undefined;
       requests.push({ url: `${url.pathname}${url.search}`, body });
       if (url.pathname === "/resolve-wrap") {
         return Response.json({ id: "account-a", kid: "kid-a" });
@@ -970,7 +1759,9 @@ test("device WebSocket rejects oversized peer control before touching its sessio
   const closed: Array<[number, string]> = [];
   const device = fakeDeviceDO();
   await device.webSocketMessage(
-    { close: (code: number, reason: string) => closed.push([code, reason]) } as unknown as WebSocket,
+    {
+      close: (code: number, reason: string) => closed.push([code, reason]),
+    } as unknown as WebSocket,
     JSON.stringify({
       v: 1,
       type: "peer_session_signal",
@@ -981,11 +1772,16 @@ test("device WebSocket rejects oversized peer control before touching its sessio
 });
 
 test("device WebSocket rejects non-object envelopes without throwing", async () => {
-  for (const message of ["null", JSON.stringify({ v: 1, type: "peer_session_event", body: null })]) {
+  for (const message of [
+    "null",
+    JSON.stringify({ v: 1, type: "peer_session_event", body: null }),
+  ]) {
     const closed: Array<[number, string]> = [];
     const device = fakeDeviceDO();
     await device.webSocketMessage(
-      { close: (code: number, reason: string) => closed.push([code, reason]) } as unknown as WebSocket,
+      {
+        close: (code: number, reason: string) => closed.push([code, reason]),
+      } as unknown as WebSocket,
       message,
     );
     assert.deepEqual(closed, [[1003, "bad proto"]]);
@@ -1072,37 +1868,49 @@ test("concurrent identical create requests commit one peer session", async () =>
     control.fetch(req("/create", "tool", "operator-a", createBody())),
     control.fetch(req("/create", "tool", "operator-a", createBody())),
   ]);
-  assert.deepEqual(
-    responses.map((response) => response.status).sort(),
-    [200, 201],
-  );
+  assert.deepEqual(responses.map((response) => response.status).sort(), [200, 201]);
   assert.equal(state.value<PeerSessionRecord>("session")?.round.no, 1);
   assert.equal(pushes.length, 2, "only the transaction winner may drain initial delivery");
 });
 
 test("create retry rejects changed durable intent without mutating the first session", async () => {
-  const mutations: Array<[
-    string,
-    (body: ReturnType<typeof createBody>) => void,
-  ]> = [
-    ["operator", (body) => {
-      body.operator_id = "operator-b";
-    }],
-    ["protocol", (body) => {
-      body.protocol.id = "fleet.transfer.v3";
-    }],
-    ["initiator", (body) => {
-      body.initiator = "target";
-    }],
-    ["endpoint identity", (body) => {
-      body.source.id = "device-c";
-    }],
-    ["plugin version", (body) => {
-      body.source.plugin_version = "0.3.0";
-    }],
-    ["action", (body) => {
-      body.target.action = "prepare_other";
-    }],
+  const mutations: Array<[string, (body: ReturnType<typeof createBody>) => void]> = [
+    [
+      "operator",
+      (body) => {
+        body.operator_id = "operator-b";
+      },
+    ],
+    [
+      "protocol",
+      (body) => {
+        body.protocol.id = "fleet.transfer.v3";
+      },
+    ],
+    [
+      "initiator",
+      (body) => {
+        body.initiator = "target";
+      },
+    ],
+    [
+      "endpoint identity",
+      (body) => {
+        body.source.id = "device-c";
+      },
+    ],
+    [
+      "plugin version",
+      (body) => {
+        body.source.plugin_version = "0.3.0";
+      },
+    ],
+    [
+      "action",
+      (body) => {
+        body.target.action = "prepare_other";
+      },
+    ],
   ];
 
   for (const [field, mutate] of mutations) {
@@ -1251,9 +2059,9 @@ test("tool delivery commits the remaining outbox and its next alarm together", a
   assert.ok(toolDelivery);
   await state.storage.setAlarm(0);
 
-  await (
-    control as unknown as { mail(item: typeof toolDelivery): Promise<void> }
-  ).mail(toolDelivery);
+  await (control as unknown as { mail(item: typeof toolDelivery): Promise<void> }).mail(
+    toolDelivery,
+  );
 
   assert.equal(
     (state.value<Array<{ deliveryId: string }>>("outbox") ?? []).some(
@@ -1675,7 +2483,10 @@ test("an endpoint failure from the interrupted round terminates the replacement 
 test("the Hub enforces one initial round plus at most three resume rounds", async () => {
   const state = fakeState();
   const control = new PeerSessionDO(state as unknown as DurableObjectState, env());
-  assert.equal((await control.fetch(req("/create", "tool", "operator-a", createBody()))).status, 201);
+  assert.equal(
+    (await control.fetch(req("/create", "tool", "operator-a", createBody()))).status,
+    201,
+  );
   for (let roundNo = 2; roundNo <= PEER_SESSION_MAX_ROUNDS; roundNo += 1) {
     const record = state.value<PeerSessionRecord>("session")!;
     record.phase = "active";
@@ -2058,12 +2869,7 @@ function resolveFleetBearer(fleet: FleetDO, token: string) {
   );
 }
 
-function claimFleetDevice(
-  fleet: FleetDO,
-  id: string,
-  kid: string,
-  connectionId = CONNECTION_OLD,
-) {
+function claimFleetDevice(fleet: FleetDO, id: string, kid: string, connectionId = CONNECTION_OLD) {
   return fleet.fetch(
     new Request("https://fleet/claim-device", {
       method: "POST",
@@ -2081,12 +2887,7 @@ function claimFleetDevice(
   );
 }
 
-function touchFleetDevice(
-  fleet: FleetDO,
-  id: string,
-  kid: string,
-  connectionId = CONNECTION_OLD,
-) {
+function touchFleetDevice(fleet: FleetDO, id: string, kid: string, connectionId = CONNECTION_OLD) {
   return fleet.fetch(
     new Request("https://fleet/touch-device", {
       method: "POST",
@@ -2159,6 +2960,7 @@ function revocationEnv(attempted: string[], children: string[], failId = "") {
 function fakeState({ cloneReads = false }: { cloneReads?: boolean } = {}) {
   const values = new Map<string, unknown>();
   let alarm: number | null = null;
+  let failNextAlarm = false;
   let tail = Promise.resolve();
   const read = <T>(value: T): T => (cloneReads ? structuredClone(value) : value);
   const storage = {
@@ -2192,9 +2994,16 @@ function fakeState({ cloneReads = false }: { cloneReads?: boolean } = {}) {
       alarm = null;
     },
     setAlarm: async (value: number) => {
+      if (failNextAlarm) {
+        failNextAlarm = false;
+        throw new Error("injected alarm failure");
+      }
       alarm = value;
     },
     getAlarm: async () => alarm,
+    deleteAlarm: async () => {
+      alarm = null;
+    },
     transaction: async <T>(callback: (txn: typeof storage) => Promise<T>) => {
       const previous = tail;
       let release!: () => void;
@@ -2212,7 +3021,11 @@ function fakeState({ cloneReads = false }: { cloneReads?: boolean } = {}) {
   return {
     storage,
     value: <T>(key: string) => values.get(key) as T | undefined,
+    keys: () => [...values.keys()],
     alarm: () => alarm,
+    failNextAlarm: () => {
+      failNextAlarm = true;
+    },
   };
 }
 
@@ -2268,7 +3081,11 @@ function reserve(fleet: FleetDO, userId: string, sessionId: string): Promise<Res
 
 function mcpPeerEnv(
   peerCalls: Array<{ headers: Headers; body: Record<string, unknown> }>,
-  options: { rejectReservation?: boolean; order?: string[] } = {},
+  options: {
+    rejectReservation?: boolean;
+    order?: string[];
+    validateMcp?: () => Promise<void>;
+  } = {},
 ) {
   return {
     FLEET: {
@@ -2276,7 +3093,10 @@ function mcpPeerEnv(
       get: () => ({
         fetch: async (request: Request) => {
           const url = new URL(request.url);
-          if (url.pathname === "/validate-mcp") return Response.json({ ok: true });
+          if (url.pathname === "/validate-mcp") {
+            await options.validateMcp?.();
+            return Response.json({ ok: true });
+          }
           if (url.pathname === "/peer-session-reserve") {
             options.order?.push("reserve");
             if (options.rejectReservation) {
@@ -2328,24 +3148,48 @@ function mcpPeerEnv(
 function fakeMcpState() {
   const values = new Map<string, unknown>();
   const pending: Promise<unknown>[] = [];
-  return {
-    storage: {
-      get: async <T>(key: string) => values.get(key) as T | undefined,
-      put: async (key: string, value: unknown) => {
-        values.set(key, structuredClone(value));
-      },
-      delete: async (key: string) => values.delete(key),
+  let alarm: number | null = null;
+  let puts = 0;
+  let alarmWrites = 0;
+  const storage = {
+    get: async <T>(key: string) => values.get(key) as T | undefined,
+    put: async (key: string, value: unknown) => {
+      puts += 1;
+      values.set(key, structuredClone(value));
     },
+    delete: async (key: string) => values.delete(key),
+    setAlarm: async (value: number) => {
+      alarmWrites += 1;
+      alarm = value;
+    },
+    getAlarm: async () => alarm,
+    deleteAlarm: async () => {
+      alarm = null;
+    },
+    transaction: async <T>(callback: (txn: typeof storage) => Promise<T>) => callback(storage),
+  };
+  return {
+    storage,
     waitUntil(value: Promise<unknown>) {
       pending.push(Promise.resolve(value));
     },
     async drain() {
       await Promise.all(pending.splice(0));
     },
+    value: <T>(key: string) => values.get(key) as T | undefined,
+    alarm: () => alarm,
+    counts: () => ({ puts, alarmWrites }),
   };
 }
 
 function fakeDeviceDO(
+  sockets: WebSocket[] = [],
+  env: ConstructorParameters<typeof DeviceDO>[1] = {} as ConstructorParameters<typeof DeviceDO>[1],
+) {
+  return fakeDeviceHarness(sockets, env).device;
+}
+
+function fakeDeviceHarness(
   sockets: WebSocket[] = [],
   env: ConstructorParameters<typeof DeviceDO>[1] = {} as ConstructorParameters<typeof DeviceDO>[1],
 ) {
@@ -2355,13 +3199,16 @@ function fakeDeviceDO(
   }
   Reflect.set(globalThis, "WebSocketRequestResponsePair", FakeWebSocketRequestResponsePair);
   try {
-    return new DeviceDO(
+    const state = fakeState();
+    const device = new DeviceDO(
       {
+        storage: state.storage,
         setWebSocketAutoResponse() {},
         getWebSockets: () => sockets,
       } as unknown as DurableObjectState,
       env,
     );
+    return { device, state };
   } finally {
     if (previous === undefined) Reflect.deleteProperty(globalThis, "WebSocketRequestResponsePair");
     else Reflect.set(globalThis, "WebSocketRequestResponsePair", previous);

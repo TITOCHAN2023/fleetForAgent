@@ -124,6 +124,242 @@ export { PeerSessionDO };
 export const PEER_SESSION_ACCOUNT_LIMIT = 32;
 export const REVOCATION_FANOUT = 64;
 
+export const DEVICE_ACTIVE_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+export const DEVICE_RESULT_TTL_MS = 15 * 60 * 1000;
+export const DEVICE_SCREEN_TTL_MS = 5 * 60 * 1000;
+export const DEVICE_STORED_PAYLOAD_MAX_BYTES = 1536 * 1024;
+export const FLEET_SESSION_IDLE_MS = 7 * 24 * 60 * 60 * 1000;
+export const FLEET_SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+export const OAUTH_PENDING_TTL_MS = 10 * 60 * 1000;
+export const OAUTH_PENDING_LIMIT = 256;
+export const OAUTH_PENDING_SOURCE_LIMIT = 8;
+export const MCP_HTTP_TOUCH_MS = 5 * 60 * 1000;
+
+const FLEET_SESSION_TOUCH_MS = 5 * 60 * 1000;
+const EXPIRY_SWEEP_BATCH = 128;
+const LEGACY_ADOPTION_BATCH = 64;
+const LEGACY_RECONCILE_MS = 24 * 60 * 60 * 1000;
+const DEVICE_ALIVE_LIMIT = 256;
+const DEVICE_EXPIRY_NAMESPACE = "device";
+const FLEET_EXPIRY_NAMESPACE = "fleet";
+const STORED_RESULT_OWNER = "__fleet_owner";
+
+type ExpiryMeta = { expiresAt: number; indexKey: string };
+type LegacyExpirySpec = {
+  prefix: string;
+  expiresAt: (value: unknown, now: number) => number;
+};
+type LegacyExpiryCursor =
+  { prefix: number; startAfter: string } | { nextReconcileAt: number } | "done";
+
+type LegacyExpiryProgress = {
+  pending: boolean;
+  nextReconcileAt: number;
+};
+
+function expiryMetaKey(namespace: string, key: string): string {
+  return `~expiry:${namespace}:meta:${key}`;
+}
+
+function expiryIndexPrefix(namespace: string): string {
+  return `~expiry:${namespace}:index:`;
+}
+
+function expiryIndexKey(namespace: string, expiresAt: number): string {
+  return `${expiryIndexPrefix(namespace)}${String(Math.floor(expiresAt)).padStart(13, "0")}:${crypto.randomUUID()}`;
+}
+
+function expiryMigrationKey(namespace: string): string {
+  return `~expiry:${namespace}:legacy:v1`;
+}
+
+async function scheduleEarlierAlarm(storage: DurableObjectStorage, at: number): Promise<void> {
+  const current = await storage.getAlarm();
+  if (current == null || at < current) await storage.setAlarm(at);
+}
+
+async function putExpiring<T>(
+  storage: DurableObjectStorage,
+  namespace: string,
+  key: string,
+  value: T,
+  expiresAt: number,
+): Promise<void> {
+  const deadline = Math.max(Date.now() + 1, Math.floor(expiresAt));
+  const metaKey = expiryMetaKey(namespace, key);
+  const indexKey = expiryIndexKey(namespace, deadline);
+  await storage.transaction(async (txn) => {
+    const currentAlarm = await txn.getAlarm();
+    if (currentAlarm == null || deadline < currentAlarm) await txn.setAlarm(deadline);
+    const previous = await txn.get<ExpiryMeta>(metaKey);
+    if (previous?.indexKey) await txn.delete(previous.indexKey);
+    await txn.put({
+      [key]: value,
+      [metaKey]: { expiresAt: deadline, indexKey } satisfies ExpiryMeta,
+      [indexKey]: key,
+    });
+  });
+}
+
+async function putExpiringWithLazyRefresh<T>(
+  storage: DurableObjectStorage,
+  namespace: string,
+  key: string,
+  value: T,
+  expiresAt: number,
+  refreshWhenRemainingMs: number,
+): Promise<void> {
+  const meta = await storage.get<ExpiryMeta>(expiryMetaKey(namespace, key));
+  if (meta && meta.expiresAt - Date.now() > refreshWhenRemainingMs) {
+    await storage.put(key, value);
+    return;
+  }
+  await putExpiring(storage, namespace, key, value, expiresAt);
+}
+
+async function deleteExpiring(
+  storage: DurableObjectStorage,
+  namespace: string,
+  key: string,
+): Promise<void> {
+  const metaKey = expiryMetaKey(namespace, key);
+  await storage.transaction(async (txn) => {
+    const meta = await txn.get<ExpiryMeta>(metaKey);
+    if (meta?.indexKey) await txn.delete(meta.indexKey);
+    await txn.delete(key);
+    await txn.delete(metaKey);
+  });
+}
+
+async function getExpiring<T>(
+  storage: DurableObjectStorage,
+  namespace: string,
+  key: string,
+  legacyExpiresAt: (value: T, now: number) => number,
+): Promise<T | undefined> {
+  const value = await storage.get<T>(key);
+  if (value === undefined) return undefined;
+  const now = Date.now();
+  const meta = await storage.get<ExpiryMeta>(expiryMetaKey(namespace, key));
+  if (meta && meta.expiresAt <= now) {
+    await deleteExpiring(storage, namespace, key);
+    return undefined;
+  }
+  if (!meta) await putExpiring(storage, namespace, key, value, legacyExpiresAt(value, now));
+  return value;
+}
+
+async function sweepExpiryIndex(
+  storage: DurableObjectStorage,
+  namespace: string,
+  now: number,
+): Promise<number> {
+  const prefix = expiryIndexPrefix(namespace);
+  const rows = await storage.list<string>({ prefix, limit: EXPIRY_SWEEP_BATCH });
+  let consumed = 0;
+  for (const [indexKey, dataKey] of rows) {
+    const rawDeadline = indexKey.slice(prefix.length).split(":", 1)[0] ?? "";
+    const deadline = Number(rawDeadline);
+    if (Number.isFinite(deadline) && deadline > now) return deadline;
+    const metaKey = expiryMetaKey(namespace, dataKey);
+    const meta = await storage.get<ExpiryMeta>(metaKey);
+    if (meta?.indexKey === indexKey) {
+      await storage.delete(dataKey);
+      await storage.delete(metaKey);
+    }
+    await storage.delete(indexKey);
+    consumed += 1;
+  }
+  if (consumed === EXPIRY_SWEEP_BATCH) return now + 1;
+  const next = await storage.list<string>({ prefix, limit: 1 });
+  const first = next.keys().next().value;
+  if (typeof first !== "string") return 0;
+  const deadline = Number(first.slice(prefix.length).split(":", 1)[0] ?? "");
+  return Number.isFinite(deadline) ? Math.max(now + 1, deadline) : now + 1;
+}
+
+async function nextExpiryDeadline(
+  storage: DurableObjectStorage,
+  namespace: string,
+  now: number,
+): Promise<number> {
+  const prefix = expiryIndexPrefix(namespace);
+  const rows = await storage.list<string>({ prefix, limit: 1 });
+  const first = rows.keys().next().value;
+  if (typeof first !== "string") return 0;
+  const deadline = Number(first.slice(prefix.length).split(":", 1)[0] ?? "");
+  return Number.isFinite(deadline) ? Math.max(now + 1, deadline) : now + 1;
+}
+
+function legacyReconcileDeadline(cursor: LegacyExpiryCursor | undefined, now: number): number {
+  if (
+    cursor &&
+    typeof cursor === "object" &&
+    "nextReconcileAt" in cursor &&
+    Number.isFinite(cursor.nextReconcileAt)
+  ) {
+    return Math.max(now + 1, cursor.nextReconcileAt);
+  }
+  return now + 1;
+}
+
+async function adoptLegacyExpiryRows(
+  storage: DurableObjectStorage,
+  namespace: string,
+  specs: LegacyExpirySpec[],
+  now: number,
+): Promise<LegacyExpiryProgress> {
+  const migrationKey = expiryMigrationKey(namespace);
+  const stored = await storage.get<LegacyExpiryCursor>(migrationKey);
+  if (
+    stored &&
+    typeof stored === "object" &&
+    "nextReconcileAt" in stored &&
+    stored.nextReconcileAt > now
+  ) {
+    return { pending: false, nextReconcileAt: stored.nextReconcileAt };
+  }
+  let cursor =
+    stored && typeof stored === "object" && "prefix" in stored
+      ? stored
+      : { prefix: 0, startAfter: "" };
+  while (cursor.prefix < specs.length) {
+    const spec = specs[cursor.prefix]!;
+    const rows = await storage.list({
+      prefix: spec.prefix,
+      startAfter: cursor.startAfter || undefined,
+      limit: LEGACY_ADOPTION_BATCH,
+    });
+    for (const [key, value] of rows) {
+      if (!(await storage.get(expiryMetaKey(namespace, key)))) {
+        await putExpiring(storage, namespace, key, value, spec.expiresAt(value, now));
+      }
+      cursor.startAfter = key;
+    }
+    if (rows.size === LEGACY_ADOPTION_BATCH) {
+      await storage.put(migrationKey, cursor);
+      return { pending: true, nextReconcileAt: now + 1 };
+    }
+    cursor = { prefix: cursor.prefix + 1, startAfter: "" };
+  }
+  const nextReconcileAt = now + LEGACY_RECONCILE_MS;
+  await storage.put(migrationKey, { nextReconcileAt });
+  return { pending: false, nextReconcileAt };
+}
+
+async function ensureExpiryLifecycle(
+  storage: DurableObjectStorage,
+  namespace: string,
+): Promise<void> {
+  const now = Date.now();
+  const cursor = await storage.get<LegacyExpiryCursor>(expiryMigrationKey(namespace));
+  const nextExpiry = await nextExpiryDeadline(storage, namespace, now);
+  await scheduleEarlierAlarm(
+    storage,
+    Math.min(legacyReconcileDeadline(cursor, now), nextExpiry || Number.POSITIVE_INFINITY),
+  );
+}
+
 type PeerSessionReservation = {
   sessionId: string;
   expiresAt: number;
@@ -159,7 +395,52 @@ function isHubResultDone(row: Record<string, unknown> | undefined | null): boole
 
 function hubResultPayload(corr: string, row: Record<string, unknown> | undefined) {
   if (!row) return { status: "pending", corr };
-  return { status: "done", corr, ...row };
+  return { status: "done", corr, ...publicStoredResult(row) };
+}
+
+function publicStoredResult(row: Record<string, unknown>): Record<string, unknown> {
+  const { [STORED_RESULT_OWNER]: _owner, ...result } = row;
+  return result;
+}
+
+function boundedStoredPayload(
+  kind: "screen" | "result" | "plugin_result",
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  let bytes = DEVICE_STORED_PAYLOAD_MAX_BYTES + 1;
+  try {
+    bytes = new TextEncoder().encode(JSON.stringify(value)).byteLength;
+  } catch {
+    // Device envelopes came from JSON, but fail closed if a future caller
+    // passes a value that cannot be serialized by Durable Object storage.
+  }
+  if (bytes <= DEVICE_STORED_PAYLOAD_MAX_BYTES) return value;
+  const error = `${kind} payload exceeded the ${DEVICE_STORED_PAYLOAD_MAX_BYTES}-byte hub retention limit`;
+  if (kind === "screen") {
+    return { error, code: "STORED_PAYLOAD_TOO_LARGE", truncated: true, bytes };
+  }
+  if (kind === "plugin_result") {
+    return {
+      status: "done",
+      ok: false,
+      result: null,
+      error,
+      code: "STORED_PAYLOAD_TOO_LARGE",
+      truncated: true,
+      bytes,
+      t: value.t,
+    };
+  }
+  return {
+    ok: false,
+    exit_code: 1,
+    error,
+    stdout: "",
+    code: "STORED_PAYLOAD_TOO_LARGE",
+    truncated: true,
+    bytes,
+    t: value.t,
+  };
 }
 
 async function waitDeviceResult(
@@ -244,6 +525,20 @@ type UserRow = {
   priv?: string;
   banned?: boolean;
   bannedAt?: number;
+};
+
+type FleetSessionRow = {
+  userId: string;
+  issuedAt: number;
+  lastSeenAt: number;
+};
+
+type OAuthPendingRow = {
+  provider: "google" | "x";
+  verifier?: string;
+  bindingHash: string;
+  sourceHash?: string;
+  exp: number;
 };
 
 type SignedFleetStatement = { payload: string; sig: string };
@@ -443,8 +738,7 @@ async function handleAuthorizedOperatorRequest(
 
   if (url.pathname === "/v1/rtc/config" && request.method === "POST") {
     const body = (await request.json().catch(() => ({}))) as { device_id?: string };
-    if (!actor.kid)
-      return json({ error: "RTC requires a per-account hub token" }, 401);
+    if (!actor.kid) return json({ error: "RTC requires a per-account hub token" }, 401);
     if (!body.device_id) return json({ error: "device_id required" }, 400);
     const device = await resolveOwnedDevice(fleet, actor, body.device_id);
     if (!device) return json({ error: "not found" }, 404);
@@ -464,8 +758,7 @@ async function handleAuthorizedOperatorRequest(
       sid?: string;
       offer?: string;
     };
-    if (!actor.kid)
-      return json({ error: "RTC requires a per-account hub token" }, 401);
+    if (!actor.kid) return json({ error: "RTC requires a per-account hub token" }, 401);
     if (!body.device_id || !validRtcSid(body.sid) || !validRtcSdp(body.offer)) {
       return json({ error: "valid device_id, sid, and offer required" }, 400);
     }
@@ -491,8 +784,7 @@ async function handleAuthorizedOperatorRequest(
 
   if (url.pathname === "/v1/rtc/session" && request.method === "POST") {
     const body = (await request.json().catch(() => ({}))) as { device_id?: string; sid?: string };
-    if (!actor.kid)
-      return json({ error: "RTC requires a per-account hub token" }, 401);
+    if (!actor.kid) return json({ error: "RTC requires a per-account hub token" }, 401);
     if (!body.device_id || !validRtcSid(body.sid))
       return json({ error: "device_id and sid required" }, 400);
     const device = await resolveOwnedDevice(fleet, actor, body.device_id);
@@ -514,8 +806,7 @@ async function handleAuthorizedOperatorRequest(
 
   if (url.pathname === "/v1/rtc/cancel" && request.method === "POST") {
     const body = (await request.json().catch(() => ({}))) as { device_id?: string; sid?: string };
-    if (!actor.kid)
-      return json({ error: "RTC requires a per-account hub token" }, 401);
+    if (!actor.kid) return json({ error: "RTC requires a per-account hub token" }, 401);
     if (!body.device_id || !validRtcSid(body.sid))
       return json({ error: "device_id and sid required" }, 400);
     const device = await resolveOwnedDevice(fleet, actor, body.device_id);
@@ -554,9 +845,7 @@ async function handleAuthorizedOperatorRequest(
   }
 
   if (url.pathname === "/v1/list_computers" && request.method === "POST") {
-    return fleet.fetch(
-      new Request(`https://fleet/list?user=${encodeURIComponent(actor.id)}`),
-    );
+    return fleet.fetch(new Request(`https://fleet/list?user=${encodeURIComponent(actor.id)}`));
   }
 
   if (url.pathname === "/v1/set_computer_alias" && request.method === "POST") {
@@ -622,8 +911,7 @@ async function handleAuthorizedOperatorRequest(
     const reference = String(body.device_id ?? "");
     const operation = String(body.operation ?? "");
     const pluginId = String(body.plugin_id ?? "");
-    if (!reference || !operation)
-      return json({ error: "device_id and operation required" }, 400);
+    if (!reference || !operation) return json({ error: "device_id and operation required" }, 400);
     const device = await resolveOwnedDevice(fleet, actor, reference);
     if (!device) return json({ error: "not found" }, 404);
     if (!normalizeCaps(device.caps).includes("plugins")) {
@@ -935,10 +1223,7 @@ export class RevocationDO implements DurableObject {
     // DeviceDO. A malformed entry fails only its own leaf after siblings have
     // been attempted; it must never suppress the rest of the fleet.
     const devices: unknown[] = Array.isArray(body.devices) ? [...new Set(body.devices)] : [];
-    if (
-      !/^[a-zA-Z0-9._:-]{1,160}$/.test(job) ||
-      !/^[a-zA-Z0-9.:-]{1,160}$/.test(node)
-    ) {
+    if (!/^[a-zA-Z0-9._:-]{1,160}$/.test(job) || !/^[a-zA-Z0-9.:-]{1,160}$/.test(node)) {
       return json({ error: "invalid revocation batch" }, 400);
     }
     if (devices.length === 0) return json({ ok: true, count: 0 });
@@ -973,9 +1258,7 @@ export class RevocationDO implements DurableObject {
     const settled = await Promise.allSettled(
       groups.map(async (group, index) => {
         const child = `${node}.${index}`;
-        const stub = this.env.REVOCATION.get(
-          this.env.REVOCATION.idFromName(`${job}:${child}`),
-        );
+        const stub = this.env.REVOCATION.get(this.env.REVOCATION.idFromName(`${job}:${child}`));
         const response = await stub.fetch(
           new Request("https://revocation/kick-tree", {
             method: "POST",
@@ -997,6 +1280,7 @@ export class FleetDO implements DurableObject {
   ctx: DurableObjectState;
   env: Env;
   private userMutationTails = new Map<string, Promise<void>>();
+  private lifecycleScheduled = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
@@ -1004,6 +1288,7 @@ export class FleetDO implements DurableObject {
   }
 
   async fetch(request: Request): Promise<Response> {
+    await this.ensureFleetLifecycle();
     const url = new URL(request.url);
     if (url.pathname === "/list") {
       const user = url.searchParams.get("user");
@@ -1066,37 +1351,105 @@ export class FleetDO implements DurableObject {
       return this.oauthUser(body.email ?? "", body.provider ?? "oauth");
     }
     if (url.pathname === "/oauth-pending" && request.method === "POST") {
-      const body = (await request.json()) as {
+      const body = (await request.json().catch(() => ({}))) as {
         state?: string;
         provider?: "google" | "x";
         verifier?: string;
         exp?: number;
+        binding_hash?: string;
+        source_hash?: string;
       };
-      if (!body.state || !body.provider) return json({ error: "bad pending" }, 400);
-      await this.ctx.storage.put(`oauth:${body.state}`, {
-        provider: body.provider,
-        verifier: body.verifier,
-        exp: body.exp ?? Date.now() + 600_000,
+      const state = String(body.state ?? "");
+      const bindingHash = String(body.binding_hash ?? "");
+      const sourceHash = String(body.source_hash ?? "");
+      if (
+        !/^[a-zA-Z0-9_-]{32,128}$/.test(state) ||
+        (body.provider !== "google" && body.provider !== "x") ||
+        !/^[a-zA-Z0-9_-]{43}$/.test(bindingHash) ||
+        !/^[a-zA-Z0-9_-]{43}$/.test(sourceHash)
+      ) {
+        return json({ error: "bad pending" }, 400);
+      }
+      const now = Date.now();
+      const exp = Math.min(
+        Number(body.exp) || now + OAUTH_PENDING_TTL_MS,
+        now + OAUTH_PENDING_TTL_MS,
+      );
+      if (exp <= now) return json({ error: "bad pending" }, 400);
+      const pending = await this.ctx.storage.transaction(async (txn) => {
+        const rows = await txn.list<OAuthPendingRow>({
+          prefix: "oauth:",
+          limit: OAUTH_PENDING_LIMIT + 1,
+        });
+        let live = 0;
+        let liveForSource = 0;
+        for (const [key, row] of rows) {
+          if (!row || !Number.isFinite(row.exp) || row.exp <= now) {
+            const meta = await txn.get<ExpiryMeta>(expiryMetaKey(FLEET_EXPIRY_NAMESPACE, key));
+            if (meta?.indexKey) await txn.delete(meta.indexKey);
+            await txn.delete(expiryMetaKey(FLEET_EXPIRY_NAMESPACE, key));
+            await txn.delete(key);
+            continue;
+          }
+          if (key !== `oauth:${state}`) {
+            live += 1;
+            if (row.sourceHash === sourceHash) liveForSource += 1;
+          }
+        }
+        if (live >= OAUTH_PENDING_LIMIT || liveForSource >= OAUTH_PENDING_SOURCE_LIMIT) {
+          return false;
+        }
+        const currentAlarm = await txn.getAlarm();
+        if (currentAlarm == null || exp < currentAlarm) await txn.setAlarm(exp);
+        const key = `oauth:${state}`;
+        const metaKey = expiryMetaKey(FLEET_EXPIRY_NAMESPACE, key);
+        const old = await txn.get<ExpiryMeta>(metaKey);
+        if (old?.indexKey) await txn.delete(old.indexKey);
+        const indexKey = expiryIndexKey(FLEET_EXPIRY_NAMESPACE, exp);
+        await txn.put({
+          [key]: {
+            provider: body.provider,
+            verifier: body.verifier,
+            bindingHash,
+            sourceHash,
+            exp,
+          } satisfies OAuthPendingRow,
+          [metaKey]: { expiresAt: exp, indexKey } satisfies ExpiryMeta,
+          [indexKey]: key,
+        });
+        return true;
       });
+      if (!pending) return json({ error: "too many pending OAuth attempts" }, 429);
       return json({ ok: true });
     }
     if (url.pathname === "/oauth-pending" && request.method === "GET") {
       const state = url.searchParams.get("state") ?? "";
-      const row = await this.ctx.storage.get<{
-        provider: "google" | "x";
-        verifier?: string;
-        exp: number;
-      }>(`oauth:${state}`);
-      if (state) await this.ctx.storage.delete(`oauth:${state}`);
-      if (!row) return json({ error: "missing" }, 404);
-      return json(row);
+      const bindingHash = url.searchParams.get("binding_hash") ?? "";
+      if (!/^[a-zA-Z0-9_-]{32,128}$/.test(state) || !/^[a-zA-Z0-9_-]{43}$/.test(bindingHash)) {
+        return json({ error: "missing" }, 404);
+      }
+      const key = `oauth:${state}`;
+      const row = await getExpiring<OAuthPendingRow>(
+        this.ctx.storage,
+        FLEET_EXPIRY_NAMESPACE,
+        key,
+        (value, now) => Math.min(Number(value?.exp) || now, now + OAUTH_PENDING_TTL_MS),
+      );
+      if (!row || row.exp <= Date.now() || row.bindingHash !== bindingHash) {
+        if (row?.exp && row.exp <= Date.now()) {
+          await deleteExpiring(this.ctx.storage, FLEET_EXPIRY_NAMESPACE, key);
+        }
+        return json({ error: "missing" }, 404);
+      }
+      await deleteExpiring(this.ctx.storage, FLEET_EXPIRY_NAMESPACE, key);
+      return json({ provider: row.provider, verifier: row.verifier, exp: row.exp });
     }
     if ((url.pathname === "/register" || url.pathname === "/login") && request.method === "POST") {
       return json({ error: "email login disabled" }, 404);
     }
     if (url.pathname === "/logout" && request.method === "POST") {
       const sid = cookie(request, "fleet_session");
-      if (sid) await this.ctx.storage.delete(`sess:${sid}`);
+      if (sid) await deleteExpiring(this.ctx.storage, FLEET_EXPIRY_NAMESPACE, `sess:${sid}`);
       return json({ ok: true });
     }
     if (url.pathname === "/resolve") {
@@ -1130,10 +1483,7 @@ export class FleetDO implements DurableObject {
         user_id?: unknown;
         session_id?: unknown;
       };
-      return this.reservePeerSession(
-        String(body.user_id ?? ""),
-        String(body.session_id ?? ""),
-      );
+      return this.reservePeerSession(String(body.user_id ?? ""), String(body.session_id ?? ""));
     }
     if (url.pathname === "/token-meta") {
       const userId = url.searchParams.get("user") ?? "";
@@ -1189,6 +1539,60 @@ export class FleetDO implements DurableObject {
       });
     }
     return json({ error: "not found" }, 404);
+  }
+
+  async alarm(): Promise<void> {
+    const now = Date.now();
+    const migration = await adoptLegacyExpiryRows(
+      this.ctx.storage,
+      FLEET_EXPIRY_NAMESPACE,
+      [
+        {
+          prefix: "sess:",
+          expiresAt: (value, observedAt) => {
+            if (value && typeof value === "object" && !Array.isArray(value)) {
+              const row = value as Partial<FleetSessionRow>;
+              const absolute = Number(row.issuedAt) + FLEET_SESSION_MAX_AGE_MS;
+              const idle = Number(row.lastSeenAt) + FLEET_SESSION_IDLE_MS;
+              if (Number.isFinite(absolute) && Number.isFinite(idle))
+                return Math.min(absolute, idle);
+            }
+            return observedAt + FLEET_SESSION_MAX_AGE_MS;
+          },
+        },
+        {
+          prefix: "oauth:",
+          expiresAt: (value, observedAt) => {
+            const exp = Number(
+              value && typeof value === "object" && !Array.isArray(value)
+                ? (value as { exp?: unknown }).exp
+                : 0,
+            );
+            return Number.isFinite(exp) && exp > 0
+              ? Math.min(exp, observedAt + OAUTH_PENDING_TTL_MS)
+              : observedAt + 1;
+          },
+        },
+      ],
+      now,
+    );
+    const nextExpiry = await sweepExpiryIndex(this.ctx.storage, FLEET_EXPIRY_NAMESPACE, now);
+    const next = Math.min(
+      migration.pending ? now + 1 : migration.nextReconcileAt,
+      nextExpiry || Number.POSITIVE_INFINITY,
+    );
+    await this.ctx.storage.setAlarm(next);
+  }
+
+  private async ensureFleetLifecycle(): Promise<void> {
+    if (this.lifecycleScheduled) return;
+    try {
+      await ensureExpiryLifecycle(this.ctx.storage, FLEET_EXPIRY_NAMESPACE);
+      this.lifecycleScheduled = true;
+    } catch (error) {
+      this.lifecycleScheduled = false;
+      throw error;
+    }
   }
 
   async claimDevice(row: DeviceRow, kid: string): Promise<Response> {
@@ -1271,17 +1675,17 @@ export class FleetDO implements DurableObject {
       });
       return { ok: true as const, stale: false };
     });
-    return result.ok ? json({ ok: true, stale: result.stale }) : json({ error: result.error }, result.status);
+    return result.ok
+      ? json({ ok: true, stale: result.stale })
+      : json({ error: result.error }, result.status);
   }
 
   async writeDevice(
     storage: DeviceCatalogAccess,
     row: DeviceRow,
-  ): Promise<
-    | { ok: true; device: DeviceRow }
-    | { ok: false; status: 400 | 409; error: string }
-  > {
-    if (!validDeviceId(row.id)) return { ok: false, status: 400, error: "valid device id required" };
+  ): Promise<{ ok: true; device: DeviceRow } | { ok: false; status: 400 | 409; error: string }> {
+    if (!validDeviceId(row.id))
+      return { ok: false, status: 400, error: "valid device id required" };
     const prev = await storage.get<DeviceRow>(deviceCatalogKey(row.id));
     if (deviceOwnerConflict(prev?.userId, row.userId)) {
       return { ok: false, status: 409, error: "taken" };
@@ -1314,14 +1718,8 @@ export class FleetDO implements DurableObject {
     }));
   }
 
-  private async reservePeerSession(
-    userId: string,
-    sessionId: string,
-  ): Promise<Response> {
-    if (
-      !/^[a-zA-Z0-9._:@-]{1,128}$/.test(userId) ||
-      !validPeerSessionId(sessionId)
-    ) {
+  private async reservePeerSession(userId: string, sessionId: string): Promise<Response> {
+    if (!/^[a-zA-Z0-9._:@-]{1,128}$/.test(userId) || !validPeerSessionId(sessionId)) {
       return json({ error: "invalid peer session reservation" }, 400);
     }
 
@@ -1333,9 +1731,9 @@ export class FleetDO implements DurableObject {
         (item): item is PeerSessionReservation =>
           Boolean(
             item &&
-              validPeerSessionId(item.sessionId) &&
-              Number.isFinite(item.expiresAt) &&
-              item.expiresAt > now,
+            validPeerSessionId(item.sessionId) &&
+            Number.isFinite(item.expiresAt) &&
+            item.expiresAt > now,
           ),
       );
       const known = current.find((item) => item.sessionId === sessionId);
@@ -1386,11 +1784,52 @@ export class FleetDO implements DurableObject {
   async resolve(request: Request): Promise<Actor | null> {
     const sid = cookie(request, "fleet_session");
     if (sid) {
-      const userId = await this.ctx.storage.get<string>(`sess:${sid}`);
-      if (userId) {
-        const email = await this.ctx.storage.get<string>(`id:${userId}`);
-        const user = email ? await this.ctx.storage.get<UserRow>(`u:${email}`) : null;
-        if (user) return { id: user.id, email: user.email, banned: Boolean(user.banned) };
+      const key = `sess:${sid}`;
+      const stored = await this.ctx.storage.get<string | FleetSessionRow>(key);
+      const now = Date.now();
+      const row: FleetSessionRow | null =
+        typeof stored === "string"
+          ? { userId: stored, issuedAt: now, lastSeenAt: now }
+          : stored &&
+              typeof stored.userId === "string" &&
+              Number.isFinite(stored.issuedAt) &&
+              Number.isFinite(stored.lastSeenAt)
+            ? stored
+            : null;
+      if (!row) {
+        if (stored !== undefined) {
+          await deleteExpiring(this.ctx.storage, FLEET_EXPIRY_NAMESPACE, key);
+        }
+        return null;
+      }
+      const deadline = Math.min(
+        row.issuedAt + FLEET_SESSION_MAX_AGE_MS,
+        row.lastSeenAt + FLEET_SESSION_IDLE_MS,
+      );
+      if (deadline <= now) {
+        await deleteExpiring(this.ctx.storage, FLEET_EXPIRY_NAMESPACE, key);
+        return null;
+      }
+      const email = await this.ctx.storage.get<string>(`id:${row.userId}`);
+      const user = email ? await this.ctx.storage.get<UserRow>(`u:${email}`) : null;
+      if (!user) {
+        await deleteExpiring(this.ctx.storage, FLEET_EXPIRY_NAMESPACE, key);
+        return null;
+      }
+      if (typeof stored === "string" || now - row.lastSeenAt >= FLEET_SESSION_TOUCH_MS) {
+        const next = { ...row, lastSeenAt: now };
+        await putExpiring(
+          this.ctx.storage,
+          FLEET_EXPIRY_NAMESPACE,
+          key,
+          next,
+          Math.min(next.issuedAt + FLEET_SESSION_MAX_AGE_MS, now + FLEET_SESSION_IDLE_MS),
+        );
+      } else if (!(await this.ctx.storage.get(expiryMetaKey(FLEET_EXPIRY_NAMESPACE, key)))) {
+        await putExpiring(this.ctx.storage, FLEET_EXPIRY_NAMESPACE, key, row, deadline);
+      }
+      if (user) {
+        return { id: user.id, email: user.email, banned: Boolean(user.banned) };
       }
     }
     return null;
@@ -1611,9 +2050,7 @@ export class FleetDO implements DurableObject {
     const devices = await this.list(userId);
     if (devices.length === 0) return;
     const job = crypto.randomUUID();
-    const root = this.env.REVOCATION.get(
-      this.env.REVOCATION.idFromName(`${job}:root`),
-    );
+    const root = this.env.REVOCATION.get(this.env.REVOCATION.idFromName(`${job}:root`));
     const response = await root.fetch(
       new Request("https://revocation/kick-tree", {
         method: "POST",
@@ -1732,7 +2169,14 @@ export class FleetDO implements DurableObject {
     const banned = rejectIfBanned(user);
     if (banned) return json({ error: banned.error }, banned.status);
     const sid = crypto.randomUUID() + crypto.randomUUID();
-    await this.ctx.storage.put(`sess:${sid}`, user.id);
+    const now = Date.now();
+    await putExpiring(
+      this.ctx.storage,
+      FLEET_EXPIRY_NAMESPACE,
+      `sess:${sid}`,
+      { userId: user.id, issuedAt: now, lastSeenAt: now } satisfies FleetSessionRow,
+      now + FLEET_SESSION_IDLE_MS,
+    );
     const res = json({ id: user.id, email: user.email });
     return withCookies(
       res,
@@ -1763,6 +2207,13 @@ type McpHttpStoredSession = {
 };
 
 const MCP_HTTP_STORAGE_KEY = "http:session";
+// Meaningful activity is durably coalesced for five minutes, so idle cleanup
+// has a matching five-minute grace. Absolute max-age remains exact.
+const MCP_HTTP_DURABLE_IDLE_MS = MCP_SESSION_IDLE_MS + MCP_HTTP_TOUCH_MS;
+
+function sameMcpOperatorState(left: McpOperatorState, right: McpOperatorState): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
 
 export class McpDO implements DurableObject {
   ctx: DurableObjectState;
@@ -1773,6 +2224,8 @@ export class McpDO implements DurableObject {
   private fingerprint = "";
   private httpSession: McpRpcSession | null = null;
   private httpStored: McpHttpStoredSession | null = null;
+  private httpPersistedActivityAt = 0;
+  private httpInFlight = 0;
 
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
@@ -1829,9 +2282,9 @@ export class McpDO implements DurableObject {
         operatorState: {},
       };
       this.httpSession = this.newHttpSession(this.httpStored);
-      await this.ctx.storage.put(MCP_HTTP_STORAGE_KEY, this.httpStored);
-      const response = await this.httpSession.dispatch(message, () => this.authorize());
-      await this.persistHttpSession(message.method);
+      await this.storeHttpSession();
+      this.httpPersistedActivityAt = now;
+      const response = await this.dispatchHttpMessage(message);
       return response ? json(response) : jsonRpcError(null, -32603, "initialize failed", 500);
     }
 
@@ -1840,8 +2293,7 @@ export class McpDO implements DurableObject {
       const message = (await request.json().catch(() => null)) as JsonRpcMessage | null;
       if (!isJsonRpcMessage(message))
         return jsonRpcError(null, -32700, "invalid JSON-RPC message", 400);
-      const response = await this.httpSession!.dispatch(message, () => this.authorize());
-      await this.persistHttpSession(message.method);
+      const response = await this.dispatchHttpMessage(message);
       return response ? json(response) : new Response(null, { status: 202, headers: CORS });
     }
 
@@ -1850,8 +2302,10 @@ export class McpDO implements DurableObject {
         return json({ error: "MCP session not found" }, 404);
       }
       await this.ctx.storage.delete(MCP_HTTP_STORAGE_KEY);
+      await this.ctx.storage.deleteAlarm();
       this.httpSession = null;
       this.httpStored = null;
+      this.httpPersistedActivityAt = 0;
       this.actor = null;
       this.kid = "";
       this.fingerprint = "";
@@ -1859,6 +2313,40 @@ export class McpDO implements DurableObject {
     }
 
     return new Response(null, { status: 405, headers: { allow: "GET, POST, DELETE" } });
+  }
+
+  async alarm(): Promise<void> {
+    const durable = await this.ctx.storage.get<McpHttpStoredSession>(MCP_HTTP_STORAGE_KEY);
+    const stored = this.httpStored ?? durable;
+    if (!durable || !stored) {
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    const now = Date.now();
+    const absoluteExpiresAt = stored.openedAt + MCP_SESSION_MAX_AGE_MS;
+    // Absolute max-age is deliberately a hard cut, even for an in-flight call.
+    if (now >= absoluteExpiresAt) {
+      await this.clearHttpSession();
+      return;
+    }
+    if (this.httpInFlight > 0) {
+      await this.ctx.storage.setAlarm(Math.min(absoluteExpiresAt, now + MCP_HTTP_TOUCH_MS));
+      return;
+    }
+    if (
+      isMcpSessionExpired({
+        now,
+        expiresAt: absoluteExpiresAt,
+        lastActivityAt: stored.lastActivityAt,
+        idleMs: MCP_HTTP_DURABLE_IDLE_MS,
+      })
+    ) {
+      await this.clearHttpSession();
+      return;
+    }
+    this.httpStored = stored;
+    this.httpPersistedActivityAt = durable.lastActivityAt;
+    await this.scheduleHttpSessionAlarm();
   }
 
   private newHttpSession(stored: McpHttpStoredSession): McpRpcSession {
@@ -1880,18 +2368,23 @@ export class McpDO implements DurableObject {
         now: Date.now(),
         expiresAt: stored.openedAt + MCP_SESSION_MAX_AGE_MS,
         lastActivityAt: stored.lastActivityAt,
-        idleMs: MCP_SESSION_IDLE_MS,
+        idleMs: MCP_HTTP_DURABLE_IDLE_MS,
       })
     ) {
       await this.ctx.storage.delete(MCP_HTTP_STORAGE_KEY);
+      await this.ctx.storage.deleteAlarm();
       this.httpStored = null;
       this.httpSession = null;
+      this.httpPersistedActivityAt = 0;
       this.actor = null;
       this.kid = "";
       this.fingerprint = "";
       return false;
     }
     this.httpStored = stored;
+    if (this.httpPersistedActivityAt === 0) {
+      this.httpPersistedActivityAt = stored.lastActivityAt;
+    }
     this.actor = { id: stored.actorId, kid: stored.kid };
     this.kid = stored.kid;
     this.fingerprint = stored.fingerprint;
@@ -1899,11 +2392,79 @@ export class McpDO implements DurableObject {
     return true;
   }
 
-  private async persistHttpSession(method: string | undefined): Promise<void> {
+  private async dispatchHttpMessage(message: JsonRpcMessage): Promise<JsonRpcMessage | null> {
+    if (!this.httpStored || !this.httpSession) return null;
+    const meaningful = isMcpActivity(message.method);
+    const beforeState = this.httpSession.getState();
+    if (meaningful) {
+      this.httpInFlight += 1;
+      try {
+        await this.touchHttpSessionBeforeDispatch();
+      } catch (error) {
+        this.httpInFlight -= 1;
+        throw error;
+      }
+    }
+    let response: JsonRpcMessage | null;
+    try {
+      response = await this.httpSession.dispatch(message, () => this.authorize());
+    } finally {
+      if (meaningful) this.httpInFlight -= 1;
+    }
+    if (meaningful) await this.persistHttpStateChange(beforeState);
+    return response;
+  }
+
+  private async touchHttpSessionBeforeDispatch(): Promise<void> {
     if (!this.httpStored || !this.httpSession) return;
-    if (isMcpActivity(method)) this.httpStored.lastActivityAt = Date.now();
+    const now = Date.now();
+    this.httpStored.lastActivityAt = now;
+    if (now - this.httpPersistedActivityAt < MCP_HTTP_TOUCH_MS) return;
     this.httpStored.operatorState = this.httpSession.getState();
-    await this.ctx.storage.put(MCP_HTTP_STORAGE_KEY, this.httpStored);
+    await this.storeHttpSession();
+    this.httpPersistedActivityAt = now;
+  }
+
+  private async persistHttpStateChange(beforeState: McpOperatorState): Promise<void> {
+    if (!this.httpStored || !this.httpSession) return;
+    const afterState = this.httpSession.getState();
+    if (sameMcpOperatorState(beforeState, afterState)) return;
+    this.httpStored.operatorState = afterState;
+    await this.storeHttpSession();
+    this.httpPersistedActivityAt = this.httpStored.lastActivityAt;
+  }
+
+  private async storeHttpSession(): Promise<void> {
+    if (!this.httpStored) return;
+    const stored = this.httpStored;
+    const alarmAt = this.httpSessionAlarmAt(stored);
+    await this.ctx.storage.transaction(async (txn) => {
+      await txn.put(MCP_HTTP_STORAGE_KEY, stored);
+      await txn.setAlarm(alarmAt);
+    });
+  }
+
+  private httpSessionAlarmAt(stored: McpHttpStoredSession): number {
+    return Math.min(
+      stored.openedAt + MCP_SESSION_MAX_AGE_MS,
+      stored.lastActivityAt + MCP_HTTP_DURABLE_IDLE_MS,
+    );
+  }
+
+  private async scheduleHttpSessionAlarm(): Promise<void> {
+    if (!this.httpStored) return;
+    await this.ctx.storage.setAlarm(this.httpSessionAlarmAt(this.httpStored));
+  }
+
+  private async clearHttpSession(): Promise<void> {
+    await this.ctx.storage.delete(MCP_HTTP_STORAGE_KEY);
+    await this.ctx.storage.deleteAlarm();
+    this.httpStored = null;
+    this.httpSession = null;
+    this.httpPersistedActivityAt = 0;
+    this.actor = null;
+    this.kid = "";
+    this.fingerprint = "";
   }
 
   private async authorize(): Promise<void> {
@@ -1944,6 +2505,7 @@ export class McpDO implements DurableObject {
 export class DeviceDO implements DurableObject {
   ctx: DurableObjectState;
   env: Env;
+  private lifecycleScheduled = false;
   private beatSeq = 0;
   private beatWaiters: Array<() => void> = [];
   private desktopWaiters = new Map<
@@ -1968,6 +2530,7 @@ export class DeviceDO implements DurableObject {
   }
 
   async fetch(request: Request): Promise<Response> {
+    await this.ensureDeviceLifecycle();
     const url = new URL(request.url);
 
     if (url.pathname === "/kick" && request.method === "POST") {
@@ -2144,9 +2707,7 @@ export class DeviceDO implements DurableObject {
         createdAt: now,
         exp: now + RTC_SIGNAL_TTL_MS,
       };
-      await this.ctx.storage.put(`rtc:${sid}`, row);
-      const alarm = await this.ctx.storage.getAlarm();
-      if (alarm == null || row.exp < alarm) await this.ctx.storage.setAlarm(row.exp);
+      await this.putDeviceExpiry(`rtc:${sid}`, row, row.exp);
       ws.send(
         JSON.stringify(
           envelope("rtc_offer", {
@@ -2163,7 +2724,11 @@ export class DeviceDO implements DurableObject {
     if (url.pathname === "/rtc-session" && request.method === "POST") {
       const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
       const sid = String(body.sid ?? "");
-      const row = validRtcSid(sid) ? await this.ctx.storage.get<RtcSignalRow>(`rtc:${sid}`) : null;
+      const row = validRtcSid(sid)
+        ? await this.getDeviceExpiry<RtcSignalRow>(`rtc:${sid}`, (value, now) =>
+            Math.min(Number(value?.exp) || now, now + RTC_SIGNAL_TTL_MS),
+          )
+        : null;
       if (!row || row.exp < Date.now()) return json({ error: "RTC session not found" }, 404);
       if (!sameRtcOwner(row, body)) return json({ error: "RTC session not found" }, 404);
       if (!row.answer || !row.ticket) return json({ sid, status: "waiting" });
@@ -2179,12 +2744,16 @@ export class DeviceDO implements DurableObject {
     if (url.pathname === "/rtc-cancel" && request.method === "POST") {
       const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
       const sid = String(body.sid ?? "");
-      const row = validRtcSid(sid) ? await this.ctx.storage.get<RtcSignalRow>(`rtc:${sid}`) : null;
+      const row = validRtcSid(sid)
+        ? await this.getDeviceExpiry<RtcSignalRow>(`rtc:${sid}`, (value, now) =>
+            Math.min(Number(value?.exp) || now, now + RTC_SIGNAL_TTL_MS),
+          )
+        : null;
       if (!row || !sameRtcOwner(row, body)) return json({ ok: true });
       for (const ws of this.ctx.getWebSockets()) {
         ws.send(JSON.stringify(envelope("rtc_cancel", { sid })));
       }
-      await this.ctx.storage.delete(`rtc:${sid}`);
+      await this.deleteDeviceExpiry(`rtc:${sid}`);
       return json({ ok: true });
     }
 
@@ -2216,10 +2785,7 @@ export class DeviceDO implements DurableObject {
       );
       const waitMs = clampHubWaitMs(body.wait_ms);
       if (waitMs <= 0) return json({ corr, status: "running" });
-      const row = await waitDeviceResult(
-        () => this.ctx.storage.get<Record<string, unknown>>(`res:${corr}`),
-        waitMs,
-      );
+      const row = await waitDeviceResult(() => this.readStoredResult(corr), waitMs);
       return json(hubResultPayload(corr, row));
     }
 
@@ -2230,7 +2796,11 @@ export class DeviceDO implements DurableObject {
       const fp = deviceFingerprint(request);
       const corr = crypto.randomUUID();
       await this.claimSession(fp, corr);
-      await this.ctx.storage.put(`res:${corr}`, { status: "pending" });
+      await this.putDeviceExpiry(
+        `res:${corr}`,
+        { status: "pending" },
+        Date.now() + DEVICE_ACTIVE_SESSION_TTL_MS,
+      );
       sockets[0]!.send(JSON.stringify(envelope("plugin", body, corr)));
       return json({ corr, status: "pending" });
     }
@@ -2240,9 +2810,11 @@ export class DeviceDO implements DurableObject {
       const fp = deviceFingerprint(request);
       const resolved = await this.resolveSession(fp, corr);
       if (resolved.drop || !resolved.corr) return json({ corr, status: "pending" });
-      const row = await this.ctx.storage.get<Record<string, unknown>>(`res:${resolved.corr}`);
+      const row = await this.readStoredResult(resolved.corr);
       return json(
-        row ? { corr: resolved.corr, ...row } : { corr: resolved.corr, status: "pending" },
+        row
+          ? { corr: resolved.corr, ...publicStoredResult(row) }
+          : { corr: resolved.corr, status: "pending" },
       );
     }
 
@@ -2281,7 +2853,11 @@ export class DeviceDO implements DurableObject {
           JSON.stringify(envelope("read_screen", withFingerprint({ corr }, fp), corr)),
         );
       }
-      const owned = (await this.ctx.storage.get<Record<string, unknown>>(`screen:${corr}`)) ?? null;
+      const owned =
+        (await this.getDeviceExpiry<Record<string, unknown>>(
+          `screen:${corr}`,
+          (_value, now) => now + DEVICE_SCREEN_TTL_MS,
+        )) ?? null;
       return json({ status: owned ? "ok" : "empty", screen: owned });
     }
 
@@ -2301,11 +2877,8 @@ export class DeviceDO implements DurableObject {
       const waitMs = clampHubWaitMs(url.searchParams.get("wait_ms"));
       const row =
         waitMs > 0
-          ? await waitDeviceResult(
-              () => this.ctx.storage.get<Record<string, unknown>>(`res:${corr}`),
-              waitMs,
-            )
-          : await this.ctx.storage.get<Record<string, unknown>>(`res:${corr}`);
+          ? await waitDeviceResult(() => this.readStoredResult(corr), waitMs)
+          : await this.readStoredResult(corr);
       return json(hubResultPayload(corr, row));
     }
 
@@ -2356,6 +2929,7 @@ export class DeviceDO implements DurableObject {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
+    await this.ensureDeviceLifecycle();
     if (typeof message !== "string") return;
     if (message.length > DEVICE_WS_TEXT_MAX_BYTES) {
       ws.close(1009, "frame too large");
@@ -2461,7 +3035,11 @@ export class DeviceDO implements DurableObject {
     if (parsed.type === "rtc_answer") {
       const sid = String(parsed.body?.sid ?? "");
       const answer = String(parsed.body?.answer ?? "");
-      const row = validRtcSid(sid) ? await this.ctx.storage.get<RtcSignalRow>(`rtc:${sid}`) : null;
+      const row = validRtcSid(sid)
+        ? await this.getDeviceExpiry<RtcSignalRow>(`rtc:${sid}`, (value, now) =>
+            Math.min(Number(value?.exp) || now, now + RTC_SIGNAL_TTL_MS),
+          )
+        : null;
       if (!row || row.exp < Date.now() || !validRtcSdp(answer)) return;
       if (row.userId !== att.userId || row.kid !== att.kid || row.deviceId !== att.deviceId) return;
       const offerFp = rtcFingerprint(row.offer);
@@ -2488,14 +3066,14 @@ export class DeviceDO implements DurableObject {
       if (!value.statement) return;
       row.answer = answer;
       row.ticket = value.statement;
-      await this.ctx.storage.put(`rtc:${sid}`, row);
+      await this.putDeviceExpiry(`rtc:${sid}`, row, row.exp);
       ws.send(JSON.stringify(envelope("rtc_ticket", { sid, statement: row.ticket })));
       return;
     }
 
     if (parsed.type === "rtc_closed") {
       const sid = String(parsed.body?.sid ?? "");
-      if (validRtcSid(sid)) await this.ctx.storage.delete(`rtc:${sid}`);
+      if (validRtcSid(sid)) await this.deleteDeviceExpiry(`rtc:${sid}`);
       return;
     }
 
@@ -2539,60 +3117,107 @@ export class DeviceDO implements DurableObject {
     }
 
     if (parsed.type === "screen") {
-      await this.ctx.storage.put("screen:last", parsed.body);
-      if (parsed.corr) await this.ctx.storage.put(`screen:${parsed.corr}`, parsed.body);
+      if (parsed.corr) {
+        await this.putScreen(parsed.corr, boundedStoredPayload("screen", parsed.body));
+      }
       return;
     }
 
     if (parsed.type === "accepted" && parsed.corr) {
-      await this.ctx.storage.put(`res:${parsed.corr}`, {
-        status: "running",
-        pane_id: parsed.body.pane_id,
-      });
+      await this.putDeviceExpiry(
+        `res:${parsed.corr}`,
+        { status: "running", pane_id: parsed.body.pane_id },
+        Date.now() + DEVICE_ACTIVE_SESSION_TTL_MS,
+      );
       return;
     }
 
     if (parsed.type === "plugin_accepted" && parsed.corr) {
-      await this.ctx.storage.put(`res:${parsed.corr}`, { status: parsed.body.status ?? "running" });
+      await this.putDeviceExpiry(
+        `res:${parsed.corr}`,
+        { status: parsed.body.status ?? "running" },
+        Date.now() + DEVICE_ACTIVE_SESSION_TTL_MS,
+      );
       return;
     }
 
     if (parsed.type === "plugin_result" && parsed.corr) {
-      await this.ctx.storage.put(`res:${parsed.corr}`, {
+      const stored = boundedStoredPayload("plugin_result", {
         status: "done",
         ok: parsed.body.ok ?? false,
         result: parsed.body.result,
         error: parsed.body.error ?? "",
         t: parsed.t,
       });
+      await this.putDeviceExpiry(`res:${parsed.corr}`, stored, Date.now() + DEVICE_RESULT_TTL_MS);
       await this.finishSession(parsed.corr);
       return;
     }
 
     if (parsed.type === "result" && parsed.corr) {
-      await this.ctx.storage.put(`res:${parsed.corr}`, {
+      const stored = boundedStoredPayload("result", {
         ok: parsed.body.ok ?? false,
         exit_code: parsed.body.exit_code ?? 1,
         error: parsed.body.error ?? "",
         stdout: parsed.body.stdout ?? "",
         t: parsed.t,
       });
+      await this.putDeviceExpiry(`res:${parsed.corr}`, stored, Date.now() + DEVICE_RESULT_TTL_MS);
       await this.finishSession(parsed.corr);
     }
   }
 
   async alarm() {
     const now = Date.now();
-    const sessions = await this.ctx.storage.list<RtcSignalRow>({ prefix: "rtc:" });
-    let next = 0;
-    for (const [key, row] of sessions) {
-      if (!row || row.exp <= now) {
-        await this.ctx.storage.delete(key);
-        continue;
-      }
-      if (next === 0 || row.exp < next) next = row.exp;
-    }
-    if (next > 0) await this.ctx.storage.setAlarm(next);
+    const migration = await adoptLegacyExpiryRows(
+      this.ctx.storage,
+      DEVICE_EXPIRY_NAMESPACE,
+      [
+        {
+          prefix: "res:",
+          expiresAt: (value, observedAt) =>
+            isHubResultDone(value as Record<string, unknown> | null)
+              ? observedAt + DEVICE_RESULT_TTL_MS
+              : observedAt + DEVICE_ACTIVE_SESSION_TTL_MS,
+        },
+        {
+          prefix: "screen:",
+          expiresAt: (_value, observedAt) => observedAt + DEVICE_SCREEN_TTL_MS,
+        },
+        {
+          prefix: "own:",
+          expiresAt: (_value, observedAt) => observedAt + DEVICE_ACTIVE_SESSION_TTL_MS,
+        },
+        {
+          prefix: "live:",
+          expiresAt: (_value, observedAt) => observedAt + DEVICE_ACTIVE_SESSION_TTL_MS,
+        },
+        {
+          prefix: "alive:",
+          expiresAt: (_value, observedAt) => observedAt + DEVICE_ACTIVE_SESSION_TTL_MS,
+        },
+        {
+          prefix: "rtc:",
+          expiresAt: (value, observedAt) => {
+            const exp = Number(
+              value && typeof value === "object" && !Array.isArray(value)
+                ? (value as { exp?: unknown }).exp
+                : 0,
+            );
+            return Number.isFinite(exp) && exp > 0
+              ? Math.min(exp, observedAt + RTC_SIGNAL_TTL_MS)
+              : observedAt + 1;
+          },
+        },
+      ],
+      now,
+    );
+    const nextExpiry = await sweepExpiryIndex(this.ctx.storage, DEVICE_EXPIRY_NAMESPACE, now);
+    const next = Math.min(
+      migration.pending ? now + 1 : migration.nextReconcileAt,
+      nextExpiry || Number.POSITIVE_INFINITY,
+    );
+    await this.ctx.storage.setAlarm(next);
   }
 
   async webSocketClose(ws: WebSocket) {
@@ -2649,11 +3274,7 @@ export class DeviceDO implements DurableObject {
         : parsed.type === "peer_session_signal"
           ? "signal"
           : "event";
-    const reservation = await reservePeerSession(
-      this.fleet(),
-      att.userId,
-      sessionId,
-    );
+    const reservation = await reservePeerSession(this.fleet(), att.userId, sessionId);
     if (!reservation.ok) {
       const value = (await reservation.json().catch(() => ({}))) as Record<string, unknown>;
       ws.send(
@@ -2716,11 +3337,7 @@ export class DeviceDO implements DurableObject {
     ) {
       return;
     }
-    const reservation = await reservePeerSession(
-      this.fleet(),
-      att.userId,
-      sessionId,
-    );
+    const reservation = await reservePeerSession(this.fleet(), att.userId, sessionId);
     if (!reservation.ok) return;
     const response = await this.env.PEER_SESSION.get(
       this.env.PEER_SESSION.idFromName(sessionId),
@@ -2815,28 +3432,120 @@ export class DeviceDO implements DurableObject {
     });
   }
 
+  private async ensureDeviceLifecycle(): Promise<void> {
+    if (this.lifecycleScheduled) return;
+    try {
+      await ensureExpiryLifecycle(this.ctx.storage, DEVICE_EXPIRY_NAMESPACE);
+      this.lifecycleScheduled = true;
+    } catch (error) {
+      this.lifecycleScheduled = false;
+      throw error;
+    }
+  }
+
+  private putDeviceExpiry<T>(key: string, value: T, expiresAt: number): Promise<void> {
+    return putExpiring(this.ctx.storage, DEVICE_EXPIRY_NAMESPACE, key, value, expiresAt);
+  }
+
+  private getDeviceExpiry<T>(
+    key: string,
+    legacyExpiresAt: (value: T, now: number) => number,
+  ): Promise<T | undefined> {
+    return getExpiring(this.ctx.storage, DEVICE_EXPIRY_NAMESPACE, key, legacyExpiresAt);
+  }
+
+  private deleteDeviceExpiry(key: string): Promise<void> {
+    return deleteExpiring(this.ctx.storage, DEVICE_EXPIRY_NAMESPACE, key);
+  }
+
+  private putScreen(corr: string, value: Record<string, unknown>): Promise<void> {
+    return putExpiringWithLazyRefresh(
+      this.ctx.storage,
+      DEVICE_EXPIRY_NAMESPACE,
+      `screen:${corr}`,
+      value,
+      Date.now() + DEVICE_SCREEN_TTL_MS,
+      Math.floor(DEVICE_SCREEN_TTL_MS / 2),
+    );
+  }
+
+  private readStoredResult(corr: string): Promise<Record<string, unknown> | undefined> {
+    return this.getDeviceExpiry<Record<string, unknown>>(`res:${corr}`, (value, now) =>
+      isHubResultDone(value) ? now + DEVICE_RESULT_TTL_MS : now + DEVICE_ACTIVE_SESSION_TTL_MS,
+    );
+  }
+
   private async claimSession(fp: string, corr: string) {
-    await this.ctx.storage.put(`own:${corr}`, fp);
-    await this.ctx.storage.put(`live:${fp}`, corr);
-    const alive = (await this.ctx.storage.get<string[]>(`alive:${fp}`)) ?? [];
-    if (!alive.includes(corr)) alive.push(corr);
-    await this.ctx.storage.put(`alive:${fp}`, alive);
+    const expiresAt = Date.now() + DEVICE_ACTIVE_SESSION_TTL_MS;
+    await this.putDeviceExpiry(`own:${corr}`, fp, expiresAt);
+    await this.putDeviceExpiry(`live:${fp}`, corr, expiresAt);
+    const alive =
+      (await this.getDeviceExpiry<string[]>(
+        `alive:${fp}`,
+        (_value, now) => now + DEVICE_ACTIVE_SESSION_TTL_MS,
+      )) ?? [];
+    const next = alive.filter((value) => typeof value === "string" && value !== corr);
+    next.push(corr);
+    await this.putDeviceExpiry(`alive:${fp}`, next.slice(-DEVICE_ALIVE_LIMIT), expiresAt);
   }
 
   private async finishSession(corr: string) {
-    const fp = await this.ctx.storage.get<string>(`own:${corr}`);
-    if (fp === undefined) return;
-    const alive = (await this.ctx.storage.get<string[]>(`alive:${fp}`)) ?? [];
-    await this.ctx.storage.put(
-      `alive:${fp}`,
-      alive.filter((c) => c !== corr),
+    const fp = await this.getDeviceExpiry<string>(
+      `own:${corr}`,
+      (_value, now) => now + DEVICE_ACTIVE_SESSION_TTL_MS,
     );
+    if (fp === undefined) return;
+    const result = await this.readStoredResult(corr);
+    const expiresAt = Date.now() + DEVICE_RESULT_TTL_MS;
+    if (result) {
+      await this.putDeviceExpiry(
+        `res:${corr}`,
+        { ...result, [STORED_RESULT_OWNER]: fp },
+        expiresAt,
+      );
+    }
+    await this.deleteDeviceExpiry(`own:${corr}`);
+    const alive =
+      (await this.getDeviceExpiry<string[]>(
+        `alive:${fp}`,
+        (_value, now) => now + DEVICE_ACTIVE_SESSION_TTL_MS,
+      )) ?? [];
+    const nextAlive = alive.filter((c) => c !== corr);
+    if (nextAlive.length > 0) {
+      await this.putDeviceExpiry(
+        `alive:${fp}`,
+        nextAlive,
+        Date.now() + DEVICE_ACTIVE_SESSION_TTL_MS,
+      );
+    } else {
+      await this.deleteDeviceExpiry(`alive:${fp}`);
+    }
+    const live = await this.getDeviceExpiry<string>(
+      `live:${fp}`,
+      (_value, now) => now + DEVICE_ACTIVE_SESSION_TTL_MS,
+    );
+    if (live === corr) await this.putDeviceExpiry(`live:${fp}`, corr, expiresAt);
   }
 
   private async resolveSession(fp: string, ticket?: string | null) {
     const corr = ticket == null ? "" : String(ticket).trim();
-    const owner = corr ? await this.ctx.storage.get<string>(`own:${corr}`) : undefined;
-    const live = (await this.ctx.storage.get<string>(`live:${fp}`)) ?? "";
+    let owner = corr
+      ? await this.getDeviceExpiry<string>(
+          `own:${corr}`,
+          (_value, now) => now + DEVICE_ACTIVE_SESSION_TTL_MS,
+        )
+      : undefined;
+    if (corr && owner === undefined) {
+      const result = await this.readStoredResult(corr);
+      if (result && Object.hasOwn(result, STORED_RESULT_OWNER)) {
+        owner = String(result[STORED_RESULT_OWNER] ?? "");
+      }
+    }
+    const live =
+      (await this.getDeviceExpiry<string>(
+        `live:${fp}`,
+        (_value, now) => now + DEVICE_ACTIVE_SESSION_TTL_MS,
+      )) ?? "";
     return resolveTicket({ fingerprint: fp, ticket: corr, owner, live });
   }
 
@@ -3112,10 +3821,7 @@ function fleetChallenge(fleet: DurableObjectStub, kid: string, aud: string) {
   return fleet.fetch(new Request(`https://fleet/challenge?${q}`));
 }
 
-async function resolveActor(
-  request: Request,
-  fleet: DurableObjectStub,
-): Promise<Resolved> {
+async function resolveActor(request: Request, fleet: DurableObjectStub): Promise<Resolved> {
   const auth = parseAuthorization(request.headers.get("authorization"));
   if (auth.kind === "oaep") {
     const wrapRes = await fleet.fetch(
@@ -3329,10 +4035,7 @@ function deviceIdFrom(request: Request): string | null {
 
 function validDeviceId(value: unknown): value is string {
   if (typeof value !== "string" || !value || value.trim() !== value) return false;
-  return (
-    new TextEncoder().encode(value).byteLength <= 256 &&
-    !/[\p{Cc}\p{Cf}\p{Cs}]/u.test(value)
-  );
+  return new TextEncoder().encode(value).byteLength <= 256 && !/[\p{Cc}\p{Cf}\p{Cs}]/u.test(value);
 }
 
 function validConnectionId(value: unknown): value is string {

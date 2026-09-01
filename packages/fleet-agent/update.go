@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -21,13 +22,21 @@ const (
 	defaultUpdateRepo = "TITOCHAN2023/fleetForAgent"
 	defaultUpdateBase = "https://github.com/" + defaultUpdateRepo + "/releases/latest/download"
 	defaultUpdateAPI  = "https://api.github.com/repos/" + defaultUpdateRepo + "/releases/latest"
+	maxUpdateBytes    = int64(256 << 20)
 )
 
+type updateTrustPolicy struct {
+	HubOrigin             string
+	AllowConfiguredSource bool
+}
+
 type updateRequest struct {
-	URL    string `json:"url"`
-	SHA256 string `json:"sha256"`
-	Force  bool   `json:"force"`
-	Check  bool   `json:"check"`
+	URL         string `json:"url"`
+	SHA256      string `json:"sha256"`
+	Force       bool   `json:"force"`
+	Check       bool   `json:"check"`
+	Auto        bool   `json:"-"`
+	VersionHint string `json:"-"`
 }
 
 type updateInfo struct {
@@ -80,9 +89,6 @@ func updateBase() string {
 	if v := strings.TrimSpace(os.Getenv("FLEET_UPDATE_BASE")); v != "" {
 		return strings.TrimRight(v, "/")
 	}
-	if v := advertisedUpdateBase(); v != "" {
-		return v
-	}
 	return defaultUpdateBase
 }
 
@@ -90,10 +96,29 @@ func updateAPI() string {
 	if v, ok := os.LookupEnv("FLEET_UPDATE_API"); ok {
 		return strings.TrimSpace(v)
 	}
-	if strings.TrimSpace(os.Getenv("FLEET_UPDATE_BASE")) != "" || advertisedUpdateBase() != "" {
+	if strings.TrimSpace(os.Getenv("FLEET_UPDATE_BASE")) != "" {
 		return ""
 	}
 	return defaultUpdateAPI
+}
+
+// automaticUpdateChannel is deliberately narrower than the manual channel.
+// A hub may advertise that a version exists, but it never chooses the binary
+// or its checksum. Production auto-update is pinned to the official repo.
+// A loopback base is the sole exception, used by the real-process update lab.
+func automaticUpdateChannel() (base, api string) {
+	if candidate := strings.TrimRight(strings.TrimSpace(os.Getenv("FLEET_UPDATE_BASE")), "/"); candidate != "" {
+		if u, err := url.Parse(candidate); err == nil && isLoopbackUpdateURL(u) {
+			api = strings.TrimSpace(os.Getenv("FLEET_UPDATE_API"))
+			if api != "" {
+				if apiURL, err := url.Parse(api); err != nil || !isLoopbackUpdateURL(apiURL) {
+					api = ""
+				}
+			}
+			return candidate, api
+		}
+	}
+	return defaultUpdateBase, defaultUpdateAPI
 }
 
 func releaseAssetNames(goos, arch string) []string {
@@ -121,8 +146,8 @@ func parseChecksums(text string) map[string]string {
 		if len(fields) < 2 {
 			continue
 		}
-		sum := strings.ToLower(fields[0])
-		if len(sum) != 64 {
+		sum, ok := normalizeSHA256(fields[0])
+		if !ok {
 			continue
 		}
 		name := fields[1]
@@ -137,10 +162,22 @@ func checksumFor(sums map[string]string, name string) string {
 	if sums == nil {
 		return ""
 	}
-	if s := sums[name]; s != "" {
+	if s, ok := normalizeSHA256(sums[name]); ok {
 		return s
 	}
-	return sums[filepath.Base(name)]
+	s, _ := normalizeSHA256(sums[filepath.Base(name)])
+	return s
+}
+
+func normalizeSHA256(raw string) (string, bool) {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if len(s) != sha256.Size*2 {
+		return "", false
+	}
+	if _, err := hex.DecodeString(s); err != nil {
+		return "", false
+	}
+	return s, true
 }
 
 func fileSHA256(path string) (string, error) {
@@ -189,24 +226,147 @@ func parseVer(s string) [3]int {
 	return out
 }
 
-func allowedUpdateURL(raw string) bool {
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
+func isLoopbackUpdateURL(u *url.URL) bool {
+	if u == nil || u.User != nil || u.Host == "" {
 		return false
 	}
-	switch strings.ToLower(u.Scheme) {
-	case "https":
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
 		return true
-	case "http":
-		host := u.Hostname()
-		if strings.EqualFold(host, "localhost") {
-			return true
-		}
-		ip := net.ParseIP(host)
-		return ip != nil && ip.IsLoopback()
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func isOfficialFleetUpdateURL(u *url.URL) bool {
+	if u == nil || u.User != nil || !strings.EqualFold(u.Scheme, "https") || u.Port() != "" {
+		return false
+	}
+	escapedPath := u.EscapedPath()
+	if strings.Contains(escapedPath, "%") || path.Clean(escapedPath) != escapedPath {
+		return false
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "github.com":
+		return strings.HasPrefix(escapedPath, "/TITOCHAN2023/fleetForAgent/releases/")
+	case "api.github.com":
+		return strings.HasPrefix(escapedPath, "/repos/TITOCHAN2023/fleetForAgent/releases/")
 	default:
 		return false
 	}
+}
+
+func sameUpdateOrigin(u *url.URL, rawOrigin string) bool {
+	if u == nil || u.User != nil || strings.TrimSpace(rawOrigin) == "" {
+		return false
+	}
+	origin, err := url.Parse(rawOrigin)
+	if err != nil || origin.User != nil || origin.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Scheme, origin.Scheme) &&
+		strings.EqualFold(u.Hostname(), origin.Hostname()) &&
+		effectivePort(u) == effectivePort(origin)
+}
+
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https", "wss":
+		return "443"
+	case "http", "ws":
+		return "80"
+	default:
+		return ""
+	}
+}
+
+func trustedHubUpdateOrigin(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if !strings.Contains(s, "://") {
+		s = "https://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.User != nil || u.Host == "" {
+		return ""
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "wss":
+		u.Scheme = "https"
+	case "ws":
+		u.Scheme = "http"
+	case "https", "http":
+	default:
+		return ""
+	}
+	if u.Scheme == "http" && !isLoopbackUpdateURL(u) {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+func agentUpdateHubOrigin(a *Agent) string {
+	if a == nil {
+		return ""
+	}
+	a.mu.Lock()
+	raw := a.wss
+	if strings.TrimSpace(raw) == "" {
+		raw = a.hubInput
+	}
+	a.mu.Unlock()
+	return trustedHubUpdateOrigin(raw)
+}
+
+func configuredManualUpdateOrigins() []string {
+	origins := make([]string, 0, 2)
+	seen := map[string]bool{}
+	for _, raw := range []string{os.Getenv("FLEET_UPDATE_BASE"), os.Getenv("FLEET_UPDATE_API")} {
+		origin := trustedHubUpdateOrigin(raw)
+		if origin != "" && !seen[origin] {
+			origins = append(origins, origin)
+			seen[origin] = true
+		}
+	}
+	return origins
+}
+
+func allowedUpdateURLWithPolicy(raw string, policy updateTrustPolicy) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.Fragment != "" || u.User != nil {
+		return false
+	}
+	if isOfficialFleetUpdateURL(u) || isLoopbackUpdateURL(u) {
+		return true
+	}
+	if strings.EqualFold(u.Scheme, "https") && sameUpdateOrigin(u, policy.HubOrigin) {
+		return true
+	}
+	if policy.AllowConfiguredSource {
+		for _, origin := range configuredManualUpdateOrigins() {
+			if sameUpdateOrigin(u, origin) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func allowedUpdateURLForHub(raw, hubOrigin string) bool {
+	return allowedUpdateURLWithPolicy(raw, updateTrustPolicy{HubOrigin: hubOrigin})
+}
+
+func allowedUpdateURL(raw string) bool {
+	return allowedUpdateURLWithPolicy(raw, updateTrustPolicy{AllowConfiguredSource: true})
 }
 
 func allowedLocalUpdatePath(raw string) string {
@@ -215,7 +375,7 @@ func allowedLocalUpdatePath(raw string) string {
 	}
 	if strings.Contains(raw, "://") {
 		u, err := url.Parse(raw)
-		if err != nil || u.Scheme != "file" {
+		if err != nil || u.Scheme != "file" || (u.Host != "" && !strings.EqualFold(u.Host, "localhost")) {
 			return ""
 		}
 		return u.Path
@@ -226,8 +386,63 @@ func allowedLocalUpdatePath(raw string) string {
 	return ""
 }
 
-func fetchBytes(raw string) ([]byte, error) {
-	if !allowedUpdateURL(raw) {
+func remoteUpdateAssetName(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	name := path.Base(u.Path)
+	if name == "" || name == "." || name == ".." || name == "/" {
+		return ""
+	}
+	return name
+}
+
+func isGitHubReleaseAssetURL(u *url.URL) bool {
+	if u == nil || u.User != nil || !strings.EqualFold(u.Scheme, "https") || u.Port() != "" {
+		return false
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "release-assets.githubusercontent.com", "objects.githubusercontent.com", "github-releases.githubusercontent.com":
+		return true
+	default:
+		return false
+	}
+}
+
+func updateClientForPolicy(policy updateTrustPolicy) *http.Client {
+	client := *updateHTTP
+	priorCheck := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("update: too many redirects")
+		}
+		allowed := allowedUpdateURLWithPolicy(req.URL.String(), policy)
+		if !allowed && isGitHubReleaseAssetURL(req.URL) {
+			for _, previous := range via {
+				if isOfficialFleetUpdateURL(previous.URL) {
+					allowed = true
+					break
+				}
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("update: blocked redirect")
+		}
+		if priorCheck != nil {
+			return priorCheck(req, via)
+		}
+		return nil
+	}
+	return &client
+}
+
+func updateClientFor(hubOrigin string) *http.Client {
+	return updateClientForPolicy(updateTrustPolicy{HubOrigin: hubOrigin, AllowConfiguredSource: true})
+}
+
+func fetchBytesWithPolicy(raw string, policy updateTrustPolicy) ([]byte, error) {
+	if !allowedUpdateURLWithPolicy(raw, policy) {
 		return nil, fmt.Errorf("update: blocked url")
 	}
 	req, err := http.NewRequest(http.MethodGet, raw, nil)
@@ -236,7 +451,7 @@ func fetchBytes(raw string) ([]byte, error) {
 	}
 	req.Header.Set("User-Agent", "Fleet-Agent/"+agentVersion)
 	req.Header.Set("Accept", "application/octet-stream, text/plain, application/json")
-	res, err := updateHTTP.Do(req)
+	res, err := updateClientForPolicy(policy).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -244,11 +459,21 @@ func fetchBytes(raw string) ([]byte, error) {
 	if res.StatusCode >= 300 {
 		return nil, fmt.Errorf("update: http %s", res.Status)
 	}
-	return io.ReadAll(io.LimitReader(res.Body, 8<<20))
+	if res.ContentLength > 8<<20 {
+		return nil, fmt.Errorf("update: metadata exceeds 8 MiB")
+	}
+	b, err := io.ReadAll(io.LimitReader(res.Body, (8<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > 8<<20 {
+		return nil, fmt.Errorf("update: metadata exceeds 8 MiB")
+	}
+	return b, nil
 }
 
-func downloadTo(raw, dest string) error {
-	if !allowedUpdateURL(raw) {
+func downloadToWithPolicy(raw, dest string, policy updateTrustPolicy) error {
+	if !allowedUpdateURLWithPolicy(raw, policy) {
 		return fmt.Errorf("update: blocked url")
 	}
 	req, err := http.NewRequest(http.MethodGet, raw, nil)
@@ -256,13 +481,23 @@ func downloadTo(raw, dest string) error {
 		return err
 	}
 	req.Header.Set("User-Agent", "Fleet-Agent/"+agentVersion)
-	res, err := updateHTTP.Do(req)
+	res, err := updateClientForPolicy(policy).Do(req)
 	if err != nil {
 		return err
 	}
 	defer res.Body.Close()
 	if res.StatusCode >= 300 {
 		return fmt.Errorf("update: http %s", res.Status)
+	}
+	return writeUpdateBody(dest, res.Body, res.ContentLength, maxUpdateBytes)
+}
+
+func writeUpdateBody(dest string, body io.Reader, contentLength, maxBytes int64) error {
+	if maxBytes <= 0 {
+		return fmt.Errorf("update: invalid download limit")
+	}
+	if contentLength > maxBytes {
+		return fmt.Errorf("update: asset exceeds %d bytes", maxBytes)
 	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
 		return err
@@ -271,7 +506,7 @@ func downloadTo(raw, dest string) error {
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(f, res.Body)
+	n, copyErr := io.Copy(f, io.LimitReader(body, maxBytes+1))
 	closeErr := f.Close()
 	if copyErr != nil {
 		_ = os.Remove(dest)
@@ -281,35 +516,52 @@ func downloadTo(raw, dest string) error {
 		_ = os.Remove(dest)
 		return closeErr
 	}
+	if n > maxBytes {
+		_ = os.Remove(dest)
+		return fmt.Errorf("update: asset exceeds %d bytes", maxBytes)
+	}
 	return nil
 }
 
 func discoverRelease() (*discoveredRelease, error) {
-	rel := &discoveredRelease{Sums: map[string]string{}}
-	if v := advertisedChannelVersion(); v != "" {
-		rel.Version = v
+	return discoverReleaseAt("", updateBase(), updateAPI(), updateTrustPolicy{AllowConfiguredSource: true})
+}
+
+func discoverAutomaticRelease(versionHint string) (*discoveredRelease, error) {
+	base, api := automaticUpdateChannel()
+	policy := updateTrustPolicy{}
+	if base == defaultUpdateBase {
+		// In production the hub only wakes the checker. GitHub's release API,
+		// not the hub's claimed version, decides whether an update exists.
+		versionHint = ""
 	}
-	if sums := advertisedChannelSums(); len(sums) > 0 {
-		rel.Sums = sums
+	rel, err := discoverReleaseAt(versionHint, base, api, policy)
+	if err != nil {
+		return nil, err
 	}
-	if api := updateAPI(); api != "" {
-		if err := fillReleaseFromAPI(rel, api); err != nil && strings.TrimSpace(os.Getenv("FLEET_UPDATE_BASE")) == "" {
+	if base == defaultUpdateBase && rel.Version == "" {
+		return nil, fmt.Errorf("update: official release version could not be verified")
+	}
+	return rel, nil
+}
+
+func discoverReleaseAt(versionHint, base, api string, policy updateTrustPolicy) (*discoveredRelease, error) {
+	rel := &discoveredRelease{
+		Version: strings.TrimPrefix(strings.TrimSpace(versionHint), "v"),
+		Sums:    map[string]string{},
+	}
+	if api != "" {
+		if err := fillReleaseFromAPI(rel, api, policy); err != nil && base == defaultUpdateBase {
 			// still try constructed latest/download URLs below
 		}
 	}
-	base := updateBase()
 	if len(rel.Assets) == 0 && base != "" {
 		for _, name := range releaseAssetNames(runtime.GOOS, runtime.GOARCH) {
 			rel.Assets = append(rel.Assets, releaseAsset{Name: name, URL: base + "/" + name})
 		}
 	}
-	if rel.Version == "" {
-		if v := advertisedChannelVersion(); v != "" {
-			rel.Version = v
-		}
-	}
 	if checksumsNeedFetch(rel) {
-		for k, v := range fetchChecksums(rel, base) {
+		for k, v := range fetchChecksums(rel, base, policy) {
 			if rel.Sums == nil {
 				rel.Sums = map[string]string{}
 			}
@@ -324,8 +576,8 @@ func discoverRelease() (*discoveredRelease, error) {
 	return rel, nil
 }
 
-func fillReleaseFromAPI(rel *discoveredRelease, api string) error {
-	b, err := fetchBytes(api)
+func fillReleaseFromAPI(rel *discoveredRelease, api string, policy updateTrustPolicy) error {
+	b, err := fetchBytesWithPolicy(api, policy)
 	if err != nil {
 		return err
 	}
@@ -358,7 +610,7 @@ func fillReleaseFromAPI(rel *discoveredRelease, api string) error {
 		}
 	}
 	for _, s := range sums {
-		if b, err := fetchBytes(s.URL); err == nil {
+		if b, err := fetchBytesWithPolicy(s.URL, policy); err == nil {
 			for k, v := range parseChecksums(string(b)) {
 				rel.Sums[k] = v
 			}
@@ -379,20 +631,14 @@ func checksumsNeedFetch(rel *discoveredRelease) bool {
 	return false
 }
 
-func fetchChecksums(rel *discoveredRelease, base string) map[string]string {
+func fetchChecksums(rel *discoveredRelease, base string, policy updateTrustPolicy) map[string]string {
 	out := map[string]string{}
 	candidates := []string{}
-	if u := advertisedChecksumsURL(); u != "" {
-		candidates = append(candidates, u)
-	}
 	if base != "" {
 		candidates = append(candidates, base+"/checksums.txt")
 		ver := ""
 		if rel != nil {
 			ver = rel.Version
-		}
-		if ver == "" {
-			ver = advertisedChannelVersion()
 		}
 		if ver != "" {
 			candidates = append(candidates, base+"/checksums-"+strings.TrimPrefix(ver, "v")+".txt")
@@ -404,7 +650,7 @@ func fetchChecksums(rel *discoveredRelease, base string) map[string]string {
 			continue
 		}
 		seen[u] = true
-		b, err := fetchBytes(u)
+		b, err := fetchBytesWithPolicy(u, policy)
 		if err != nil {
 			continue
 		}
@@ -415,22 +661,42 @@ func fetchChecksums(rel *discoveredRelease, base string) map[string]string {
 	return out
 }
 
-func pickAsset(rel *discoveredRelease) (releaseAsset, string, error) {
+func pickAssetWithPolicy(rel *discoveredRelease, policy updateTrustPolicy) (releaseAsset, string, error) {
 	if rel == nil {
 		return releaseAsset{}, "", fmt.Errorf("update: no release")
 	}
 	for _, name := range releaseAssetNames(runtime.GOOS, runtime.GOARCH) {
 		for _, a := range rel.Assets {
 			if a.Name == name && a.URL != "" {
-				return a, checksumFor(rel.Sums, name), nil
+				if !allowedUpdateURLWithPolicy(a.URL, policy) {
+					return releaseAsset{}, "", fmt.Errorf("update: blocked url")
+				}
+				sum := checksumFor(rel.Sums, name)
+				if sum == "" {
+					return releaseAsset{}, "", fmt.Errorf("update: missing or invalid sha256 for %s", name)
+				}
+				return a, sum, nil
 			}
 		}
 	}
 	return releaseAsset{}, "", fmt.Errorf("update: no %s/%s asset on this channel", runtime.GOOS, runtime.GOARCH)
 }
 
+func pickAsset(rel *discoveredRelease) (releaseAsset, string, error) {
+	return pickAssetWithPolicy(rel, updateTrustPolicy{AllowConfiguredSource: true})
+}
+
 func checkUpdate() (updateInfo, error) {
 	rel, err := discoverRelease()
+	return checkDiscoveredUpdate(rel, err, updateTrustPolicy{AllowConfiguredSource: true})
+}
+
+func checkAutomaticUpdate(versionHint string) (updateInfo, error) {
+	rel, err := discoverAutomaticRelease(versionHint)
+	return checkDiscoveredUpdate(rel, err, updateTrustPolicy{})
+}
+
+func checkDiscoveredUpdate(rel *discoveredRelease, err error, policy updateTrustPolicy) (updateInfo, error) {
 	info := updateInfo{Current: agentVersion, Phase: "idle"}
 	if err != nil {
 		info.Phase = "error"
@@ -439,7 +705,7 @@ func checkUpdate() (updateInfo, error) {
 		return info, err
 	}
 	info.Latest = rel.Version
-	asset, sum, err := pickAsset(rel)
+	asset, sum, err := pickAssetWithPolicy(rel, policy)
 	if err != nil {
 		info.Phase = "error"
 		info.Error = err.Error()
@@ -498,22 +764,47 @@ func applyUpdate(a *Agent, req updateRequest) error {
 	a.mu.Unlock()
 
 	var assetURL, assetName, wantSum string
-	if local := allowedLocalUpdatePath(strings.TrimSpace(req.URL)); local != "" {
+	hubOrigin := ""
+	downloadPolicy := updateTrustPolicy{AllowConfiguredSource: true}
+	if req.Auto {
+		downloadPolicy = updateTrustPolicy{}
+		info, err := checkAutomaticUpdate(req.VersionHint)
+		if err != nil {
+			return err
+		}
+		if !info.Available {
+			setUpdateStatus(func(s *updateInfo) {
+				s.Phase = "idle"
+				s.Available = false
+				s.Error = ""
+			})
+			a.mu.Lock()
+			a.log("info", "update: already current")
+			a.mu.Unlock()
+			return nil
+		}
+		assetURL = info.AssetURL
+		assetName = info.Asset
+		wantSum = info.SHA256
+	} else if local := allowedLocalUpdatePath(strings.TrimSpace(req.URL)); local != "" {
 		assetName = filepath.Base(local)
+		if assetName == "" || assetName == "." || assetName == ".." || assetName == string(filepath.Separator) {
+			return fmt.Errorf("update: missing asset name")
+		}
 		assetURL = local
-		wantSum = strings.ToLower(strings.TrimSpace(req.SHA256))
+		wantSum = req.SHA256
 	} else if u := strings.TrimSpace(req.URL); u != "" {
-		if !allowedUpdateURL(u) {
+		hubOrigin = agentUpdateHubOrigin(a)
+		downloadPolicy.HubOrigin = hubOrigin
+		if !allowedUpdateURLWithPolicy(u, downloadPolicy) {
 			return fmt.Errorf("update: blocked url")
 		}
-		assetName = filepath.Base(u)
-		assetURL = u
-		wantSum = strings.ToLower(strings.TrimSpace(req.SHA256))
-		if wantSum == "" {
-			if rel, err := discoverRelease(); err == nil {
-				wantSum = checksumFor(rel.Sums, assetName)
-			}
+		assetName = remoteUpdateAssetName(u)
+		if assetName == "" {
+			return fmt.Errorf("update: missing asset name")
 		}
+		assetURL = u
+		wantSum = req.SHA256
 	} else {
 		info, err := checkUpdate()
 		if err != nil {
@@ -534,8 +825,9 @@ func applyUpdate(a *Agent, req updateRequest) error {
 		assetName = info.Asset
 		wantSum = info.SHA256
 	}
-	if wantSum == "" && !req.Force {
-		return fmt.Errorf("update: missing checksum for %s", assetName)
+	wantSum, ok := normalizeSHA256(wantSum)
+	if !ok {
+		return fmt.Errorf("update: missing or invalid sha256 for %s", assetName)
 	}
 
 	dir := filepath.Join(fleetHome(), "updates")
@@ -550,21 +842,22 @@ func applyUpdate(a *Agent, req updateRequest) error {
 		s.SHA256 = wantSum
 	})
 	if local := allowedLocalUpdatePath(assetURL); local != "" {
-		if err := copyFileReplace(local, archive); err != nil {
+		if err := copyFileReplaceLimited(local, archive, maxUpdateBytes); err != nil {
 			return err
 		}
 	} else {
-		if err := downloadTo(assetURL, archive); err != nil {
+		if err := downloadToWithPolicy(assetURL, archive, downloadPolicy); err != nil {
 			return err
 		}
 	}
+	defer os.Remove(archive)
 
 	setUpdateStatus(func(s *updateInfo) { s.Phase = "verifying" })
 	got, err := fileSHA256(archive)
 	if err != nil {
 		return err
 	}
-	if wantSum != "" && got != wantSum {
+	if got != wantSum {
 		_ = os.Remove(archive)
 		return fmt.Errorf("update: sha256 mismatch")
 	}
@@ -573,22 +866,21 @@ func applyUpdate(a *Agent, req updateRequest) error {
 	if err != nil {
 		return err
 	}
-	staged := stagedBinaryPath(live)
 	setUpdateStatus(func(s *updateInfo) { s.Phase = "staging" })
-	if err := extractAgentBinary(archive, staged); err != nil {
+	staged, err := stageUpdateArtifact(archive, live)
+	if err != nil {
 		return err
 	}
-	if err := os.Chmod(staged, 0o755); err != nil {
-		return err
-	}
-	clearQuarantine(staged)
 
 	handoffExe := staged
 	extra := map[string]string{}
 	if runtime.GOOS == "windows" {
 		extra[promoteEnvKey] = live
 	} else {
-		if err := promoteUnix(staged, live); err != nil {
+		if err := promoteUpdateArtifact(staged, live); err != nil {
+			if updateNeedsAtomicBundlePromotion(live) {
+				return err
+			}
 			a.mu.Lock()
 			a.log("warn", "update: live replace failed, running staged sibling: "+err.Error())
 			a.mu.Unlock()
@@ -651,6 +943,19 @@ func rollbackBinary() (string, error) {
 }
 
 func (a *Agent) requestRollback() error {
+	live, err := liveBinaryPath()
+	if err != nil {
+		return err
+	}
+	if exe, handled, err := rollbackBundledApp(live); handled {
+		if err != nil {
+			return err
+		}
+		a.mu.Lock()
+		a.log("info", "rollback: restarting previous app bundle")
+		a.mu.Unlock()
+		return a.handoffRestart(exe, nil)
+	}
 	staged, err := rollbackBinary()
 	if err != nil {
 		return err

@@ -252,7 +252,7 @@ func (a *Agent) load() {
 	if err != nil {
 		a.permit = PermitAsk
 		a.deviceID = newDeviceID()
-		a.autoUpdate = true
+		a.autoUpdate = false
 		a.applyEnv(false)
 		a.save()
 		return
@@ -265,7 +265,7 @@ func (a *Agent) load() {
 		DeviceID   string `json:"deviceId"`
 		AutoUpdate *bool  `json:"autoUpdate"`
 	}
-	a.autoUpdate = true
+	a.autoUpdate = false
 	if json.Unmarshal(b, &cfg) == nil {
 		a.enabled = cfg.Enabled
 		a.permit = cfg.Permit
@@ -1093,7 +1093,7 @@ func main() {
 
 	dir := fleetHome()
 	_ = os.MkdirAll(dir, 0o700)
-	agent := &Agent{permit: PermitAsk, autoUpdate: true, conn: "offline", cfgPath: configPath(), panes: pane.NewSupervisor()}
+	agent := &Agent{permit: PermitAsk, autoUpdate: false, conn: "offline", cfgPath: configPath(), panes: pane.NewSupervisor()}
 	agent.load()
 
 	mux := http.NewServeMux()

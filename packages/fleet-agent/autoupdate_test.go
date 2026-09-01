@@ -40,32 +40,23 @@ func TestDecideAutoUpdate(t *testing.T) {
 	}
 }
 
-func TestParseVersionSignal(t *testing.T) {
+func TestParseVersionSignalIgnoresHubUpdateSource(t *testing.T) {
 	now := time.Now()
 	if _, ok := parseVersionSignal(map[string]any{"heartbeat_s": 25}, now); ok {
 		t.Fatal("hello_ok without latest_agent_ver is not a signal")
 	}
 	sig, ok := parseVersionSignal(map[string]any{
 		"latest_agent_ver": "0.3.2",
-		"update_base":      "http://127.0.0.1:9",
-		"update_sha256":    "ABC",
-		"update_checksums": "http://127.0.0.1:9/checksums-0.3.2.txt",
-		"update_sums": map[string]any{
-			"fleet-agent-linux-amd64.tar.gz": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		},
+		"update_base":      "https://attacker.example/releases",
+		"update_url":       "https://attacker.example/fleet-agent",
+		"update_sha256":    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	}, now)
-	if !ok || sig.Version != "0.3.2" || sig.Base != "http://127.0.0.1:9" || sig.SHA256 != "abc" {
+	if !ok || sig.Version != "0.3.2" || !sig.Seen.Equal(now) {
 		t.Fatalf("%+v", sig)
-	}
-	if sig.ChecksumsURL != "http://127.0.0.1:9/checksums-0.3.2.txt" {
-		t.Fatalf("checksums url %q", sig.ChecksumsURL)
-	}
-	if sig.Sums["fleet-agent-linux-amd64.tar.gz"] != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
-		t.Fatalf("sums %+v", sig.Sums)
 	}
 }
 
-func TestLoadMissingAutoUpdateDefaultsOn(t *testing.T) {
+func TestLoadMissingAutoUpdateDefaultsOff(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("FLEET_HOME", home)
 	t.Setenv("FLEET_AUTO_UPDATE", "")
@@ -77,12 +68,52 @@ func TestLoadMissingAutoUpdateDefaultsOn(t *testing.T) {
 	})
 	a := &Agent{cfgPath: configPath(), panes: pane.NewSupervisor()}
 	a.load()
-	if !a.autoUpdate {
-		t.Fatal("missing autoUpdate key must default on")
+	if a.autoUpdate {
+		t.Fatal("missing autoUpdate key must default off")
 	}
 	s := a.snapshot()
-	if !s.AutoUpdate {
-		t.Fatal("state.autoUpdate must be on")
+	if s.AutoUpdate {
+		t.Fatal("state.autoUpdate must be off")
+	}
+}
+
+func TestLoadNewInstallDefaultsAutoUpdateOff(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("FLEET_HOME", home)
+	t.Setenv("FLEET_AUTO_UPDATE", "")
+	a := &Agent{cfgPath: configPath(), panes: pane.NewSupervisor()}
+	a.load()
+	if a.autoUpdate {
+		t.Fatal("a new install must default auto-update off")
+	}
+}
+
+func TestLoadAutoUpdateExplicitOnPersists(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("FLEET_HOME", home)
+	t.Setenv("FLEET_AUTO_UPDATE", "")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeJSONFile(t, configPath(), map[string]any{
+		"enabled": true, "permit": "ask", "hubInput": "", "hubToken": "", "deviceId": "abc",
+		"autoUpdate": true,
+	})
+	a := &Agent{cfgPath: configPath(), panes: pane.NewSupervisor()}
+	a.load()
+	if !a.autoUpdate {
+		t.Fatal("explicit autoUpdate=true must stay on")
+	}
+}
+
+func TestLoadAutoUpdateEnvCanOptIn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("FLEET_HOME", home)
+	t.Setenv("FLEET_AUTO_UPDATE", "true")
+	a := &Agent{cfgPath: configPath(), panes: pane.NewSupervisor()}
+	a.load()
+	if !a.autoUpdate {
+		t.Fatal("FLEET_AUTO_UPDATE=true must opt in")
 	}
 }
 

@@ -11,7 +11,17 @@ export type OAuthEnv = {
   FLEET: DurableObjectNamespace;
 };
 
-type Pending = { provider: "google" | "x"; verifier?: string; exp: number };
+type Pending = {
+  provider: "google" | "x";
+  verifier?: string;
+  bindingHash: string;
+  sourceHash: string;
+  exp: number;
+};
+
+const OAUTH_COOKIE_PREFIX = "fleet_oauth_";
+const OAUTH_COOKIE_PATH = "/v1/auth/callback";
+const OAUTH_PENDING_SECONDS = 10 * 60;
 
 function originOf(request: Request): string {
   const url = new URL(request.url);
@@ -33,6 +43,28 @@ async function sha256b64url(raw: string): Promise<string> {
   return b64url(new Uint8Array(buf));
 }
 
+function hasUnsafeHeaderByte(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+async function oauthSourceHash(request: Request): Promise<string> {
+  // CF-Connecting-IP is authoritative only when Cloudflare supplied the cf
+  // metadata. In local/dev requests the header is client-controlled, so all
+  // such requests deliberately share one conservative fallback bucket.
+  const connectingIp = request.cf ? (request.headers.get("cf-connecting-ip") ?? "").trim() : "";
+  const source =
+    connectingIp.length > 0 &&
+    connectingIp.length <= 128 &&
+    !hasUnsafeHeaderByte(connectingIp)
+      ? `cf-ip:${connectingIp}`
+      : "non-cloudflare";
+  return sha256b64url(source);
+}
+
 function fleet(env: OAuthEnv) {
   return env.FLEET.get(env.FLEET.idFromName("fleet"));
 }
@@ -42,16 +74,37 @@ export async function handleOAuth(request: Request, env: OAuthEnv): Promise<Resp
   const path = url.pathname;
   if (path === "/v1/auth/google" && request.method === "GET") return startGoogle(request, env);
   if (path === "/v1/auth/x" && request.method === "GET") return startX(request, env);
-  if (path === "/v1/auth/callback/google") return finishGoogle(request, env);
-  if (path === "/v1/auth/callback/x") return finishX(request, env);
+  if (path === "/v1/auth/callback/google") {
+    return clearBindingCookie(
+      await finishGoogle(request, env),
+      new URL(request.url).searchParams.get("state") ?? "",
+    );
+  }
+  if (path === "/v1/auth/callback/x") {
+    return clearBindingCookie(
+      await finishX(request, env),
+      new URL(request.url).searchParams.get("state") ?? "",
+    );
+  }
   return null;
 }
 
 async function startGoogle(request: Request, env: OAuthEnv): Promise<Response> {
   const id = env.GOOGLE_CLIENT_ID?.trim();
-  if (!id) return fail("Google 登录未配置：需要 wrangler secret GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET");
+  if (!id)
+    return fail("Google 登录未配置：需要 wrangler secret GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET");
   const state = rand();
-  await putPending(env, state, { provider: "google", exp: Date.now() + 10 * 60_000 });
+  const binding = rand();
+  if (
+    !(await putPending(env, state, {
+      provider: "google",
+      bindingHash: await sha256b64url(binding),
+      sourceHash: await oauthSourceHash(request),
+      exp: Date.now() + OAUTH_PENDING_SECONDS * 1000,
+    }))
+  ) {
+    return fail("OAuth 登录请求过多，请稍后重试", 503);
+  }
   const redir = `${originOf(request)}/v1/auth/callback/google`;
   const q = new URLSearchParams({
     client_id: id,
@@ -61,7 +114,11 @@ async function startGoogle(request: Request, env: OAuthEnv): Promise<Response> {
     state,
     prompt: "select_account",
   });
-  return Response.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${q}`, 302);
+  return withBindingCookie(
+    Response.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${q}`, 302),
+    state,
+    binding,
+  );
 }
 
 async function startX(request: Request, env: OAuthEnv): Promise<Response> {
@@ -69,7 +126,18 @@ async function startX(request: Request, env: OAuthEnv): Promise<Response> {
   if (!id) return fail("X 登录未配置：需要 wrangler secret X_CLIENT_ID / X_CLIENT_SECRET");
   const state = rand();
   const verifier = rand(48);
-  await putPending(env, state, { provider: "x", verifier, exp: Date.now() + 10 * 60_000 });
+  const binding = rand();
+  if (
+    !(await putPending(env, state, {
+      provider: "x",
+      verifier,
+      bindingHash: await sha256b64url(binding),
+      sourceHash: await oauthSourceHash(request),
+      exp: Date.now() + OAUTH_PENDING_SECONDS * 1000,
+    }))
+  ) {
+    return fail("OAuth 登录请求过多，请稍后重试", 503);
+  }
   const redir = `${originOf(request)}/v1/auth/callback/x`;
   const q = new URLSearchParams({
     response_type: "code",
@@ -80,7 +148,11 @@ async function startX(request: Request, env: OAuthEnv): Promise<Response> {
     code_challenge: await sha256b64url(verifier),
     code_challenge_method: "S256",
   });
-  return Response.redirect(`https://twitter.com/i/oauth2/authorize?${q}`, 302);
+  return withBindingCookie(
+    Response.redirect(`https://twitter.com/i/oauth2/authorize?${q}`, 302),
+    state,
+    binding,
+  );
 }
 
 async function finishGoogle(request: Request, env: OAuthEnv): Promise<Response> {
@@ -89,7 +161,7 @@ async function finishGoogle(request: Request, env: OAuthEnv): Promise<Response> 
   if (err) return fail(err);
   const code = url.searchParams.get("code") ?? "";
   const state = url.searchParams.get("state") ?? "";
-  const pending = await takePending(env, state);
+  const pending = await takePending(env, state, await bindingHash(request, state));
   if (!pending || pending.provider !== "google") return fail("bad oauth state");
   const id = env.GOOGLE_CLIENT_ID?.trim();
   const secret = env.GOOGLE_CLIENT_SECRET?.trim();
@@ -123,7 +195,7 @@ async function finishX(request: Request, env: OAuthEnv): Promise<Response> {
   if (err) return fail(err);
   const code = url.searchParams.get("code") ?? "";
   const state = url.searchParams.get("state") ?? "";
-  const pending = await takePending(env, state);
+  const pending = await takePending(env, state, await bindingHash(request, state));
   if (!pending || pending.provider !== "x" || !pending.verifier) return fail("bad oauth state");
   const id = env.X_CLIENT_ID?.trim();
   const secret = env.X_CLIENT_SECRET?.trim();
@@ -174,22 +246,76 @@ async function finishUser(env: OAuthEnv, email: string, provider: string): Promi
   return new Response(null, { status: 302, headers });
 }
 
-async function putPending(env: OAuthEnv, state: string, row: Pending) {
-  await fleet(env).fetch(
+async function putPending(env: OAuthEnv, state: string, row: Pending): Promise<boolean> {
+  const response = await fleet(env).fetch(
     new Request("https://fleet/oauth-pending", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ state, ...row }),
+      body: JSON.stringify({
+        state,
+        provider: row.provider,
+        verifier: row.verifier,
+        exp: row.exp,
+        binding_hash: row.bindingHash,
+        source_hash: row.sourceHash,
+      }),
     }),
   );
+  return response.ok;
 }
 
-async function takePending(env: OAuthEnv, state: string): Promise<Pending | null> {
-  const res = await fleet(env).fetch(new Request(`https://fleet/oauth-pending?state=${encodeURIComponent(state)}`));
+async function takePending(
+  env: OAuthEnv,
+  state: string,
+  bindingHashValue: string,
+): Promise<Pending | null> {
+  if (!state || !bindingHashValue) return null;
+  const query = new URLSearchParams({ state, binding_hash: bindingHashValue });
+  const res = await fleet(env).fetch(new Request(`https://fleet/oauth-pending?${query}`));
   if (!res.ok) return null;
   const row = (await res.json()) as Pending & { error?: string };
   if (!row.provider || (row.exp && row.exp < Date.now())) return null;
   return row;
+}
+
+function bindingCookieName(state: string): string {
+  return `${OAUTH_COOKIE_PREFIX}${state}`;
+}
+
+function requestCookie(request: Request, name: string): string {
+  const raw = request.headers.get("cookie") ?? "";
+  for (const part of raw.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) return rest.join("=");
+  }
+  return "";
+}
+
+async function bindingHash(request: Request, state: string): Promise<string> {
+  if (!/^[a-zA-Z0-9_-]{32,128}$/.test(state)) return "";
+  const binding = requestCookie(request, bindingCookieName(state));
+  return /^[a-zA-Z0-9_-]{32,128}$/.test(binding) ? sha256b64url(binding) : "";
+}
+
+function withBindingCookie(response: Response, state: string, binding: string): Response {
+  return withCookie(
+    response,
+    `${bindingCookieName(state)}=${binding}; Path=${OAUTH_COOKIE_PATH}; Max-Age=${OAUTH_PENDING_SECONDS}; HttpOnly; Secure; SameSite=Lax`,
+  );
+}
+
+function clearBindingCookie(response: Response, state: string): Response {
+  if (!/^[a-zA-Z0-9_-]{32,128}$/.test(state)) return response;
+  return withCookie(
+    response,
+    `${bindingCookieName(state)}=; Path=${OAUTH_COOKIE_PATH}; Max-Age=0; HttpOnly; Secure; SameSite=Lax`,
+  );
+}
+
+function withCookie(response: Response, value: string): Response {
+  const headers = new Headers(response.headers);
+  headers.append("set-cookie", value);
+  return new Response(response.body, { status: response.status, headers });
 }
 
 function fail(msg: string, status = 400): Response {
@@ -198,5 +324,8 @@ function fail(msg: string, status = 400): Response {
 }
 
 function escapeHtml(s: string) {
-  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] as string);
+  return s.replace(
+    /[&<>"]/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] as string,
+  );
 }

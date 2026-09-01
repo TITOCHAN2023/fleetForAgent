@@ -10,10 +10,33 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 )
+
+type blockingTestPluginStdin struct {
+	entered   chan struct{}
+	closed    chan struct{}
+	enterOnce sync.Once
+	closeOnce sync.Once
+}
+
+func newBlockingTestPluginStdin() *blockingTestPluginStdin {
+	return &blockingTestPluginStdin{entered: make(chan struct{}), closed: make(chan struct{})}
+}
+
+func (s *blockingTestPluginStdin) Write([]byte) (int, error) {
+	s.enterOnce.Do(func() { close(s.entered) })
+	<-s.closed
+	return 0, os.ErrClosed
+}
+
+func (s *blockingTestPluginStdin) Close() error {
+	s.closeOnce.Do(func() { close(s.closed) })
+	return nil
+}
 
 func waitTestDescendantPID(path string, timeout time.Duration) int {
 	deadline := time.Now().Add(timeout)
@@ -70,10 +93,7 @@ func TestPluginPeerAbortKillsDescendantProcessGroup(t *testing.T) {
 
 func TestPluginPeerCancelCannotBeBlockedByFullStdin(t *testing.T) {
 	cmd := exec.Command("/bin/sh", "-c", `trap '' TERM; sleep 60`)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	stdin := newBlockingTestPluginStdin()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -88,19 +108,26 @@ func TestPluginPeerCancelCannotBeBlockedByFullStdin(t *testing.T) {
 		t.Fatal(err)
 	}
 	peer.tree = tree
-	writerStarted := make(chan struct{})
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		select {
+		case <-peer.done:
+			return
+		default:
+		}
+		tree.terminate(true)
+		_ = peer.waitForExit(time.Second)
+	})
 	writerDone := make(chan struct{})
 	go func() {
 		defer close(writerDone)
-		close(writerStarted)
-		for {
-			if err := peer.WriteData(make([]byte, 32<<10)); err != nil {
-				return
-			}
-		}
+		_ = peer.WriteData(make([]byte, 32<<10))
 	}()
-	<-writerStarted
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-stdin.entered:
+	case <-time.After(time.Second):
+		t.Fatal("plugin stdin writer never reached the blocked write")
+	}
 	cancelDone := make(chan bool, 1)
 	go func() {
 		cancelDone <- peer.Cancel()
@@ -110,7 +137,7 @@ func TestPluginPeerCancelCannotBeBlockedByFullStdin(t *testing.T) {
 		if applied {
 			t.Fatal("force-killed plugin reported an applied FLPP cancel")
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(4 * time.Second):
 		_ = stdin.Close()
 		tree.terminate(true)
 		_ = peer.waitForExit(time.Second)

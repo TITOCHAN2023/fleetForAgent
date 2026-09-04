@@ -13,18 +13,14 @@ Tool ◄──direct WebRTC DATA──► Agent A / Agent B
 Agent A ◄──direct WebRTC DATA──► Agent B
 ```
 
-The existing lab is `scripts/plugin-peer-vm/`:
-
-- two Agent containers (`agent-a`, `agent-b`) on a dedicated Docker bridge
-- one Tool container
-- local Wrangler Worker as Hub (throwaway account, no production)
-- no TURN / Worker-byte / R2 fallback — if direct RTC fails, the run fails
+Linux (this host): `scripts/intranet-lab/` — two Agent containers + Hub, **each capped at 1 CPU / 1 GiB**.
 
 ```bash
-./scripts/plugin-peer-vm/run.sh
-# or
 npm run test:intranet
+# ./scripts/intranet-lab/run.sh
 ```
+
+macOS / plugin + RTC interruption: `scripts/plugin-peer-vm/` (`npm run test:intranet:peer`). That lab is heavier (Colima arm64, sibling plugin repos) and is not the default here.
 
 Read `scripts/plugin-peer-vm/README.md` before inventing a new harness. Do not claim a green unit suite means live-shell reattach, peer sessions, or file transfer work across hosts.
 

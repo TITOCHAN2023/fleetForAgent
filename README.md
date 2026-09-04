@@ -50,13 +50,13 @@ Full walkthrough: [English](docs/en/deploy.md) · [中文](docs/zh/deploy.md)
 
 ## Tests
 
-`npm test` and `packages/fleet-agent` `go test` are unit suites. They do not simulate two machines. Cross-host behavior (Agent, Hub, Tool, live shell, RTC, plugins) needs the two-pod intranet lab:
+`npm test` and `packages/fleet-agent` `go test` are unit suites. They do not simulate two machines. Cross-host behavior needs the two-pod intranet lab. On Linux each pod is capped at 1 CPU / 1 GiB:
 
 ```bash
 npm run test:intranet
 ```
 
-That is `scripts/plugin-peer-vm/` — Agent A + Agent B + Tool on a dedicated Docker bridge, local Wrangler hub. Details: [`TESTING.md`](TESTING.md).
+Details: [`TESTING.md`](TESTING.md) and `scripts/intranet-lab/`. The heavier plugin/RTC lab is `npm run test:intranet:peer`.
 
 ## Local is only a CLI
 

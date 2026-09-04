@@ -11,7 +11,8 @@ packages/fleet-agent/
   autoupdate.go, update*.go, restart.go, heartbeat.go, tokenv1.go, cli.go, …
   internal/
     desktop/         capture, HID, pointer motion, JPEG viewport
-    pane/            PTY / oneshot shells, vt screen, type keys
+    pane/            session backends (tmux/zellij/pty), oneshot shells, vt screen, type keys
+    pane/backend/    multiplexer selector copied from botmux (default tmux)
     tray/            systray menu; takes a Controller, not Agent
     keepalive/       idle-sleep assertion (caffeinate / inhibit / ES_SYSTEM_REQUIRED)
     policy/          always-blocked destructive commands
@@ -26,6 +27,7 @@ Where to change what:
 | Hub protocol, permit, settings page | `main.go` |
 | Screenshot / mouse / keyboard OS bits | `internal/desktop/` |
 | Shell panes and live PTY | `internal/pane/` |
+| Live session backend (tmux / zellij / pty) | `internal/pane/backend/` |
 | Menu-bar / tray UI | `internal/tray/` |
 | Keep the machine awake while enabled | `internal/keepalive/` |
 | `rm -rf /` and friends | `internal/policy/` |
@@ -35,6 +37,8 @@ Agent 0.6.6 advertises `rtc_v1`. WSS and RTC both feed the same `dispatchEnvelop
 All plugin installation, removal, task execution, and peer sessions follow that same Agent permit: `off` refuses, `ask` queues a local approval, and `allow` authorizes automatically without a second plugin click. `approval_actions` is retained only as schema-v1 compatibility metadata. Permit never relaxes official-source, platform, action/runtime, artifact and executable SHA-256, ticket/nonce, or applicable dangerous-operation checks. Peer `both_once` means each endpoint makes one local authorization decision for the session; it does not require a human click under `allow` or another decision for each resumed round.
 
 A durable peer cancellation is acknowledged only after the current FLPP process accepts this invocation's `cancel`, emits a valid v1 `status=canceled`, and exits cleanly with code 0. Timeout, forced termination, signal/non-zero exit, or a missing/invalid status is not a cancellation receipt. WSS loss uses Abort and retains a bounded recovery owner; a later Hub cancellation, permit-off, auth revocation, or token reset reopens the immutable plugin session, sends `open` then `cancel`, and clears the owner only after the same receipt. Replayed prepare atomically inherits that cleanup debt before it is acknowledged.
+
+Persistent live shells use a botmux-style session backend (`internal/pane/backend`). Default is **tmux** (survives agent restart via reattach). `FLEET_BACKEND_TYPE=zellij` opts into zellij. `FLEET_BACKEND_TYPE=pty` is the emergency raw PTY (does not survive restart). A requested tmux/zellij that is missing on the host is a hard gate — there is no silent fallback to PTY. One-shot `run` commands stay on an isolated PTY so `command -c` exit codes and daemonize still work.
 
 Build and test from this directory:
 

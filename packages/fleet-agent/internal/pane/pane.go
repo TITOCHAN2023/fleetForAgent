@@ -88,9 +88,15 @@ type Pane struct {
 	seq               int
 	stdin             io.WriteCloser
 	cmd               *exec.Cmd
+	handle            sessionHandle
 	screen            *vtScreen
 	rawOut            string
 	dirty             bool
+}
+
+// sessionHandle is the multiplexer viewer (pty / tmux / zellij).
+type sessionHandle interface {
+	Destroy()
 }
 
 type liveSlot struct {
@@ -186,17 +192,24 @@ func (s *Supervisor) KillAllLive() {
 		}
 	}
 	var procs []*exec.Cmd
+	var handles []sessionHandle
 	for _, p := range s.panes {
 		if p == nil {
 			continue
 		}
 		p.mu.Lock()
-		if p.cmd != nil && p.cmd.Process != nil {
+		if p.handle != nil {
+			handles = append(handles, p.handle)
+			p.handle = nil
+		} else if p.cmd != nil && p.cmd.Process != nil {
 			procs = append(procs, p.cmd)
 		}
 		p.mu.Unlock()
 	}
 	s.mu.Unlock()
+	for _, h := range handles {
+		h.Destroy()
+	}
 	for _, cmd := range procs {
 		killLiveProcess(cmd.Process)
 	}

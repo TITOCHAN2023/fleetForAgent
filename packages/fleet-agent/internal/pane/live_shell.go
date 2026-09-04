@@ -2,6 +2,7 @@ package pane
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/TITOCHAN2023/fleetForAgent/internal/pane/backend"
 )
 
 const (
@@ -63,6 +66,7 @@ type liveJob struct {
 
 type liveShell struct {
 	cmd        *exec.Cmd
+	handle     sessionHandle
 	stdin      io.WriteCloser
 	mu         sync.Mutex
 	writeMu    sync.Mutex
@@ -546,9 +550,15 @@ func (ls *liveShell) kill() {
 	ls.mu.Lock()
 	cmd := ls.cmd
 	stdin := ls.stdin
+	h := ls.handle
 	ls.cmd = nil
+	ls.handle = nil
 	ls.exited = true
 	ls.mu.Unlock()
+	if h != nil {
+		h.Destroy()
+		return
+	}
 	if stdin != nil {
 		_ = stdin.Close()
 	}
@@ -616,11 +626,11 @@ func (s *Supervisor) pumpLive(fp string) {
 		s.mu.Unlock()
 
 		if err := s.ensureLive(fp); err != nil {
-			s.failLiveJob(job, err.Error())
+			s.failLiveJob(job, liveStartError(err))
 			continue
 		}
 		if err := s.startLiveJob(fp, job); err != nil {
-			s.failLiveJob(job, err.Error())
+			s.failLiveJob(job, liveStartError(err))
 			continue
 		}
 		return
@@ -638,7 +648,7 @@ func (s *Supervisor) ensureLive(fp string) error {
 	if live != nil {
 		live.kill()
 	}
-	next, err := startLiveShell()
+	next, err := startLiveShell(fp)
 	if err != nil {
 		s.mu.Lock()
 		sl := s.slotLocked(fp)
@@ -877,6 +887,14 @@ func (s *Supervisor) onLiveExit(fp string) {
 		job.pane.finishCommand("", code)
 	}
 	go s.pumpLive(fp)
+}
+
+func liveStartError(err error) string {
+	var ge *backend.GateError
+	if errors.As(err, &ge) {
+		return ge.UserMessage()
+	}
+	return err.Error()
 }
 
 func (s *Supervisor) failLiveJob(job *liveJob, msg string) {

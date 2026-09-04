@@ -56,7 +56,7 @@ Full walkthrough: [English](docs/en/deploy.md) · [中文](docs/zh/deploy.md)
 npm run test:intranet
 ```
 
-That is `scripts/plugin-peer-vm/` — Agent A + Agent B + Tool on a dedicated Docker bridge, local Wrangler hub. Details: [`AGENTS.md`](AGENTS.md).
+That is `scripts/plugin-peer-vm/` — Agent A + Agent B + Tool on a dedicated Docker bridge, local Wrangler hub. Details: [`TESTING.md`](TESTING.md).
 
 ## Local is only a CLI
 

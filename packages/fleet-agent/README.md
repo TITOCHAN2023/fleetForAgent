@@ -47,7 +47,7 @@ go test ./...
 go build .
 ```
 
-`go test` is local only. Fleet behavior that crosses Agent / Hub / Tool / live shell / RTC / plugins is unverified until the two-pod intranet lab at the repo root has passed. See [`AGENTS.md`](../../AGENTS.md) and `scripts/plugin-peer-vm/`.
+`go test` is local only. Fleet behavior that crosses Agent / Hub / Tool / live shell / RTC / plugins is unverified until the two-pod intranet lab at the repo root has passed. See [`TESTING.md`](../../TESTING.md) and `scripts/plugin-peer-vm/`.
 
 ```bash
 npm run test:intranet

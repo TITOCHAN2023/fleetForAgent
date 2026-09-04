@@ -40,14 +40,20 @@ A durable peer cancellation is acknowledged only after the current FLPP process 
 
 Persistent live shells use a botmux-style session backend (`internal/pane/backend`). Default is **tmux** (survives agent restart via reattach). `FLEET_BACKEND_TYPE=zellij` opts into zellij. `FLEET_BACKEND_TYPE=pty` is the emergency raw PTY (does not survive restart). A requested tmux/zellij that is missing on the host is a hard gate — there is no silent fallback to PTY. One-shot `run` commands stay on an isolated PTY so `command -c` exit codes and daemonize still work.
 
-Build and test from this directory:
+Build from this directory:
 
 ```bash
 go test ./...
 go build .
 ```
 
-Tests that dispatch an Envelope into a real shell must run in the disposable container from the repository root:
+`go test` is local only. Fleet behavior that crosses Agent / Hub / Tool / live shell / RTC / plugins is unverified until the two-pod intranet lab at the repo root has passed. See [`AGENTS.md`](../../AGENTS.md) and `scripts/plugin-peer-vm/`.
+
+```bash
+npm run test:intranet
+```
+
+Envelope→shell tests that must not touch the host go in the disposable single container (not an intranet lab):
 
 ```bash
 npm run test:agent:sandbox

@@ -11,7 +11,8 @@ packages/fleet-agent/
   autoupdate.go, update*.go, restart.go, heartbeat.go, tokenv1.go, cli.go, …
   internal/
     desktop/         capture, HID, pointer motion, JPEG viewport
-    pane/            PTY / oneshot shells, vt screen, type keys
+    pane/            session backends (tmux/zellij/pty), oneshot shells, vt screen, type keys
+    pane/backend/    multiplexer selector copied from botmux (default tmux)
     tray/            systray menu; takes a Controller, not Agent
     keepalive/       idle-sleep assertion (caffeinate / inhibit / ES_SYSTEM_REQUIRED)
     policy/          always-blocked destructive commands
@@ -26,6 +27,7 @@ Where to change what:
 | Hub protocol, permit, settings page | `main.go` |
 | Screenshot / mouse / keyboard OS bits | `internal/desktop/` |
 | Shell panes and live PTY | `internal/pane/` |
+| Live session backend (tmux / zellij / pty) | `internal/pane/backend/` |
 | Menu-bar / tray UI | `internal/tray/` |
 | Keep the machine awake while enabled | `internal/keepalive/` |
 | `rm -rf /` and friends | `internal/policy/` |
@@ -36,14 +38,22 @@ All plugin installation, removal, task execution, and peer sessions follow that 
 
 A durable peer cancellation is acknowledged only after the current FLPP process accepts this invocation's `cancel`, emits a valid v1 `status=canceled`, and exits cleanly with code 0. Timeout, forced termination, signal/non-zero exit, or a missing/invalid status is not a cancellation receipt. WSS loss uses Abort and retains a bounded recovery owner; a later Hub cancellation, permit-off, auth revocation, or token reset reopens the immutable plugin session, sends `open` then `cancel`, and clears the owner only after the same receipt. Replayed prepare atomically inherits that cleanup debt before it is acknowledged.
 
-Build and test from this directory:
+Persistent live shells use a botmux-style session backend (`internal/pane/backend`). Default is **tmux** (survives agent restart via reattach). `FLEET_BACKEND_TYPE=zellij` opts into zellij. `FLEET_BACKEND_TYPE=pty` is the emergency raw PTY (does not survive restart). A requested tmux/zellij that is missing on the host is a hard gate — there is no silent fallback to PTY. One-shot `run` commands stay on an isolated PTY so `command -c` exit codes and daemonize still work.
+
+Build from this directory:
 
 ```bash
 go test ./...
 go build .
 ```
 
-Tests that dispatch an Envelope into a real shell must run in the disposable container from the repository root:
+`go test` is local only. Fleet behavior that crosses Agent / Hub / Tool / live shell / RTC / plugins is unverified until the two-pod intranet lab at the repo root has passed. See [`TESTING.md`](../../TESTING.md) and `scripts/plugin-peer-vm/`.
+
+```bash
+npm run test:intranet
+```
+
+Envelope→shell tests that must not touch the host go in the disposable single container (not an intranet lab):
 
 ```bash
 npm run test:agent:sandbox

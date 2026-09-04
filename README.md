@@ -48,6 +48,16 @@ FLEET_URL=https://fleet.ginfo.cc FLEET_TOKEN=flt_... node packages/fleet-tool/in
 
 Full walkthrough: [English](docs/en/deploy.md) · [中文](docs/zh/deploy.md)
 
+## Tests
+
+`npm test` and `packages/fleet-agent` `go test` are unit suites. They do not simulate two machines. Cross-host behavior needs the two-pod intranet lab. On Linux each pod is capped at 1 CPU / 1 GiB:
+
+```bash
+npm run test:intranet
+```
+
+Details: [`TESTING.md`](TESTING.md) and `scripts/intranet-lab/`. The heavier plugin/RTC lab is `npm run test:intranet:peer`.
+
 ## Local is only a CLI
 
 ```bash

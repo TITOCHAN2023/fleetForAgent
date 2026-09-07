@@ -2,6 +2,8 @@
 
 常见怀疑：GitHub 上一套，[https://fleet.ginfo.cc](https://fleet.ginfo.cc) 另一套。不要拿仓库截图当证据，去核。
 
+站点文章（也在 `/docs`）：[为什么线上中枢就是 GitHub 上这棵树](https://fleet.ginfo.cc/docs/same-source-as-github)。
+
 ## 线上身份
 
 未鉴权，`Cache-Control: no-store`：

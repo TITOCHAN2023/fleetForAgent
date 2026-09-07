@@ -1,6 +1,22 @@
 {
   "posts": [
     {
+      "slug": "same-source-as-github",
+      "date": "2026-09-07",
+      "langs": [
+        "en",
+        "zh"
+      ],
+      "title": {
+        "en": "Why the hosted hub is this GitHub tree",
+        "zh": "为什么线上中枢就是 GitHub 上这棵树"
+      },
+      "summary": {
+        "en": "fleet.ginfo.cc publishes the git commit it was built from. Check it; do not take a screenshot of the repo as proof.",
+        "zh": "fleet.ginfo.cc 会公开它部署时的 git commit。去核，不要拿仓库截图当证据。"
+      }
+    },
+    {
       "slug": "rtc-with-a-brake",
       "date": "2026-08-27",
       "langs": [

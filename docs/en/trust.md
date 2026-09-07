@@ -2,6 +2,8 @@
 
 The usual doubt: GitHub is one tree and [https://fleet.ginfo.cc](https://fleet.ginfo.cc) is another. Check it; do not take a screenshot of the repo as proof.
 
+Site article (also on `/docs`): [Why the hosted hub is this GitHub tree](https://fleet.ginfo.cc/docs/same-source-as-github).
+
 ## Live identity
 
 Unauthenticated, `Cache-Control: no-store`:

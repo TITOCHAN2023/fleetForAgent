@@ -13,7 +13,7 @@ Local `npm run dev` is a CLI on 127.0.0.1. The product is the cloud: agents dial
 
 Four values: **domain URL**, **hub token**, **Agent on each PC**, **import the tool**. Then Cursor / Claude can list and run on every machine you enrolled.
 
-[Try the hub](https://fleet.ginfo.cc) · [Docs](https://fleet.ginfo.cc/docs) · [Latest release](https://github.com/TITOCHAN2023/fleetForAgent/releases/latest) · [Deploy](docs/en/deploy.md) · [中文文档](docs/zh/README.md)
+[Try the hub](https://fleet.ginfo.cc) · [Docs](https://fleet.ginfo.cc/docs) · [Source](https://fleet.ginfo.cc/source) · [Latest release](https://github.com/TITOCHAN2023/fleetForAgent/releases/latest) · [Deploy](docs/en/deploy.md) · [Trust](docs/en/trust.md) · [中文文档](docs/zh/README.md)
 
 ## How it works
 

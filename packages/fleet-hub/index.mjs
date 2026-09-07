@@ -24,6 +24,13 @@ import {
   unsupportedCapBody,
 } from "../fleet-worker/src/presence.mjs";
 import { createSessionBook, fingerprintFromHeaders } from "../fleet-worker/src/session.mjs";
+import {
+  isSourcePath,
+  isTrustPath,
+  publicSource,
+  sourceHeaders,
+  trustPage,
+} from "../fleet-worker/src/source.mjs";
 import { officialPlugin } from "../fleet-tool/operator.mjs";
 
 const CORS = {
@@ -57,6 +64,13 @@ export function createHub({
   updateBase = process.env.FLEET_UPDATE_BASE || "",
   checksumsUrl = process.env.FLEET_UPDATE_CHECKSUMS || "",
   checksumsText = process.env.FLEET_UPDATE_SUMS || "",
+  source = {
+    SOURCE_REPO: process.env.SOURCE_REPO,
+    SOURCE_COMMIT: process.env.SOURCE_COMMIT,
+    SOURCE_TAG: process.env.SOURCE_TAG,
+    SOURCE_WORKFLOW_RUN: process.env.SOURCE_WORKFLOW_RUN,
+    SOURCE_BUNDLE_SHA256: process.env.SOURCE_BUNDLE_SHA256,
+  },
 } = {}) {
   /** @type {Map<string, { id: string, name: string, os: string, online: boolean, lastSeen: number, agentVer?: string }>} */
   const fleet = new Map();
@@ -351,6 +365,25 @@ export function createHub({
     }
     const url = new URL(req.url ?? "/", "http://hub");
 
+    if (isSourcePath(url.pathname) || isTrustPath(url.pathname)) {
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        write(res, 405, { error: "method not allowed" });
+        return;
+      }
+      const identity = publicSource(source, { backend: "node" });
+      if (isTrustPath(url.pathname)) {
+        const origin = `http://${req.headers.host || "127.0.0.1"}`;
+        const headers = { ...CORS, ...sourceHeaders("text/html; charset=utf-8") };
+        res.writeHead(200, headers);
+        res.end(req.method === "HEAD" ? "" : trustPage(identity, { origin }));
+        return;
+      }
+      const headers = { ...CORS, ...sourceHeaders("application/json") };
+      res.writeHead(200, headers);
+      res.end(req.method === "HEAD" ? "" : JSON.stringify(identity));
+      return;
+    }
+
     if (url.pathname === "/" || url.pathname === "/v1/health") {
       write(res, 200, {
         name: "fleet-hub",
@@ -358,6 +391,7 @@ export function createHub({
         ok: true,
         backend: "node",
         ...advertisedUpdate({ latestAgentVer, updateBase, checksumsUrl, checksumsText }),
+        source: publicSource(source, { backend: "node" }),
       });
       return;
     }

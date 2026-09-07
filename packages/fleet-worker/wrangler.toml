@@ -24,6 +24,11 @@ HUB_ORIGIN = "https://fleet.ginfo.cc"
 # Bounded task/shell calls keep their Hub/WSS fallback when direct ICE is
 # unavailable. Generic peer sessions remain direct-only and fail closed.
 RTC_STUN_URLS = "stun:stun.cloudflare.com:3478"
+# Public git remote advertised at GET /source. SOURCE_COMMIT / SOURCE_TAG /
+# SOURCE_WORKFLOW_RUN / SOURCE_BUNDLE_SHA256 are injected by
+# .github/workflows/deploy-hub.yml from $GITHUB_SHA. Do not put a fake SHA
+# here — /source.verified is false unless SOURCE_COMMIT is a 40-hex object.
+SOURCE_REPO = "https://github.com/TITOCHAN2023/fleetForAgent"
 
 [[routes]]
 pattern = "fleet.ginfo.cc"
@@ -34,7 +39,7 @@ custom_domain = true
 directory = "./public"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/v1", "/v1/*", "/mcp", "/mcp/sse", "/ops", "/fleet-tool.tgz"]
+run_worker_first = ["/source", "/trust", "/v1", "/v1/*", "/mcp", "/mcp/sse", "/ops", "/fleet-tool.tgz"]
 
 [[durable_objects.bindings]]
 name = "DEVICE"

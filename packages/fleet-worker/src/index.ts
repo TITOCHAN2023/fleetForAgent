@@ -80,6 +80,13 @@ import {
   type PeerSessionRecord,
 } from "./peer-session";
 import {
+  isSourcePath,
+  isTrustPath,
+  publicSource,
+  sourceHeaders,
+  trustPage,
+} from "./source.mjs";
+import {
   audMismatch,
   bearerToken,
   CHALLENGE_TTL_MS,
@@ -117,6 +124,11 @@ export interface Env {
   AGENT_UPDATE_CHECKSUMS?: string;
   AGENT_UPDATE_SUMS?: string;
   RTC_STUN_URLS?: string;
+  SOURCE_REPO?: string;
+  SOURCE_COMMIT?: string;
+  SOURCE_TAG?: string;
+  SOURCE_WORKFLOW_RUN?: string;
+  SOURCE_BUNDLE_SHA256?: string;
 }
 
 export { PeerSessionDO };
@@ -596,6 +608,25 @@ export default {
       return dispatchMcpHttp(request, env);
     }
 
+    if (isSourcePath(path) || isTrustPath(path)) {
+      if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return json({ error: "method not allowed" }, 405);
+      }
+      const identity = publicSource(env, { backend: "worker" });
+      if (isTrustPath(path)) {
+        return new Response(
+          request.method === "HEAD" ? null : trustPage(identity, { origin: configuredOrigin(env) }),
+          {
+            headers: { ...sourceHeaders("text/html; charset=utf-8"), ...CORS },
+          },
+        );
+      }
+      return new Response(request.method === "HEAD" ? null : JSON.stringify(identity), {
+        headers: { ...sourceHeaders("application/json"), ...CORS },
+      });
+    }
+
     if (!hub) {
       if (!env.ASSETS) return new Response("site missing", { status: 500 });
       return env.ASSETS.fetch(request);
@@ -604,7 +635,13 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
 
     if (url.pathname === "/v1/health") {
-      return json({ name: "fleet-hub", v: 1, ok: true, ...updateAdvert(env) });
+      return json({
+        name: "fleet-hub",
+        v: 1,
+        ok: true,
+        ...updateAdvert(env),
+        source: publicSource(env, { backend: "worker" }),
+      });
     }
 
     const oauth = await handleOAuth(request, env);

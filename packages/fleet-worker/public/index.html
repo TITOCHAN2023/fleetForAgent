@@ -221,7 +221,7 @@
       function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\"/g,"&quot;"); }
       const T = {
         zh: {
-          help: "帮助", docs: "文档", plugins: "插件", downloads: "下载", signOut: "退出", settings: "设置", fleet: "机器", ops: "管理",
+          help: "帮助", docs: "文档", plugins: "插件", source: "源码", downloads: "下载", signOut: "退出", settings: "设置", fleet: "机器", ops: "管理",
           kicker: "fleet.ginfo.cc",
           hero: "一个工具连接所有电脑随时随地。",
           body: "用本站地址和 token 导入工具。Windows、Linux、macOS 上的 Agent 会通过 WebSocket 主动连出来。",
@@ -242,6 +242,7 @@
           cloudBody: "把中枢部署上云，或直接用本站。一个账号，所有电脑。",
           helpTitle: "怎么用",
           helpLead: "这个网站就是中枢。登录、给每台电脑装 Agent、导入工具。之后任何 MCP 客户端都能操作你所有机器。",
+          sourceHint: "这个中枢会公开它部署时的 git commit。curl /source 就能对 GitHub。",
           docsTitle: "文档",
           docsLead: "做 Fleet 时记下的东西。docs/blog/ 里的 markdown 会变成一篇。Help 是怎么用，这里是怎么做成的。",
           docsEmpty: "还没有文章。",
@@ -292,7 +293,7 @@
           themeL: "浅色", themeD: "深色", themeS: "系统",
         },
         en: {
-          help: "Help", docs: "Docs", plugins: "Plugins", downloads: "Downloads", signOut: "Sign out", settings: "Settings", fleet: "Machines", ops: "Ops",
+          help: "Help", docs: "Docs", plugins: "Plugins", source: "Source", downloads: "Downloads", signOut: "Sign out", settings: "Settings", fleet: "Machines", ops: "Ops",
           kicker: "fleet.ginfo.cc",
           hero: "One tool for every computer anywhere.",
           body: "Import the MCP tool with this URL and a token. Agents on Windows, Linux, and macOS dial out over WebSocket.",
@@ -313,6 +314,7 @@
           cloudBody: "Deploy the hub, or just use this site. One account, every PC.",
           helpTitle: "How to use Fleet",
           helpLead: "This website is the hub. Sign in, install an Agent on each computer, import the tool. Then any MCP client can reach every machine.",
+          sourceHint: "This hub publishes the git commit it was built from. curl /source and compare it to GitHub.",
           docsTitle: "Docs",
           docsLead: "Notes from building Fleet. Markdown in docs/blog/ becomes a post. Help is how to use it; this is how it is built.",
           docsEmpty: "Nothing here yet.",
@@ -674,6 +676,7 @@
           <a class="nav-link" href="/help" data-go="/help">${t("help")}</a>
           <a class="nav-link" href="/docs" data-go="/docs">${t("docs")}</a>
           <a class="nav-link" href="/plugins" data-go="/plugins">${t("plugins")}</a>
+          <a class="nav-link" href="/trust">${t("source")}</a>
           ${opsSwitch()}
           <span class="spacer"></span>
           ${extra || ""}
@@ -873,6 +876,7 @@
             <p class="kicker">${t("kicker")}</p>
             <h1>${t("helpTitle")}</h1>
             <p class="lead">${t("helpLead")}</p>
+            <p class="muted">${t("sourceHint")} <a class="nav-link" href="/source">/source</a> · <a class="nav-link" href="/trust">${t("source")}</a></p>
             <h2>${t("archTitle")}</h2>
             <p class="muted" style="margin:8px 0 20px">${t("archHint")}</p>
             ${fan()}

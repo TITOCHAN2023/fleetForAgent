@@ -1,0 +1,92 @@
+name: Deploy hosted hub
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "packages/fleet-worker/**"
+      - "packages/fleet-tool/**"
+      - ".github/workflows/deploy-hub.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-hub
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22.22.0"
+
+jobs:
+  deploy:
+    name: Bake commit and deploy Worker
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out the exact commit that will be advertised
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked Worker dependencies
+        run: npm ci --prefix packages/fleet-worker
+
+      - name: Bundle Worker and hash the script
+        working-directory: packages/fleet-worker
+        env:
+          WRANGLER_SEND_METRICS: "false"
+        run: |
+          out="$RUNNER_TEMP/fleet-worker-bundle"
+          npm exec -- wrangler deploy --dry-run --outdir "$out"
+          mapfile -t scripts < <(find "$out" -maxdepth 1 -type f -name '*.js' ! -name '*.map' | sort)
+          test "${#scripts[@]}" -ge 1
+          sha256sum "${scripts[0]}" | awk '{print $1}' > "$RUNNER_TEMP/fleet-worker-bundle.sha256"
+          test "$(wc -c < "$RUNNER_TEMP/fleet-worker-bundle.sha256")" -eq 65
+          echo "SOURCE_BUNDLE_SHA256=$(cat "$RUNNER_TEMP/fleet-worker-bundle.sha256")" >> "$GITHUB_ENV"
+          echo "SOURCE_BUNDLE_PATH=${scripts[0]}" >> "$GITHUB_ENV"
+
+      - name: Attest the Worker bundle this job built
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ env.SOURCE_BUNDLE_PATH }}
+
+      - name: Deploy the same checkout with SOURCE_COMMIT=$GITHUB_SHA
+        working-directory: packages/fleet-worker
+        env:
+          WRANGLER_SEND_METRICS: "false"
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || {
+            echo "CLOUDFLARE_API_TOKEN must live as a GitHub Actions secret, not on a laptop." >&2
+            exit 1
+          }
+          test "$GITHUB_SHA" = "$(git rev-parse HEAD)"
+          tag=""
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="$GITHUB_REF_NAME"
+          fi
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          vars=(
+            --var "SOURCE_COMMIT:${GITHUB_SHA}"
+            --var "SOURCE_REPO:https://github.com/TITOCHAN2023/fleetForAgent"
+            --var "SOURCE_WORKFLOW_RUN:${run_url}"
+            --var "SOURCE_BUNDLE_SHA256:${SOURCE_BUNDLE_SHA256}"
+          )
+          if [ -n "$tag" ]; then
+            vars+=(--var "SOURCE_TAG:${tag}")
+          fi
+          # Do not keep dashboard vars. A laptop wrangler deploy without these
+          # --var flags must drop SOURCE_COMMIT so /source.verified becomes false.
+          npm exec -- wrangler deploy "${vars[@]}"

@@ -9,6 +9,7 @@ const workflows = [
   ".github/workflows/ci.yml",
   ".github/workflows/release-agent.yml",
   ".github/workflows/windows-plugin-process-tree.yml",
+  ".github/workflows/deploy-hub.yml",
 ];
 
 test("GitHub Actions are pinned to immutable commits with an exact version comment", () => {
@@ -42,6 +43,17 @@ test("macOS release validation serializes process and PTY packages", () => {
     source,
     /- name: Test Agent on macOS[\s\S]*?working-directory: packages\/fleet-agent[\s\S]*?run: go test -p 1 \.\/\.\.\./,
   );
+});
+
+test("hosted hub deploy bakes GITHUB_SHA and refuses a missing Cloudflare token", () => {
+  const source = readFileSync(join(root, ".github/workflows/deploy-hub.yml"), "utf8");
+  assert.match(source, /--var "SOURCE_COMMIT:\$\{GITHUB_SHA\}"/);
+  assert.match(source, /secrets\.CLOUDFLARE_API_TOKEN/);
+  assert.match(source, /CLOUDFLARE_API_TOKEN must live as a GitHub Actions secret/);
+  assert.match(source, /wrangler deploy --dry-run --outdir/);
+  assert.match(source, /actions\/attest@/);
+  assert.doesNotMatch(source, /--keep-vars/);
+  assert.match(source, /Do not keep dashboard vars/);
 });
 
 test("macOS release packaging selects ownership flags by tar implementation", () => {

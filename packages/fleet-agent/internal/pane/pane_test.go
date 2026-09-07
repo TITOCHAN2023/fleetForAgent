@@ -2,10 +2,23 @@ package pane
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/TITOCHAN2023/fleetForAgent/internal/pane/backend"
 )
+
+func TestMain(m *testing.M) {
+	// Existing pane tests are oneshot isolation tests. Pin them to PTY so a
+	// missing tmux on CI does not hard-gate every spawn. Production default
+	// remains tmux (see backend.DefaultType).
+	if os.Getenv(backend.EnvVar) == "" {
+		_ = os.Setenv(backend.EnvVar, string(backend.TypePTY))
+	}
+	os.Exit(m.Run())
+}
 
 func testPane() *Pane {
 	return &Pane{

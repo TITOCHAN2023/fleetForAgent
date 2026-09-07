@@ -4,41 +4,67 @@ package pane
 
 import (
 	"fmt"
-	"os/exec"
 	"time"
 
-	"github.com/creack/pty"
+	"github.com/TITOCHAN2023/fleetForAgent/internal/pane/backend"
 )
 
 func liveShellEnv() []string {
 	return runCommandEnv()
 }
 
-// startLiveShell opens an interactive login shell on a real PTY. Stdin,
-// stdout, and stderr stay nil so pty.Start attaches the same pts to all
-// three (one screen). ECHO is cleared on the master. Completion is PS1.
-func startLiveShell() (*liveShell, error) {
-	cmd := exec.Command(pickShell(), "-il")
-	if home := userHome(); home != "" {
-		cmd.Dir = home
+// startLiveShell opens an interactive login shell on the selected backend
+// (tmux default, zellij opt-in, pty emergency). Stdin/stdout/stderr share
+// one PTY master. ECHO is cleared on the master. Completion is PS1.
+func startLiveShell(fp string) (*liveShell, error) {
+	opts := backend.SpawnOpts{
+		Bin:  pickShell(),
+		Args: []string{"-il"},
+		Cwd:  userHome(),
+		Env:  liveShellEnv(),
+		Cols: livePtyCols,
+		Rows: livePtyRows,
 	}
-	cmd.Env = liveShellEnv()
-
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: livePtyRows, Cols: livePtyCols})
+	h, err := backend.Open(backend.SessionName(fp), opts)
 	if err != nil {
-		return nil, fmt.Errorf("pty start: %w", err)
+		return nil, err
 	}
-	disableMasterEcho(ptmx)
+	if h.File == nil {
+		h.Destroy()
+		return nil, fmt.Errorf("%s backend returned no pty", h.Type)
+	}
 
-	ls := &liveShell{cmd: cmd, stdin: ptmx, lastUsed: time.Now(), idleFor: shellIdleFor}
+	disableMasterEcho(h.File)
+
+	ls := &liveShell{
+		cmd:      h.Cmd,
+		handle:   h,
+		stdin:    h.File,
+		lastUsed: time.Now(),
+		idleFor:  shellIdleFor,
+	}
 	ls.screen = newVTScreen(livePtyCols, livePtyRows, ls)
 	readyCh := make(chan struct{}, 1)
-	beginLiveIO(ls, ptmx, readyCh)
+	beginLiveIO(ls, h.File, readyCh)
 	go func() {
-		_ = cmd.Wait()
-		_ = ptmx.Close()
+		if h.Cmd != nil {
+			_ = h.Cmd.Wait()
+		}
+		_ = h.File.Close()
 		ls.markExit()
 	}()
-	waitLiveReady(ls, ptmx, readyCh)
+	if h.Reattach {
+		// Surviving mux session already has PS1 from the previous agent.
+		ls.mu.Lock()
+		ls.ready = true
+		ls.rawOut = ""
+		ls.rawErr = ""
+		ls.mu.Unlock()
+		if f := h.File; f != nil {
+			disableMasterEcho(f)
+		}
+		return ls, nil
+	}
+	waitLiveReady(ls, h.File, readyCh)
 	return ls, nil
 }

@@ -71,6 +71,8 @@ The callback origin, `HUB_ORIGIN`, and route hostname must describe the same sit
 npx wrangler deploy
 ```
 
+Production `https://fleet.ginfo.cc` is not supposed to come from a laptop. `.github/workflows/deploy-hub.yml` bakes `SOURCE_COMMIT=$GITHUB_SHA` so [GET /source](https://fleet.ginfo.cc/source) can be checked against GitHub. A laptop `wrangler deploy` without those `--var` flags makes `/source.verified` false. How to read that document: [trust.md](trust.md). Put `CLOUDFLARE_API_TOKEN` in Actions secrets, not on the laptop.
+
 `wrangler.toml` sets `workers_dev = false`, so there is no `*.workers.dev` URL. Bind that custom domain in Cloudflare and paste its origin into the Agent. This repo's production host is `https://fleet.ginfo.cc`. For a workers.dev preview, enable `workers_dev`, remove the custom route, and use the workers.dev origin consistently in OAuth and `HUB_ORIGIN`.
 
 ### Authentication

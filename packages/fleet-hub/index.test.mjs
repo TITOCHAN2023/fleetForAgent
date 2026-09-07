@@ -75,6 +75,37 @@ test("health is open and names the node backend", async (t) => {
   assert.equal(res.status, 200);
   assert.equal(json.ok, true);
   assert.equal(json.backend, "node");
+  assert.equal(json.source.verified, false);
+});
+
+test("source identity is public and does not require the hub token", async (t) => {
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+  const hub = createHub({
+    token: "secret",
+    source: {
+      SOURCE_COMMIT: commit,
+      SOURCE_REPO: "https://github.com/TITOCHAN2023/fleetForAgent",
+      SOURCE_WORKFLOW_RUN: "https://github.com/TITOCHAN2023/fleetForAgent/actions/runs/9",
+    },
+  });
+  t.after(() => hub.close());
+  const { http } = await listen(hub);
+  const denied = await post(http, "/v1/list_computers", {});
+  assert.equal(denied.status, 401);
+  const source = await fetch(`${http}/source`);
+  const body = await source.json();
+  assert.equal(source.status, 200);
+  assert.equal(body.verified, true);
+  assert.equal(body.source_commit, commit);
+  assert.equal(body.backend, "node");
+  const v1 = await fetch(`${http}/v1/source`).then((r) => r.json());
+  assert.equal(v1.source_commit, commit);
+  const trust = await fetch(`${http}/trust`);
+  assert.equal(trust.status, 200);
+  assert.match(trust.headers.get("content-type") || "", /text\/html/);
+  const html = await trust.text();
+  assert.match(html, new RegExp(commit));
+  assert.doesNotMatch(html, /<script/);
 });
 
 test("control plane requires token when set", async (t) => {

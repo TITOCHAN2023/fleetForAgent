@@ -850,7 +850,7 @@
           ? `<ul class="blog-list">${posts.map((item) => {
               const title = pickBlog(item.title) || item.slug;
               const summary = pickBlog(item.summary) || "";
-                  return `<li><a href="/docs/${encodeURIComponent(item.slug)}" data-go="/docs/${item.slug}"><span class="when">${esc(item.date || "—")}</span><span><strong>${esc(title)}</strong>${summary ? `<span class="muted hand-copy" style="display:block;margin-top:4px;font-size:16px">${esc(summary)}</span>` : ""}</span></a></li>`;
+                  return `<li><a href="/docs/${encodeURIComponent(item.slug)}" data-go="/docs/${item.slug}"><span class="when">${esc(item.pinned ? (state.locale === "zh" ? "置顶 · 持续更新" : "Pinned · Living doc") : item.date || "—")}</span><span><strong>${esc(title)}</strong>${summary ? `<span class="muted hand-copy" style="display:block;margin-top:4px;font-size:16px">${esc(summary)}</span>` : ""}</span></a></li>`;
             }).join("")}</ul>`
           : `<p class="muted" style="margin-top:48px">${t("docsEmpty")}</p>`;
         return `${chrome()}

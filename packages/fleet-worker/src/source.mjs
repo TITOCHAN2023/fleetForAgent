@@ -35,7 +35,10 @@ export function sourceIdentity(env = {}) {
     name: "fleet-hub",
     source_repo: repo.replace(/\/+$/, ""),
     source_commit: verified ? commit : "",
-    verified,
+    verified, // Legacy format check only; retained for existing clients.
+    source_claim_present: verified,
+    verification_method: "self-reported",
+    runtime_verified: false,
   };
   if (verified) {
     out.source_commit_url = `${out.source_repo}/commit/${commit}`;
@@ -81,10 +84,10 @@ export function trustPage(identity, { origin = "https://fleet.ginfo.cc" } = {}) 
   const runUrl = htmlEscape(src.source_workflow_run || "");
   const bundle = htmlEscape(src.source_bundle_sha256 || "");
   const hub = htmlEscape(String(origin || "https://fleet.ginfo.cc").replace(/\/+$/, ""));
-  const status = verified ? "verified" : "unverified";
+  const status = verified ? "source declared" : "source missing";
   const statusLabel = verified
     ? "This process reports a 40-hex git commit baked at deploy."
-    : "No 40-hex SOURCE_COMMIT is baked into this process. Treat the hosted hub as unverified.";
+    : "No 40-hex SOURCE_COMMIT is baked into this process. No source claim is available.";
 
   return `<!doctype html>
 <html lang="en">
@@ -92,7 +95,7 @@ export function trustPage(identity, { origin = "https://fleet.ginfo.cc" } = {}) 
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Fleet source identity</title>
-  <meta name="description" content="Check that fleet.ginfo.cc was deployed from the public GitHub repository." />
+  <meta name="description" content="Inspect Fleet release evidence and its verification limits." />
   <link rel="icon" href="/favicon.ico" sizes="any" />
   <style>
     :root { color-scheme: light dark; --bg:#f7f7f8; --fg:#0d0d0d; --muted:#6e6e80; --ok:#0f7b4c; --bad:#c7381a; --border:#e5e5e5; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; --sans: ui-sans-serif, system-ui, sans-serif; }
@@ -120,9 +123,10 @@ export function trustPage(identity, { origin = "https://fleet.ginfo.cc" } = {}) 
   <main>
     <p class="nav"><a href="/">Fleet</a><a href="/source">/source JSON</a><a href="${repo}">GitHub</a></p>
     <p><span class="status ${verified ? "ok" : "bad"}">${status}</span></p>
-    <h1>Same tree as GitHub, or not</h1>
+    <h1>Hub release evidence</h1>
     <p>${htmlEscape(statusLabel)}</p>
-    <p>The usual doubt: the public repo is one codebase and <code>${hub}</code> is another. This page is the check. It is not a Cloudflare bytecode dump — nobody outside Cloudflare can hash the live Worker isolate. What you can check is the git object this process claims, the public Actions run that deployed it, and the Agent attestations on GitHub Releases.</p>
+    <p>This page reports the source identity claimed by <code>${hub}</code>. It does not independently verify the running code. A valid commit string is not a security verdict.</p>
+    <p><a href="/docs/same-source-as-github">Read the maintained trust document: evidence, limits, and next steps.</a></p>
     <h2>What this process claims</h2>
     <dl>
       <dt>repository</dt><dd><a href="${repo}">${repo}</a></dd>
@@ -135,12 +139,16 @@ export function trustPage(identity, { origin = "https://fleet.ginfo.cc" } = {}) 
     </dl>
     <h2>Check it yourself</h2>
     <pre>curl -sS ${hub}/source
-# source_commit should be a 40-hex SHA and verified=true
+# A valid source_commit is a claim, not runtime verification
 git ls-remote ${repo.replace(/\/+$/, "")}.git ${commit || "HEAD"}
 ${verified ? `git clone --depth 1 ${repo}.git && git -C fleetForAgent fetch --depth 1 origin ${commit} && git -C fleetForAgent checkout ${commit}` : "# no commit baked; stop here"}</pre>
-    <h2>What a yes does not prove</h2>
-    <p>A Cloudflare account token can still publish a different Worker while advertising a public SHA. Mitigation: production deploys of <code>fleet.ginfo.cc</code> go through <code>.github/workflows/deploy-hub.yml</code> in this repository; <code>SOURCE_COMMIT</code> is set from <code>$GITHUB_SHA</code> in that job; a laptop <code>wrangler deploy</code> without those vars makes <code>verified</code> false. Agent installers are a stronger case: they embed <code>vcs.revision</code> and ship GitHub attestations plus <code>checksums-*.txt</code>.</p>
-    <p lang="zh">中文：线上中枢会公开它部署时的 git commit。用 <code>curl /source</code> 对一下 GitHub。Cloudflare 不会让你下载线上 Worker 字节码，所以这是「CI 烘焙 + 公开声明」，不是对 isolate 的哈希比对。Agent 安装包可以用 <code>gh attestation verify</code> 和 checksums 核。</p>
+    <h2>Verify the build evidence</h2>
+    <p>For releases using the evidence workflow, open the reported Actions run and download its hub-evidence artifact. Verify the archive before extracting it:</p>
+    <pre>gh attestation verify hub-evidence.tar.gz --repo TITOCHAN2023/fleetForAgent --signer-workflow TITOCHAN2023/fleetForAgent/.github/workflows/deploy-hub.yml</pre>
+    <p>Check the verified provenance commit, receipt, checksums and deploy step. Downloads require GitHub login; artifacts are retained for 90 days. The archive covers Worker JavaScript and repository configuration, not static assets, secrets or the live runtime.</p>
+    <h2>What remains a trust decision</h2>
+    <p>A Cloudflare account administrator can deploy different code while reporting a public SHA. Authorized reviewers can inspect deployed scripts and configuration through Cloudflare APIs; that is separate from this self-report and is not a per-request hardware proof. Independent deployment audits and enforced approval settings must be evidenced separately. The legacy JSON field <code>verified</code> checks commit format only; <code>runtime_verified</code> remains false.</p>
+    <p lang="zh">这里展示的是 Hub 自报的版本。请到公开发布记录核验下载文件的来源；这不能证明每次请求运行的代码。独立审计与生产权限设置的落实情况，请看置顶信任文档。</p>
   </main>
 </body>
 </html>

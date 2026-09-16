@@ -17,6 +17,7 @@ Front matter:
 title: Short title
 date: 2026-08-24
 summary: One line on the index.
+pinned: true
 ---
 
 Paragraphs, lists, `code`, fenced blocks, **bold**, and images:
@@ -25,3 +26,5 @@ Paragraphs, lists, `code`, fenced blocks, **bold**, and images:
 ```
 
 Then `npm run pack:blog` (also runs at `vite` start). Skip `README.md` and files that start with `_`.
+
+Use `pinned: true` for the maintained trust document. Pinned posts appear before dated posts. Update both language files when the release evidence or audit status changes.

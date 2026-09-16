@@ -1,89 +1,74 @@
 ---
-title: Why the hosted hub is this GitHub tree
-date: 2026-09-07
-summary: fleet.ginfo.cc publishes the git commit it was built from. Check it; do not take a screenshot of the repo as proof.
+title: Verifying the Fleet Hub: evidence, limits, and progress
+date: 2026-09-16
+pinned: true
+summary: A living trust document. Inspect release files and track what is implemented, what needs verification, and what remains a trust decision.
 ---
 
-A reasonable doubt about any hosted remote-control service is that the public repository is one codebase and the live website is another. Fleet treats that as a check, not a slogan.
+Public source code does not by itself establish what a hosted server runs. This pinned document maintains Fleet's release evidence, verification instructions, and unfinished work.
 
-The hosted hub is [https://fleet.ginfo.cc](https://fleet.ginfo.cc). The public tree is [https://github.com/TITOCHAN2023/fleetForAgent](https://github.com/TITOCHAN2023/fleetForAgent). This note explains what you can verify, what the Agent installers already prove more strongly, and what a Cloudflare Worker still cannot prove by talking about itself.
+**Current status: this repository provides the workflow below. Evidence exists for a release only after the relevant workflow runs; check deployment success separately. This document does not certify that production has adopted it or that an independent audit has occurred.**
 
-```mermaid
-flowchart TD
-  accTitle: How a reader checks the hosted hub against GitHub
-  accDescr: The reader asks the live hub for its source identity, then compares the reported git commit to the public repository and to the GitHub Actions run that deployed it.
-  A["Open the live hub"] --> B["GET /source"]
-  B --> C{"Is source_commit a 40-hex SHA and verified true?"}
-  C -->|"No"| D["Treat the hosted hub as unverified"]
-  C -->|"Yes"| E["Open that commit on GitHub"]
-  E --> F["Open the advertised Actions run"]
-  F --> G["Compare the SHA the job checked out"]
-```
-
-## Ask the live process
-
-The Worker answers without a login:
-
-```bash
-curl -sS https://fleet.ginfo.cc/source
-```
-
-The same document is at `/v1/source` and inside `/v1/health` as `source`. A page with no JavaScript is at [https://fleet.ginfo.cc/trust](https://fleet.ginfo.cc/trust).
-
-`verified` is true only when `SOURCE_COMMIT` is a 40-character hexadecimal git object name. Anything else, including a missing value after a laptop `wrangler deploy`, is unverified.
-
-The fields that matter:
-
-- `source_repo` — the public remote, defaulting to this GitHub repository
-- `source_commit` — the SHA baked at deploy time
-- `source_workflow_run` — the Actions run that published this Worker
-- `source_bundle_sha256` — SHA-256 of the Wrangler dry-run script from that same job
-
-If those values are absent or `verified` is false, stop. The hosted hub is not presenting a checkable identity.
-
-## How production is published
-
-The intended publisher of `fleet.ginfo.cc` is `.github/workflows/deploy-hub.yml` in this repository. That job checks out the commit it will advertise, builds a Worker bundle without deploying it, hashes that script, attests the digest with GitHub OIDC, and only then runs `wrangler deploy` with `SOURCE_COMMIT` set to `$GITHUB_SHA`.
-
-The Cloudflare API token belongs in GitHub Actions secrets. It does not belong on a laptop. The job does not keep dashboard variables from a previous publish, so a laptop deploy without those `--var` flags drops `SOURCE_COMMIT` and the live `/source` document becomes unverified.
+## What needs to match
 
 ```mermaid
 flowchart TD
-  accTitle: How a production Worker publish is supposed to happen
-  accDescr: GitHub Actions checks out one commit, hashes the Worker bundle, attests that digest, and deploys with SOURCE_COMMIT set to that same SHA. A laptop deploy without those variables leaves the hub unverified.
-  A["Push or dispatch on this repository"] --> B["Actions checks out GITHUB_SHA"]
-  B --> C["Wrangler dry-run hashes the script"]
-  C --> D["GitHub OIDC attests that digest"]
-  D --> E["wrangler deploy with SOURCE_COMMIT"]
-  E --> F["Live GET /source reports that SHA"]
-  G["Laptop wrangler deploy"] --> H["SOURCE_COMMIT is missing"]
-  H --> I["verified is false"]
+  A["GitHub source revision"] -->|"Public build records and attestations"| B["Downloadable Worker file"]
+  B -->|"Check the deployment step"| C["Cloud platform accepts deployment"]
+  C -.->|"No independent per-request proof today"| D["Code serving your request"]
 ```
 
-## What a yes does not prove
+The first steps supply inspectable release evidence. The last still depends on the operator and cloud platform. Provenance also does not establish that code is free of vulnerabilities.
 
-Cloudflare does not let a stranger download the live Worker isolate and hash it. A process that reports its own commit can also lie about that commit. Anyone who holds the Cloudflare token can publish a different Worker while advertising a public SHA.
+## Inspect a release
 
-The counter is process, not a bytecode proof. Production is supposed to come from this repository's Actions job. The advertised SHA is `$GITHUB_SHA` from that job. The workflow URL is public. A laptop publish without the baked variables makes `verified` false.
+```mermaid
+flowchart TD
+  A["Open /trust or /source"] --> B["Follow the GitHub Actions run link"]
+  B --> C["Download hub-evidence"]
+  C --> D["Verify attestation, revision and checksums"]
+  D --> E["Check deployment success separately from build success"]
+```
 
-That is enough to catch an accidental second tree. It is not a substitute for reading the git object yourself, and it is not as strong as verifying a file you already have on disk.
+Start at the [Hub source declaration](https://fleet.ginfo.cc/trust). Its commit, bundle hash and Actions link are leads to inspect, not independent proof. The legacy `verified=true` field only checks commit format. `runtime_verified=false` explicitly reports that running code has not been verified.
 
-## Agent installers are a stronger case
+Download `hub-evidence-COMMIT-ATTEMPT` from that run's Artifacts, then unpack GitHub's download ZIP to obtain `hub-evidence.tar.gz`. GitHub login is required. Artifacts expire after 90 days and can be deleted earlier; they are not a permanent append-only archive. Older releases without artifacts cannot be claimed as verified.
 
-Release binaries are files you can hold. The packaging script refuses a dirty checkout, requires the release tag to point at `HEAD`, and embeds `vcs.revision` with `go build -buildvcs=true`. GitHub Releases ship `checksums-*.txt` and OIDC attestations for those artifacts.
+Verify the archive's origin before extracting:
 
 ```bash
-curl -fsSL https://github.com/TITOCHAN2023/fleetForAgent/releases/latest/download/checksums.txt
-gh attestation verify --repo TITOCHAN2023/fleetForAgent FleetAgent-macos-arm64.dmg
-go version -m ./fleet-agent | grep vcs.revision
+gh attestation verify hub-evidence.tar.gz --repo TITOCHAN2023/fleetForAgent --signer-workflow TITOCHAN2023/fleetForAgent/.github/workflows/deploy-hub.yml
+mkdir hub-evidence
+tar -xzf hub-evidence.tar.gz -C hub-evidence
+cd hub-evidence
+sha256sum --check checksums.txt
+cat receipt.json
 ```
 
-The Agent on each computer is the component that can run commands. That is the binary whose digest you can check independently of anything the website says.
+Compare the attested source revision against `receipt.json`, its workflow link, and the Hub's claimed `source_bundle_sha256` against `worker.js`. Inspect that run's deployment step. A mismatch invalidates the matching-evidence claim.
 
-## Self-host when the hosted hub is not the authority you want
+The archive contains Worker JavaScript, the repository's `wrangler.toml`, a receipt and checksums. Attestations cover both the archive and original script. Deployment rechecks the script hash and uploads the same file without bundling again. **Static website assets, production secrets, databases and live memory are excluded; this is not evidence for all website behavior.**
 
-The Node hub and a Worker you deploy on your own account speak the same protocol. Set `SOURCE_COMMIT` to `git rev-parse HEAD` so `/source` describes the tree you built. Empty `SOURCE_COMMIT` stays unverified on purpose.
+## Progress and remaining work
 
-The hosted site is a convenience so Windows, Linux, and macOS can join one account without standing up a hub first. The source of truth for the code remains this GitHub repository. If you do not want to trust the hosted process, clone the tree, read it, and run it yourself.
+```mermaid
+flowchart TD
+  A["Repository: source claim, attestations, files, pinned guide"] --> B["Verify production: release result, permissions, approvals"]
+  B --> C["Planned: independent audit, permanent archive, incident records"]
+```
 
-The safety boundary on the device is a separate article: [Where the safety boundary belongs in remote computer control](/docs/why-fleet-is-safe).
+An independent audit should inspect deployed versions, routes, configuration and release permissions, not just source code. Cloudflare exposes script and deployment APIs for authorized reviewers. This is still not a per-request runtime proof. No audit report means no claim of an audit.
+
+Declaring `environment: production` in a workflow does not enable approval protection by itself. GitHub environment rules and Cloudflare administrators and other deployment credentials need separate inspection.
+
+## Examples behind this approach
+
+- [Bitwarden](https://bitwarden.com/help/is-bitwarden-audited/) publishes independent security audit reports.
+- [Mullvad](https://mullvad.net/en/blog/fourth-infrastructure-audit-completed-by-cure53) publishes infrastructure audit scope, findings and fixes, explicitly identifying the staging environment used in that audit.
+- [Apple PCC](https://security.apple.com/blog/private-cloud-compute/) uses specialized hardware attestation tied to public software records. Fleet does not implement that proof today.
+
+## Maintaining this document
+
+Update this document in the same PR as release-mechanism changes. Disclosed incidents should include affected revisions, the response and repair evidence. Future audit entries must identify the report, date, scope and unresolved findings. Move work from planned to completed only with evidence. English, Chinese and the site are generated from the same Markdown sources; the URL stays stable.
+
+Users who do not accept these trust assumptions can deploy the public source themselves and manage their own release permissions.

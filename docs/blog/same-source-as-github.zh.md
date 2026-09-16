@@ -1,89 +1,74 @@
 ---
-title: 为什么线上中枢就是 GitHub 上这棵树
-date: 2026-09-07
-summary: fleet.ginfo.cc 会公开它部署时的 git commit。去核，不要拿仓库截图当证据。
+title: 如何核验 Fleet Hub：证据、边界与进展
+date: 2026-09-16
+pinned: true
+summary: 持续更新的信任说明。先看图，再核对发布文件；已做到什么、仍需信任什么，都放在这里。
 ---
 
-对任何托管的远程控制服务，一个合理怀疑是：公开仓库是一套代码，线上网站是另一套。Fleet 把这当成核验，而不是口号。
+GitHub 上有源码，不代表你访问的服务器一定运行它。这篇置顶文档长期维护 Fleet 的发布证据、核验方法和未完成事项。
 
-托管中枢是 [https://fleet.ginfo.cc](https://fleet.ginfo.cc)。公开的树是 [https://github.com/TITOCHAN2023/fleetForAgent](https://github.com/TITOCHAN2023/fleetForAgent)。这篇说明你可以核什么、Agent 安装包为什么更硬，以及 Cloudflare Worker 靠自报仍然证明不了什么。
+**当前状态：仓库提供下述发布流程。只有对应版本的生产发布成功后，才会产生该次发布的证据。这里不宣称线上已经启用，也不宣称已通过独立审计。**
 
-```mermaid
-flowchart TD
-  accTitle: 读者如何把线上中枢对上 GitHub
-  accDescr: 读者向线上中枢要源码身份，再把声明的 git commit 对到公开仓库，以及对到部署它的 GitHub Actions 运行。
-  A["打开线上中枢"] --> B["GET /source"]
-  B --> C{"source_commit 是 40 位 hex 且 verified 为 true？"}
-  C -->|"否"| D["把托管中枢当作未核验"]
-  C -->|"是"| E["打开 GitHub 上那次 commit"]
-  E --> F["打开声明的 Actions 运行"]
-  F --> G["核对那次 job checkout 的 SHA"]
-```
-
-## 问正在跑的那份进程
-
-Worker 不需要登录就会回答：
-
-```bash
-curl -sS https://fleet.ginfo.cc/source
-```
-
-同一份文档也在 `/v1/source`，以及 `/v1/health` 的 `source` 字段。没有 JavaScript 的人读页在 [https://fleet.ginfo.cc/trust](https://fleet.ginfo.cc/trust)。
-
-`verified` 为 true 的唯一条件：`SOURCE_COMMIT` 是 40 位十六进制的 git 对象名。缺这个值，包括笔记本上裸跑 `wrangler deploy` 之后，都是未核验。
-
-值得看的字段：
-
-- `source_repo` — 公开远程仓库，默认就是这个 GitHub 仓库
-- `source_commit` — 部署时烘焙的 SHA
-- `source_workflow_run` — 发布这次 Worker 的 Actions 运行
-- `source_bundle_sha256` — 同一 job 里 Wrangler dry-run 脚本的 SHA-256
-
-这些值缺失，或 `verified` 为 false，就停。托管中枢没有给出可核的身份。
-
-## 生产怎么发
-
-`fleet.ginfo.cc` 的预定发布路径是这个仓库里的 `.github/workflows/deploy-hub.yml`。那个 job 会 checkout 它将要声明的 commit，先 dry-run 打出 Worker 包并哈希脚本，用 GitHub OIDC 给这份 digest 做 attestation，然后才 `wrangler deploy`，并把 `SOURCE_COMMIT` 设成 `$GITHUB_SHA`。
-
-Cloudflare API token 属于 GitHub Actions secrets，不属于笔记本。这次发布不会保留上次 dashboard 里的变量，所以笔记本上不带这些 `--var` 的 `wrangler deploy` 会清掉 `SOURCE_COMMIT`，线上 `/source` 变成未核验。
+## 一张图看清要核对什么
 
 ```mermaid
 flowchart TD
-  accTitle: 生产 Worker 预定如何发布
-  accDescr: GitHub Actions checkout 一次 commit，哈希 Worker 包，给 digest 做 attestation，再用同一个 SHA 作为 SOURCE_COMMIT 部署。笔记本部署若不带这些变量，中枢保持未核验。
-  A["在本仓库 push 或手动触发"] --> B["Actions checkout GITHUB_SHA"]
-  B --> C["Wrangler dry-run 哈希脚本"]
-  C --> D["GitHub OIDC 给 digest 做 attestation"]
-  D --> E["wrangler deploy 并带上 SOURCE_COMMIT"]
-  E --> F["线上 GET /source 声明这个 SHA"]
-  G["笔记本 wrangler deploy"] --> H["SOURCE_COMMIT 缺失"]
-  H --> I["verified 为 false"]
+  A["GitHub 源码版本"] -->|"公开构建记录与签名"| B["可下载的 Worker 文件"]
+  B -->|"查看发布步骤是否成功"| C["云平台接受部署"]
+  C -.->|"目前没有逐请求独立证明"| D["你这次请求运行的代码"]
 ```
 
-## 「对得上」证明不了什么
+前两段提供可检查的发布证据。最后一段仍需信任运营方和云平台。文件来源正确，也不代表代码没有漏洞。
 
-Cloudflare 不会让外人下载线上 Worker isolate 再哈希。一个进程可以报自己的 commit，也可以对这个 commit 撒谎。拿着 Cloudflare token 的人，仍可以部署另一份 Worker，同时广告一个公开 SHA。
+## 你可以怎么检查
 
-对策是流程，不是字节码证明。生产应该来自本仓库的 Actions job。声明的 SHA 是那次 job 的 `$GITHUB_SHA`。workflow URL 公开。笔记本发布若不烘焙这些变量，`verified` 就是 false。
+```mermaid
+flowchart TD
+  A["打开 /trust 或 /source"] --> B["跟随链接打开 GitHub 发布记录"]
+  B --> C["下载 hub-evidence 附件"]
+  C --> D["验证签名、源码版本和文件校验值"]
+  D --> E["确认部署步骤成功；构建成功不等于部署成功"]
+```
 
-这够抓住「不小心发了另一棵树」。它代替不了你自己去读那个 git 对象，也不如核验已经在磁盘上的文件来得硬。
+从 [Hub 的版本声明](https://fleet.ginfo.cc/trust) 开始。它自报的 commit、文件校验值和 Actions 链接，都是核对线索，不能单独当作证明。旧接口里的 `verified=true` 只表示 commit 格式正确；`runtime_verified=false` 明确表示没有核验运行中的代码。
 
-## Agent 安装包更硬
+在对应 Actions 运行的 Artifacts 中下载 `hub-evidence-源码版本-运行次数`，解开 GitHub 的下载 ZIP，得到 `hub-evidence.tar.gz`。需要 GitHub 登录；附件保留 90 天，可能被提前删除，不是永久不可删的档案。旧发布没有附件时，不能补称已经验证。
 
-Release 二进制是你可以拿在手里的文件。打包脚本拒绝脏工作区，要求发布 tag 指向 `HEAD`，并用 `go build -buildvcs=true` 嵌入 `vcs.revision`。GitHub Releases 带 `checksums-*.txt`，以及这些产物的 OIDC attestation。
+先验证归档的签名来源，再解包：
 
 ```bash
-curl -fsSL https://github.com/TITOCHAN2023/fleetForAgent/releases/latest/download/checksums.txt
-gh attestation verify --repo TITOCHAN2023/fleetForAgent FleetAgent-macos-arm64.dmg
-go version -m ./fleet-agent | grep vcs.revision
+gh attestation verify hub-evidence.tar.gz --repo TITOCHAN2023/fleetForAgent --signer-workflow TITOCHAN2023/fleetForAgent/.github/workflows/deploy-hub.yml
+mkdir hub-evidence
+tar -xzf hub-evidence.tar.gz -C hub-evidence
+cd hub-evidence
+sha256sum --check checksums.txt
+cat receipt.json
 ```
 
-每台电脑上的 Agent 才是能跑命令的那一层。它的 digest 可以独立于网站自报去核。
+核对签名验证结果中的源码版本、`receipt.json` 的版本与运行链接，以及 `/source` 自报的 `source_bundle_sha256` 是否对应 `worker.js`。最后查看那次运行的部署步骤。任何不一致都应停止把它当作匹配证据。
 
-## 不想把托管中枢当权威时就自托管
+附件包含 Worker JavaScript、仓库中的 `wrangler.toml`、收据和校验清单。签名覆盖归档和原始脚本；部署前重新检查脚本校验值，使用同一文件上传，不再重新打包。**附件不包含静态网站资源、生产 secrets、数据库和运行中的内存，也不证明整个网站的全部行为。**
 
-Node 中枢和你自己账号上的 Worker 走同一套协议。把 `SOURCE_COMMIT` 设成 `git rev-parse HEAD`，`/source` 就会描述你编出来的那棵树。空的 `SOURCE_COMMIT` 故意保持未核验。
+## 哪些已经有，哪些还没有
 
-托管站点是为了让 Windows、Linux、macOS 先加入同一个账号，而不必先自己搭中枢。代码的权威仍是这个 GitHub 仓库。若你不想信任托管进程，就 clone 这棵树，读它，自己跑。
+```mermaid
+flowchart TD
+  A["仓库已实现：版本声明、签名、附件、置顶说明"] --> B["生产待核验：成功发布、实际权限、审批规则"]
+  B --> C["后续计划：独立审计、长期归档、事件披露"]
+```
 
-设备上的安全边界是另一篇：[远程操作电脑时，安全边界放在哪里](/docs/why-fleet-is-safe)。
+独立审计应检查实际部署版本、路由、配置和发布权限，而不只看源码。Cloudflare 提供读取脚本和部署版本的接口，授权审计方可以核对；这仍然不能证明每次请求的运行环境。没有审计报告，就不标“已审计”。
+
+仓库里的 `environment: production` 也不等于已经启用审批：保护规则需要在 GitHub 设置里落实，Cloudflare 的管理员和其他发布凭据也需要一并检查。
+
+## 我们参考了谁
+
+- [Bitwarden](https://bitwarden.com/help/is-bitwarden-audited/)：公开第三方审计报告，让用户检查独立评价。
+- [Mullvad](https://mullvad.net/en/blog/fourth-infrastructure-audit-completed-by-cure53)：公布服务器与部署脚本审计的范围、问题和修复；该次审计使用测试环境，明确交代边界。
+- [Apple PCC](https://security.apple.com/blog/private-cloud-compute/)：用专门硬件证明运行版本，并与公开软件记录对应。Fleet 当前未实现这类证明。
+
+## 这篇文档怎么维护
+
+每次变更发布机制，同一个 PR 更新本文；公开重大问题时补上影响版本、处理经过和修复证据。审计完成后加入报告、审计日期、检查范围与遗留问题。只有有证据的事项才能从“计划”移到“已完成”。中英文与网站由同一组 Markdown 生成，入口保持不变。
+
+不接受这些信任前提的用户，可以从公开源码自行部署，并自己管理发布权限。

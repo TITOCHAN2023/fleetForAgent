@@ -68,16 +68,46 @@ jobs:
           out="$RUNNER_TEMP/fleet-worker-bundle"
           npm exec -- wrangler deploy --dry-run --outdir "$out"
           mapfile -t scripts < <(find "$out" -maxdepth 1 -type f -name '*.js' ! -name '*.map' | sort)
-          test "${#scripts[@]}" -ge 1
+          test "${#scripts[@]}" -eq 1
           sha256sum "${scripts[0]}" | awk '{print $1}' > "$RUNNER_TEMP/fleet-worker-bundle.sha256"
           test "$(wc -c < "$RUNNER_TEMP/fleet-worker-bundle.sha256")" -eq 65
           echo "SOURCE_BUNDLE_SHA256=$(cat "$RUNNER_TEMP/fleet-worker-bundle.sha256")" >> "$GITHUB_ENV"
           echo "SOURCE_BUNDLE_PATH=${scripts[0]}" >> "$GITHUB_ENV"
 
-      - name: Attest the Worker bundle this job built
+      - name: Prepare downloadable build evidence
+        run: |
+          evidence="$RUNNER_TEMP/hub-evidence"
+          mkdir -p "$evidence"
+          cp "$SOURCE_BUNDLE_PATH" "$evidence/worker.js"
+          cp packages/fleet-worker/wrangler.toml "$evidence/wrangler.toml"
+          node -e '
+            const e = process.env;
+            console.log(JSON.stringify({
+              schema_version: 1, repository: e.GITHUB_REPOSITORY, source_commit: e.GITHUB_SHA,
+              workflow_run: `https://github.com/${e.GITHUB_REPOSITORY}/actions/runs/${e.GITHUB_RUN_ID}/attempts/${e.GITHUB_RUN_ATTEMPT}`,
+              worker_sha256: e.SOURCE_BUNDLE_SHA256,
+              scope: "Worker JavaScript and repository config; excludes static assets, secrets and live runtime",
+              status: "built; check the deploy step separately"
+            }, null, 2));
+          ' > "$evidence/receipt.json"
+          (cd "$evidence" && sha256sum worker.js wrangler.toml receipt.json > checksums.txt)
+          tar -czf "$RUNNER_TEMP/hub-evidence.tar.gz" -C "$evidence" .
+
+      - name: Attest the Worker bundle and evidence archive this job built
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: ${{ env.SOURCE_BUNDLE_PATH }}
+          subject-path: |
+            ${{ env.SOURCE_BUNDLE_PATH }}
+            ${{ runner.temp }}/hub-evidence.tar.gz
+
+      - name: Publish build evidence before deploying
+        id: evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hub-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hub-evidence.tar.gz
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Deploy the attested script with SOURCE_COMMIT=$GITHUB_SHA
         working-directory: packages/fleet-worker
@@ -91,6 +121,7 @@ jobs:
             exit 1
           }
           test "$GITHUB_SHA" = "$(git rev-parse HEAD)"
+          echo "$SOURCE_BUNDLE_SHA256  $SOURCE_BUNDLE_PATH" | sha256sum --check --status
           tag=""
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             tag="$GITHUB_REF_NAME"
@@ -108,3 +139,18 @@ jobs:
           # Do not keep dashboard vars. A laptop wrangler deploy without these
           # --var flags must drop SOURCE_COMMIT so /source.verified becomes false.
           npm exec -- wrangler deploy "$SOURCE_BUNDLE_PATH" --no-bundle "${vars[@]}"
+
+      - name: Link the build evidence and deployment result
+        if: always()
+        env:
+          EVIDENCE_URL: ${{ steps.evidence.outputs.artifact-url }}
+          DEPLOY_JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "## Hub release evidence"
+            echo "Commit: $GITHUB_SHA"
+            echo "Job status: $DEPLOY_JOB_STATUS (inspect the deploy step for the upload result)."
+            echo "Build evidence: $EVIDENCE_URL"
+            echo "Artifacts expire after 90 days and downloading requires GitHub login."
+            echo "Build provenance is not proof of the live runtime or an independent audit."
+          } >> "$GITHUB_STEP_SUMMARY"

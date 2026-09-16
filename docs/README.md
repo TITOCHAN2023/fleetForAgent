@@ -1,5 +1,7 @@
 # Docs
 
+📌 **Living trust document / 持续维护的信任说明**: [中文](blog/same-source-as-github.zh.md) · [English](blog/same-source-as-github.en.md)
+
 Language folders. Shared pictures and video stay in [`media/`](media/).
 
 | Language | Intro | Deploy | Trust | Auth | Packaging |

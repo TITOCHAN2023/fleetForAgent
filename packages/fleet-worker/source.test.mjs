@@ -74,3 +74,16 @@ test("Worker config intercepts /source and /trust before the SPA", () => {
   assert.match(toml, /SOURCE_REPO = "https:\/\/github\.com\/TITOCHAN2023\/fleetForAgent"/);
   assert.doesNotMatch(toml, /SOURCE_COMMIT\s*=/);
 });
+
+test("a well-formed source claim never becomes runtime verification", () => {
+  const id = sourceIdentity({ SOURCE_COMMIT: COMMIT, SOURCE_BUNDLE_SHA256: "a".repeat(64) });
+  assert.equal(id.verified, true); // Preserve the legacy API contract.
+  assert.equal(id.source_claim_present, true);
+  assert.equal(id.verification_method, "self-reported");
+  assert.equal(id.runtime_verified, false);
+  assert.equal(sourceIdentity({}).source_claim_present, false);
+  const html = trustPage(id);
+  assert.match(html, />source declared<\/span>/);
+  assert.doesNotMatch(html, />verified<\/span>/);
+  assert.match(html, /\/docs\/same-source-as-github/);
+});

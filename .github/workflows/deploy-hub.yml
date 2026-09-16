@@ -21,7 +21,25 @@ env:
   NODE_VERSION: "22.22.0"
 
 jobs:
+  verify:
+    name: Verify the deployment commit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm ci --prefix packages/fleet-worker
+      - run: npm test
+      - run: npm run typecheck
+
   deploy:
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    environment: production
     name: Bake commit and deploy Worker
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -61,7 +79,7 @@ jobs:
         with:
           subject-path: ${{ env.SOURCE_BUNDLE_PATH }}
 
-      - name: Deploy the same checkout with SOURCE_COMMIT=$GITHUB_SHA
+      - name: Deploy the attested script with SOURCE_COMMIT=$GITHUB_SHA
         working-directory: packages/fleet-worker
         env:
           WRANGLER_SEND_METRICS: "false"
@@ -89,4 +107,4 @@ jobs:
           fi
           # Do not keep dashboard vars. A laptop wrangler deploy without these
           # --var flags must drop SOURCE_COMMIT so /source.verified becomes false.
-          npm exec -- wrangler deploy "${vars[@]}"
+          npm exec -- wrangler deploy "$SOURCE_BUNDLE_PATH" --no-bundle "${vars[@]}"

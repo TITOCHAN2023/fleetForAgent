@@ -3,8 +3,11 @@
 package backend
 
 import (
+	"net"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -108,5 +111,33 @@ func TestHerdrEnvIsolation(t *testing.T) {
 	}
 	if !strings.Contains(joined, "HOME=/home/test") {
 		t.Fatal("lost child home")
+	}
+}
+
+func TestHerdrLongTempSocket(t *testing.T) {
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), strings.Repeat("long", 40)))
+	t.Setenv("FLEET_HOME", t.TempDir())
+	dir := herdrDir(t.Name())
+	for _, path := range []string{filepath.Dir(dir), dir, filepath.Join(dir, "herdr")} {
+		if err := privateHerdrDir(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer os.RemoveAll(dir)
+	socket := filepath.Join(dir, "herdr", "herdr-client.sock")
+	if len(socket) >= len(syscall.RawSockaddrUnix{}.Path) {
+		t.Fatalf("socket too long: %s", socket)
+	}
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener.Close()
+}
+
+func TestHerdrShortTempPathPreserved(t *testing.T) {
+	t.Setenv("TMPDIR", "/tmp")
+	if !strings.HasPrefix(herdrDir("existing"), "/tmp/fleet-herdr-") {
+		t.Fatal("changed existing runtime root")
 	}
 }

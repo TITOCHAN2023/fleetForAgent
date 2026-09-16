@@ -35,12 +35,21 @@ func SessionCLI(args []string) error {
 	name := fmt.Sprintf("flt-%x", sum[:16])
 	t := backend.Requested()
 	if closeSession {
+		if t == backend.TypePTY {
+			return fmt.Errorf("pty does not support closing sessions by name; terminate the owning run instead")
+		}
 		backend.DestroySession(t, name)
 		if probe := backend.ProbeSession(t, name); probe != backend.ProbeMissing {
 			return fmt.Errorf("session close not confirmed: %s", probe)
 		}
 		return nil
 	}
+	// Fleet type sends both the control byte and a signal to this outer PTY.
+	// The byte is forwarded to the inner terminal; consuming the duplicate
+	// signal keeps the viewer alive without interrupting the command twice.
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, syscall.SIGINT, syscall.SIGQUIT)
+	defer signal.Stop(interrupt)
 	fd := int(os.Stdin.Fd())
 	state, err := unix.IoctlGetTermios(fd, ioctlReadTermios)
 	if err != nil {
@@ -76,7 +85,7 @@ func SessionCLI(args []string) error {
 	signal.Notify(resize, syscall.SIGWINCH)
 	defer signal.Stop(resize)
 	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT)
+	signal.Notify(stop, syscall.SIGHUP, syscall.SIGTERM)
 	defer signal.Stop(stop)
 	inputDone := make(chan struct{})
 	go func() {
@@ -107,6 +116,8 @@ func SessionCLI(args []string) error {
 		select {
 		case <-inputDone:
 			return nil
+		case <-interrupt:
+			// Input forwarding delivers Ctrl+C / Ctrl+\ to the inner PTY.
 		case <-stop:
 			return nil
 		case err := <-exited:

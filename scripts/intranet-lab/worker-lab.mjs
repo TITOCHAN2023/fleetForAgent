@@ -145,6 +145,8 @@ try {
       "-e",
       "FLEET_HOME=/data",
       "-e",
+      "TMPDIR=/var/folders/zz/abcdefghijklmnopqrstuvwxyz012345/T",
+      "-e",
       "FLEET_BACKEND_TYPE=pty",
       name + "-agent",
       "sh",

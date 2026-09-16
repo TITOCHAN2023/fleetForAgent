@@ -26,7 +26,15 @@ func herdrDir(name string) string {
 		home, _ = os.UserHomeDir()
 	}
 	sum := sha256.Sum256([]byte(home + "\x00" + name))
-	return filepath.Join(os.TempDir(), "fleet-herdr-"+strconv.Itoa(os.Getuid()), fmt.Sprintf("%x", sum[:12]))
+	userDir := "fleet-herdr-" + strconv.Itoa(os.Getuid())
+	sessionDir := fmt.Sprintf("%x", sum[:12])
+	dir := filepath.Join(os.TempDir(), userDir, sessionDir)
+	// Herdr binds both the API socket and the longer client socket. Keep
+	// existing usable paths; long TMPDIRs (notably macOS) need a short root.
+	if len(filepath.Join(dir, "herdr", "herdr-client.sock")) >= len(syscall.RawSockaddrUnix{}.Path) {
+		dir = filepath.Join("/tmp", userDir, sessionDir)
+	}
+	return dir
 }
 
 func herdrEnv(name string, env []string) []string {

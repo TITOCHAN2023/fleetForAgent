@@ -28,7 +28,9 @@ It is the cheap Linux gate for Agent + Hub + run.
 
 ## Real Worker and persistent sessions
 
-`worker-lab.mjs` runs the actual Worker and Durable Objects (using the existing test-only seed wrapper), two Linux Agents, and the real Tool RTC manager. All four containers are capped at 1 CPU / 1 GiB. It checks cookie-origin rejection with a real session, direct WebRTC with no WSS fallback accepted, and tmux/Herdr create → type → screen → detach → reattach → preserved shell state → close on both Agents.
+`worker-lab.mjs` runs the actual Worker and Durable Objects (using the existing test-only seed wrapper), two Linux Agents, and the real Tool RTC manager. All four containers are capped at 1 CPU / 1 GiB. It checks cookie-origin rejection with a real session, direct WebRTC with no WSS fallback accepted, Ctrl+C/Ctrl+\ interruption with continued input on tmux/Herdr/PTY, explicit rejection of named PTY close, and tmux/Herdr create → type → screen → detach → reattach → preserved shell state → close on both Agents.
+
+Agents run with a deliberately long TMPDIR to exercise Herdr socket-path fallback.
 
 Build the current Agent and obtain the Herdr 0.9.0 Linux binary separately. The runner only mounts these binaries; it does not install software on the host. Use Node 22+ and install locked root and Worker npm dependencies first. Docker access is through `sudo -n docker`; image-build proxies are inherited when present.
 

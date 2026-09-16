@@ -18,8 +18,16 @@ test("GitHub Actions are pinned to immutable commits with an exact version comme
     const uses = [...source.matchAll(/^\s*uses:\s*([^\s#]+)(?:\s+#\s*(v\d+\.\d+\.\d+))?\s*$/gm)];
     assert.ok(uses.length > 0, `${relative}: no actions found`);
     for (const [, action, version] of uses) {
-      assert.match(action, /^[\w.-]+\/[\w.-]+@[0-9a-f]{40}$/, `${relative}: floating action ${action}`);
-      assert.match(version ?? "", /^v\d+\.\d+\.\d+$/, `${relative}: missing exact version comment for ${action}`);
+      assert.match(
+        action,
+        /^[\w.-]+\/[\w.-]+@[0-9a-f]{40}$/,
+        `${relative}: floating action ${action}`,
+      );
+      assert.match(
+        version ?? "",
+        /^v\d+\.\d+\.\d+$/,
+        `${relative}: missing exact version comment for ${action}`,
+      );
     }
   }
 });
@@ -59,6 +67,21 @@ test("hosted hub deploy bakes GITHUB_SHA and refuses a missing Cloudflare token"
 test("macOS release packaging selects ownership flags by tar implementation", () => {
   const source = readFileSync(join(root, "scripts/package-agent.sh"), "utf8");
   assert.match(source, /\*"GNU tar"\*\) tar_owner_args=\(--owner=0 --group=0 --numeric-owner\)/);
-  assert.match(source, /\*bsdtar\*\|\*libarchive\*\) tar_owner_args=\(--uid 0 --gid 0 --numeric-owner\)/);
+  assert.match(
+    source,
+    /\*bsdtar\*\|\*libarchive\*\) tar_owner_args=\(--uid 0 --gid 0 --numeric-owner\)/,
+  );
   assert.match(source, /unsupported tar implementation; GNU tar or bsdtar required/);
+});
+
+test("hosted deploy requires verification on main and uploads the attested script without rebuilding", () => {
+  const source = readFileSync(join(root, ".github/workflows/deploy-hub.yml"), "utf8");
+  assert.match(source, /needs: verify/);
+  assert.match(source, /if: github.ref == 'refs\/heads\/main'/);
+  assert.match(source, /environment: production/);
+  const verification = source.slice(source.indexOf("  verify:"), source.indexOf("  deploy:"));
+  assert.match(verification, /npm test/);
+  assert.match(verification, /npm run typecheck/);
+  assert.doesNotMatch(verification, /secrets\./);
+  assert.match(source, /wrangler deploy "\$SOURCE_BUNDLE_PATH" --no-bundle/);
 });

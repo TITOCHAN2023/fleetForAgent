@@ -57,12 +57,12 @@ async function direct(path, body) {
   assert.equal(row.transport, "rtc");
   return row.value;
 }
-async function done(device, corr) {
+async function done(device, corr, expectedExit = 0) {
   for (let i = 0; i < 100; i++) {
     const row = await direct("/v1/get_result", { device_id: device, corr });
     if (isFinishedResult(row)) {
-      assert.equal(row.ok, true, JSON.stringify(row));
-      assert.equal(row.exit_code, 0);
+      if (expectedExit === 0) assert.equal(row.ok, true, JSON.stringify(row));
+      assert.equal(row.exit_code, expectedExit);
       return row;
     }
     await pause(100);
@@ -83,7 +83,7 @@ try {
     const id = device.id;
     const one = await direct("/v1/run", { device_id: id, command: 'printf %s "$HOSTNAME"' });
     assert.equal((await done(id, one.corr)).stdout.trim(), device.name);
-    for (const backend of ["tmux", "herdr"]) {
+    for (const backend of ["tmux", "herdr", "pty"]) {
       const command = `FLEET_BACKEND_TYPE=${backend} fleet-agent session lab`;
       const first = await direct("/v1/run", { device_id: id, command });
       // Synchronize on the shell prompt before typing: creation can take time.
@@ -94,6 +94,40 @@ try {
         keys: "FLEET_LAB_VALUE=retained; printf 'initialized%s\\n' '-ok'\r",
       });
       await screen(id, first.corr, "initialized-ok");
+      for (const [index, key] of ["ctrl+c", "ctrl+\\"].entries()) {
+        await direct("/v1/type", {
+          device_id: id,
+          corr: first.corr,
+          keys: `printf 'sleeping%s\\n' '-${index}'; sleep 60\r`,
+        });
+        await screen(id, first.corr, `sleeping-${index}`);
+        await pause(200);
+        await direct("/v1/type", { device_id: id, corr: first.corr, key });
+        await direct("/v1/type", {
+          device_id: id,
+          corr: first.corr,
+          keys: `printf 'interrupted%s\\n' '-${index}'\r`,
+        });
+        await screen(id, first.corr, `interrupted-${index}`);
+        assert.equal(
+          isFinishedResult(await direct("/v1/get_result", { device_id: id, corr: first.corr })),
+          false,
+        );
+      }
+      if (backend === "pty") {
+        const close = await direct("/v1/run", {
+          device_id: id,
+          command: "FLEET_BACKEND_TYPE=pty fleet-agent session close lab",
+        });
+        const rejected = await done(id, close.corr, 1);
+        assert.match(JSON.stringify(rejected), /does not support closing sessions by name/);
+        await direct("/v1/type", { device_id: id, corr: first.corr, keys: "\u001d" });
+        await done(id, first.corr);
+        console.log(
+          `PASS: ${device.name} pty interrupts preserve viewer; named close explicitly rejected`,
+        );
+        continue;
+      }
       await direct("/v1/type", { device_id: id, corr: first.corr, keys: "\u001d" });
       await done(id, first.corr);
       const next = await direct("/v1/run", { device_id: id, command });
@@ -112,7 +146,7 @@ try {
       });
       await done(id, close.corr);
       console.log(
-        `PASS: ${device.name} ${backend} via real Worker + direct RTC: open/type/screen/detach/reattach/state/close`,
+        `PASS: ${device.name} ${backend} via real Worker + direct RTC: open/type/screen/interrupt/detach/reattach/state/close`,
       );
     }
   }

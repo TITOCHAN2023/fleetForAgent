@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 HOME_DIR="${FLEET_HOME:-/data}"
-mkdir -p "$HOME_DIR"
+mkdir -p "$HOME_DIR" "${TMPDIR:-/tmp}"
 # permit=allow: lab has no human at the tray. Ask would hang every run.
 cat >"$HOME_DIR/config.json" <<EOF
 {"enabled":true,"permit":"allow","hubInput":"${FLEET_URL:-}","hubToken":"${FLEET_TOKEN:-}","deviceId":""}

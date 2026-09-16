@@ -13,6 +13,8 @@ func ParseType(s string) Type {
 		return TypePTY
 	case "tmux":
 		return TypeTmux
+	case "herdr":
+		return TypeHerdr
 	case "zellij":
 		return TypeZellij
 	default:
@@ -32,6 +34,8 @@ func Available(t Type) bool {
 		return true
 	case TypeTmux:
 		return tmuxAvailable()
+	case TypeHerdr:
+		return herdrAvailable()
 	case TypeZellij:
 		return zellijAvailable()
 	default:

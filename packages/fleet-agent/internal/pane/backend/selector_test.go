@@ -11,6 +11,7 @@ func TestParseType(t *testing.T) {
 		"tmux":     TypeTmux,
 		"PTY":      TypePTY,
 		"zellij":   TypeZellij,
+		"Herdr":    TypeHerdr,
 		"unknown":  TypeTmux,
 		"  tmux  ": TypeTmux,
 	}

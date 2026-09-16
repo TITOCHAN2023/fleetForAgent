@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/creack/pty"
@@ -35,7 +36,7 @@ func tmuxAvailable() bool {
 func probeTmuxSession(name string) Probe {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", "has-session", "-t", name)
+	cmd := exec.CommandContext(ctx, "tmux", "has-session", "-t", "="+name)
 	cmd.Env = dropMuxClientEnv(os.Environ())
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -47,6 +48,9 @@ func probeTmuxSession(name string) Probe {
 		return ProbeUnknown
 	}
 	if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() > 0 && ee.Exited() {
+		if strings.Contains(stderr.String(), "No such file or directory") || strings.Contains(stderr.String(), "no server running") {
+			return ProbeMissing
+		}
 		if isServerLevelMuxError(stderr.String()) {
 			return ProbeUnknown
 		}
@@ -58,7 +62,7 @@ func probeTmuxSession(name string) Probe {
 func killTmuxSession(name string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", "kill-session", "-t", name)
+	cmd := exec.CommandContext(ctx, "tmux", "kill-session", "-t", "="+name)
 	cmd.Env = dropMuxClientEnv(os.Environ())
 	_ = cmd.Run()
 }
@@ -86,7 +90,7 @@ func startTmux(session string, opts SpawnOpts, reattach bool) (*Handle, error) {
 			return nil, fmt.Errorf("tmux new-session: %w (%s)", err, bytes.TrimSpace(stderr.Bytes()))
 		}
 	}
-	cmd := exec.Command("tmux", "attach-session", "-t", session)
+	cmd := exec.Command("tmux", "attach-session", "-t", "="+session)
 	cmd.Dir = opts.Cwd
 	cmd.Env = env
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: opts.Rows, Cols: opts.Cols})

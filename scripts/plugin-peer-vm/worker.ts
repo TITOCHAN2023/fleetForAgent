@@ -81,6 +81,7 @@ export default {
     return vmJSON(
       {
         token: issued.token,
+        cookie: accountResponse.headers.get("set-cookie")?.split(";")[0] ?? "",
         prefix: issued.prefix ?? "",
         user_id: account.id,
         kid,
@@ -166,7 +167,8 @@ async function interruptPeerRound(request: Request, env: VMEnv): Promise<Respons
     session?: { round?: { id?: string; no?: number } };
     error?: string;
   };
-  if (!current.ok) return vmJSON({ error: value.error || "could not read VM peer session" }, current.status);
+  if (!current.ok)
+    return vmJSON({ error: value.error || "could not read VM peer session" }, current.status);
   const roundId = String(value.session?.round?.id ?? "");
   const roundNo = Number(value.session?.round?.no ?? 0);
   if (!UUID.test(roundId) || !Number.isSafeInteger(roundNo) || roundNo < 1) {
@@ -179,7 +181,7 @@ async function interruptPeerRound(request: Request, env: VMEnv): Promise<Respons
 }
 
 function tokenKid(token: string): string {
-  const payload = token.startsWith("flt_1.") ? token.slice(6).split(".")[0] ?? "" : "";
+  const payload = token.startsWith("flt_1.") ? (token.slice(6).split(".")[0] ?? "") : "";
   try {
     const raw = payload.replaceAll("-", "+").replaceAll("_", "/");
     const padded = raw + "=".repeat((4 - (raw.length % 4)) % 4);

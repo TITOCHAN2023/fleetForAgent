@@ -1,10 +1,10 @@
 // Package backend is the live-session multiplexer, copied from botmux's
-// SessionBackend: pty (emergency), tmux (default), zellij (opt-in).
+// SessionBackend: pty (emergency), tmux (default), zellij/herdr (opt-in).
 //
 // Architecture is pty-under-mux. The agent still talks to a PTY master; the
 // child is `tmux attach` / `zellij attach` (or a raw shell). kill of the
 // viewer detaches. Destroy tears down the backing session (explicit close).
-// A crashed agent therefore leaves tmux/zellij sessions running so the next
+// A crashed agent therefore leaves tmux/zellij/Herdr sessions running so the next
 // process can reattach — PTY sessions cannot.
 package backend
 
@@ -23,6 +23,7 @@ const (
 	TypePTY    Type = "pty"
 	TypeTmux   Type = "tmux"
 	TypeZellij Type = "zellij"
+	TypeHerdr  Type = "herdr"
 )
 
 // DefaultType is tmux, same as botmux. PTY is explicit opt-in only.
@@ -122,7 +123,7 @@ const (
 	GateRefuse GateAction = "gate"
 )
 
-// GateError is the user-facing hard gate when tmux/zellij is missing.
+// GateError is the user-facing hard gate when a requested backend is missing.
 type GateError struct {
 	Type   Type
 	Reason string

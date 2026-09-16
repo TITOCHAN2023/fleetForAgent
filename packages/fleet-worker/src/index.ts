@@ -12,6 +12,7 @@
  * Worker. It grants no extra machine-control authority.
  */
 
+import { cookieMutationAllowed } from "./request-origin.mjs";
 import { handleOAuth } from "./oauth";
 import { applyBannedState, rejectIfBanned } from "./ban.mjs";
 import { canClaimDevice, deviceOwnerConflict } from "./bind.mjs";
@@ -79,13 +80,7 @@ import {
   readPeerSessionControlText,
   type PeerSessionRecord,
 } from "./peer-session";
-import {
-  isSourcePath,
-  isTrustPath,
-  publicSource,
-  sourceHeaders,
-  trustPage,
-} from "./source.mjs";
+import { isSourcePath, isTrustPath, publicSource, sourceHeaders, trustPage } from "./source.mjs";
 import {
   audMismatch,
   bearerToken,
@@ -589,6 +584,10 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
     const hub = url.pathname === "/v1" || url.pathname.startsWith("/v1/");
+
+    if ((hub || path === "/ops") && !cookieMutationAllowed(request, configuredOrigin(env))) {
+      return json({ error: "origin not allowed" }, 403);
+    }
 
     if (path === "/ops") {
       const fleet = env.FLEET.get(env.FLEET.idFromName("fleet"));

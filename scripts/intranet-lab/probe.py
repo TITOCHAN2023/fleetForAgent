@@ -58,9 +58,11 @@ def main(argv: list[str]) -> int:
     for name in ("pod-a", "pod-b"):
         row = run(url, token, by_name[name]["id"], 'printf %s "$HOSTNAME"')
         stdout = str(row.get("stdout") or "").strip()
-        if row.get("ok") is not True and not stdout:
-            raise SystemExit(name + " run failed: " + json.dumps(row)[:800])
-        out[name] = stdout or str(row)
+        if row.get("status") != "done" or row.get("ok") is not True or row.get("exit_code") != 0:
+            raise SystemExit(name + " run failed or incomplete: " + json.dumps(row)[:800])
+        if stdout != name:
+            raise SystemExit(name + " unexpected hostname: " + repr(stdout))
+        out[name] = stdout
     if out["pod-a"] == out["pod-b"]:
         raise SystemExit("hostnames not distinct: %r" % (out,))
     print(json.dumps({"ok": True, "pod-a": out["pod-a"], "pod-b": out["pod-b"]}, indent=2))

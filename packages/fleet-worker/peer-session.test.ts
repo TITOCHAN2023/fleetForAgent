@@ -1461,6 +1461,7 @@ test("device WebSocket rejects cookie actors and arbitrary Bearer credentials be
   const retiredSharedSecretName = ["HUB", "TOKEN"].join("_");
   const testEnv = {
     [retiredSharedSecretName]: "arbitrary-shared-secret",
+    HUB_ORIGIN: "https://fleet.test",
     FLEET: {
       idFromName: (name: string) => name,
       get: () => ({
@@ -1494,7 +1495,11 @@ test("device WebSocket rejects cookie actors and arbitrary Bearer credentials be
   );
   const loginResponse = await fleetWorker.fetch(
     new Request("https://fleet.test/v1/device?id=device-a", {
-      headers: { cookie: "fleet_session=session-a", upgrade: "websocket" },
+      headers: {
+        cookie: "fleet_session=session-a",
+        upgrade: "websocket",
+        origin: "https://fleet.test",
+      },
     }),
     testEnv,
   );

@@ -39,6 +39,8 @@ func ProbeSession(t Type, name string) Probe {
 	switch t {
 	case TypeTmux:
 		return probeTmuxSession(name)
+	case TypeHerdr:
+		return probeHerdrSession(name)
 	case TypeZellij:
 		return probeZellijSession(name)
 	default:
@@ -51,6 +53,8 @@ func DestroySession(t Type, name string) {
 	switch t {
 	case TypeTmux:
 		killTmuxSession(name)
+	case TypeHerdr:
+		killHerdrSession(name)
 	case TypeZellij:
 		killZellijSession(name)
 	}
@@ -62,6 +66,8 @@ func start(t Type, sessionName string, opts SpawnOpts, reattach bool) (*Handle, 
 		return startPTY(opts)
 	case TypeTmux:
 		return startTmux(sessionName, opts, reattach)
+	case TypeHerdr:
+		return startHerdr(sessionName, opts, reattach)
 	case TypeZellij:
 		return startZellij(sessionName, opts, reattach)
 	default:

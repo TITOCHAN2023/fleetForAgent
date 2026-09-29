@@ -107,7 +107,12 @@ test("forced shutdown kills descendants in the owned process group", async (t) =
     try {
       const stat = await readFile(`/proc/${childPid}/stat`, "utf8");
       if (stat.split(" ")[2] === "Z") return; // Reaping belongs to the container's init; it is no longer executing.
-    } catch (e) { if (e.code === "ENOENT") return; throw e; }
+    } catch (e) {
+      // procfs may open the file before the process is reaped, then fail its
+      // read with ESRCH. Both outcomes mean the descendant no longer exists.
+      if (e.code === "ENOENT" || e.code === "ESRCH") return;
+      throw e;
+    }
     await delay(10);
   }
   assert.fail("descendant remains alive");

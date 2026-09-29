@@ -64,3 +64,5 @@ On 2026-09-29, the combined tree of PR #20 (`3c125b5`) and PR #21 (`7835479`) wa
 - Typecheck, lint (two existing warnings), production build and Worker dry-run passed. The build used an empty `DATABASE_URL` and did not run production database migrations. The pre-existing Nitro runtime-preview limitation in ROOM-06 remains; a successful build does not supersede it.
 
 The integration runs used only disposable accounts, processes and containers, which were cleaned up. No hosted deployment was performed by these tests. Native macOS execution and Windows Room hosting are still outside the validated scope.
+
+The first combined GitHub run also caught a procfs race in the descendant-shutdown assertion: if the process is reaped after `/proc/<pid>/stat` is opened but before it is read, Linux can return `ESRCH` instead of `ENOENT`. Both indicate that the descendant is gone. The test now accepts those two specific disappearance errors and still fails on a live descendant or any other read error. All ten ACP tests and twenty repeated real-process shutdown checks passed locally; production process termination was not changed.

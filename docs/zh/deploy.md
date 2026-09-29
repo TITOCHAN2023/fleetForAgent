@@ -71,6 +71,8 @@ OAuth 回调域、`HUB_ORIGIN` 和 route 主机名必须指向同一个网站，
 npx wrangler deploy
 ```
 
+生产域 `https://fleet.ginfo.cc` 不该从笔记本直接发。`.github/workflows/deploy-hub.yml` 会烘焙 `SOURCE_COMMIT=$GITHUB_SHA`，这样 [GET /source](https://fleet.ginfo.cc/source) 才能对上 GitHub。笔记本上裸跑 `wrangler deploy`、不带这些 `--var`，`/source.verified` 就是 false。怎么读这份声明：[trust.md](trust.md)。`CLOUDFLARE_API_TOKEN` 放 Actions secrets，不要放笔记本。
+
 `wrangler.toml` 里 `workers_dev = false`，不会再出 `*.workers.dev`。在 Cloudflare 绑定这个自定义域名，Agent 填它的 origin。本仓库生产域是 `https://fleet.ginfo.cc`。要用 workers.dev 预览，就打开 `workers_dev`、移除自定义 route，并让 OAuth 与 `HUB_ORIGIN` 统一使用 workers.dev origin。
 
 ### 鉴权

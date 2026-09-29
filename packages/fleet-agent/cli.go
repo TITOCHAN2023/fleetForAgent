@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/TITOCHAN2023/fleetForAgent/internal/pane"
 	"io"
 	"net/http"
 	"os"
@@ -24,7 +25,7 @@ func isCLICommand(name string) bool {
 	case "help", "-h", "--help", "version", "--version",
 		"status", "start", "stop", "quit", "restart",
 		"enable", "disable", "permit", "connect",
-		"approve", "deny", "install", "update", "rollback", "autoupdate":
+		"session", "approve", "deny", "install", "update", "rollback", "autoupdate":
 		return true
 	default:
 		return false
@@ -42,6 +43,8 @@ func runCLI(args []string) int {
 	case "version", "--version":
 		fmt.Println("fleet", agentVersion)
 		return 0
+	case "session":
+		err = pane.SessionCLI(rest)
 	case "status":
 		err = cliStatus(rest)
 	case "start":
@@ -98,6 +101,7 @@ CLI and UI share one state. Do not edit config.json while it runs.
   fleet update [--check] [--force] [--url URL] [--sha256 HEX]
   fleet autoupdate on|off    persist the idle auto-update toggle (default off)
   fleet rollback             swap in the previous binary and restart
+  fleet session [close] NAME  open/reconnect a mux shell; Ctrl+] detaches
   fleet status [--json]
   fleet enable | disable
   fleet permit off|ask|allow

@@ -37,7 +37,7 @@ export function BlogIndex() {
                   lang={locale === "zh" ? "zh-CN" : "en"}
                   className="w-28 shrink-0 font-hand text-sm text-subtle"
                 >
-                  {p.date || "—"}
+                  {p.pinned ? (locale === "zh" ? "置顶 · 持续更新" : "Pinned · Living doc") : p.date || "—"}
                 </time>
                 <span className="min-w-0">
                   <span className="text-lg font-medium tracking-tight text-fg group-hover:underline group-hover:underline-offset-4">

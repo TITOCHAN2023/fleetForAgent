@@ -50,3 +50,17 @@ The first PR run passed the Web/Worker and Linux jobs but failed two local-view 
 The tests now separate POSIX private-file integration from platform-independent HTTP protections. Windows explicitly verifies an empty view without a runner and refusal of unverifiable discovery without contacting the endpoint or exposing the capability. Redirect and response-limit tests call the HTTP reader directly on every platform, preventing an earlier filesystem rejection from falsely satisfying those tests. The permission test restores a valid URL before loosening file permissions, so it cannot pass because of an unrelated URL error. No production permission check or workflow gate is weakened.
 
 Local follow-up verification: all six Linux RoomView tests and Go vet passed. The PR's Windows job provides native runtime verification; cross-compilation alone is not evidence of a Windows runtime pass.
+
+## Joint pre-merge validation with terminal backends
+
+On 2026-09-29, the combined tree of PR #20 (`3c125b5`) and PR #21 (`7835479`) was exercised in a separate integration worktree. The package-script conflict was resolved by retaining both the terminal/intranet scripts and Room suites. PR #20 correctly rejects cookie writes without browser origin metadata; the Room workerd harness now supplies `Origin` on token issuance and rotation, just as it already does for Room writes. Production origin checks are unchanged.
+
+- Combined existing JavaScript regression suite: **549 passed, 7 skipped**; Room suite: **102 passed**.
+- Full Go suite and vet passed in a disposable PID-isolated container.
+- Real Worker + two Linux endpoints + Tool direct RTC: tmux/Herdr/PTY interrupts, persistent detach/reattach and retained shell state, explicit close, and long temporary-path handling passed on both endpoints. Every runtime container was capped at 1 CPU / 1 GiB.
+- Separate Room two-endpoint lab passed default-device and explicit-device delegation; only the leader had SQLite.
+- Actual-backend Worker-page and local Sandbox-page browser suites passed **nine checks each**, including same-name agent identities and local reading after Hub shutdown.
+- Real workerd passed account isolation, same-origin cookie writes, OAEP and live token revocation with the combined source.
+- Typecheck, lint (two existing warnings), production build and Worker dry-run passed. The build used an empty `DATABASE_URL` and did not run production database migrations. The pre-existing Nitro runtime-preview limitation in ROOM-06 remains; a successful build does not supersede it.
+
+The integration runs used only disposable accounts, processes and containers, which were cleaned up. No hosted deployment was performed by these tests. Native macOS execution and Windows Room hosting are still outside the validated scope.

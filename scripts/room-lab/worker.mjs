@@ -29,7 +29,7 @@ try {
     const login = await fleet.fetch("https://fleet/oauth", { method: "POST", body: JSON.stringify({ email, provider: "local-test" }) });
     const cookie = login.headers.get("set-cookie").split(";")[0];
     const { id } = await login.json();
-    const minted = await fetch(url + "/v1/hub_token", { method: "POST", headers: { cookie } });
+    const minted = await fetch(url + "/v1/hub_token", { method: "POST", headers: { cookie, origin: url } });
     assert.equal(minted.status, 200);
     return { id, cookie, ...(await minted.json()) };
   }
@@ -57,7 +57,7 @@ try {
   const crossOrigin = await fetch(url + "/v1/room-control", { method: "POST", headers: { cookie: owner.cookie, origin: "https://attacker.example" }, body: "{}" });
   assert.equal(crossOrigin.status, 403);
   // Actual token rotation invalidates an already-established Room WebSocket.
-  const reset = await fetch(url + "/v1/hub_token", { method: "POST", headers: { cookie: owner.cookie } });
+  const reset = await fetch(url + "/v1/hub_token", { method: "POST", headers: { cookie: owner.cookie, origin: url } });
   assert.equal(reset.status, 200);
   await assert.rejects(observer.call("", "directory", {}), { code: "DISCONNECTED" });
   console.log("PASS: real workerd account isolation, cookie Room writes, OAEP websocket, leader-local messages and live token revocation");

@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "vite dev --host 0.0.0.0 --port 8080",
-    "build": "vite build && npm run db:migrate",
+    "build": "npm run pack:room && vite build && npm run db:migrate",
     "db:migrate": "node scripts/migrate.mjs",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
@@ -21,10 +21,14 @@
     "test:intranet": "bash scripts/intranet-lab/run.sh",
     "test:intranet:peer": "bash scripts/plugin-peer-vm/run.sh",
     "test": "node --test 'scripts/**/*.test.mjs' packages/fleet-hub/index.test.mjs packages/fleet-tool/operator.test.mjs packages/fleet-tool/mcp-protocol.test.mjs packages/fleet-tool/rtc.test.mjs packages/fleet-tool/plugin-peer-plugin.test.mjs packages/fleet-tool/plugin-peer-runtime.test.mjs packages/fleet-tool/file-transfer-rtc.test.mjs packages/fleet-worker/site.test.mjs packages/fleet-worker/source.test.mjs packages/fleet-worker/request-origin.test.mjs packages/fleet-worker/fleet-tool-tgz.test.mjs packages/fleet-worker/plugin-artifact.test.mjs packages/fleet-worker/mcp-sse.test.mjs packages/fleet-worker/mcp-http.test.mjs packages/fleet-worker/device-catalog.test.mjs packages/fleet-worker/session.test.mjs packages/fleet-worker/bind.test.mjs packages/fleet-worker/tokenv1.test.mjs packages/fleet-worker/oauth-account.test.mjs packages/fleet-worker/presence.test.mjs packages/fleet-worker/ban.test.mjs packages/fleet-worker/ops.test.mjs && node --import tsx --test packages/fleet-worker/peer-session.test.ts src/lib/agent/runtime.test.ts src/lib/fleet/lab.test.ts src/lib/fleet/cap.test.ts src/lib/fleet/device-alias.test.ts src/lib/fleet/pane.test.ts src/lib/fleet/token.test.ts src/lib/fleet/live.test.ts src/lib/fleet/mcp-sse.server.test.ts src/lib/fleet/mcp-http.server.test.ts src/lib/fleet/guide.test.ts src/lib/i18n/i18n.test.ts",
+    "test:room": "node --test packages/fleet-room/*.test.mjs packages/fleet-worker/room-control.test.mjs packages/fleet-tool/room-client.test.mjs src/lib/fleet/room.server.test.mjs && node --import tsx --test packages/fleet-worker/room-relay.test.ts",
+    "test:room:intranet": "bash scripts/room-lab/run.sh",
     "hub": "node packages/fleet-hub/index.mjs",
     "release:agent": "bash scripts/package-agent.sh",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "pack:room": "vite build --config vite.room.config.ts",
+    "test:room:browser": "node scripts/room-lab/browser.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.4",

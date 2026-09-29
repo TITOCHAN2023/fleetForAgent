@@ -7,6 +7,18 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import { getSql } from "@/lib/db";
+import { getSessionUserFromRequest } from "../auth/verify.server";
+import {
+  assertRoomCookieOrigin,
+  createAppRoomWebSocketHooks,
+  handleAppRoomHttp,
+  handleAppRoomUpgrade,
+  isAppRoomPath,
+  readAppRoomBody,
+  roomFailure,
+  type RoomCredential,
+  type RoomHttpActor,
+} from "./room.server";
 import { officialPlugin } from "../../../packages/fleet-tool/operator.mjs";
 import { makeDeviceSlug } from "./cap";
 import {
@@ -143,7 +155,7 @@ export async function lookupHubUser(authorization: string | null | undefined): P
 
 async function lookupHubActor(
   authorization: string | null | undefined,
-): Promise<{ userId?: string; error?: string; code?: string }> {
+): Promise<{ userId?: string; kid?: string; tokenHash?: string; error?: string; code?: string }> {
   const auth = parseAuthorization(authorization);
   if (auth.kind === "oaep") {
     const sql = await getSql();
@@ -166,12 +178,48 @@ async function lookupHubActor(
     }
     const hash = await hashHubToken(opened.sec);
     if (hash !== row.token_hash) return { error: HIGH_SEC_KEY_MISMATCH, code: "HIGH_SEC" };
-    return { userId: row.user_id };
+    return { userId: row.user_id, kid: row.kid, tokenHash: row.token_hash };
   }
   if (auth.kind === "bearer" && (isLegacyFlt(auth.token) || auth.token.startsWith("flt_1."))) {
     return { error: HIGH_SEC_UPGRADE, code: "HIGH_SEC" };
   }
   return {};
+}
+
+async function currentRoomCredential(credential: RoomCredential): Promise<boolean> {
+  const sql = await getSql();
+  const rows = await sql<{ user_id: string; kid: string; token_hash: string }>`
+    select user_id, kid, token_hash from hub_tokens
+    where user_id = ${credential.userId} and kid = ${credential.kid}
+  `;
+  return rows[0]?.token_hash === credential.tokenHash;
+}
+
+const roomServices = {
+  async authenticate(headers: Headers): Promise<RoomCredential | null> {
+    const actor = await lookupHubActor(headers.get("authorization"));
+    return actor.userId && actor.kid && actor.tokenHash
+      ? { userId: actor.userId, kid: actor.kid, tokenHash: actor.tokenHash }
+      : null;
+  },
+  current: currentRoomCredential,
+  devices: listComputers,
+};
+
+export const appRoomWebSocketHooks = createAppRoomWebSocketHooks(roomServices);
+
+async function roomHttpActor(request: Request): Promise<RoomHttpActor | null> {
+  const credential = await roomServices.authenticate(request.headers);
+  if (credential) return { userId: credential.userId, current: () => currentRoomCredential(credential) };
+  // An invalid explicit token must not fall back to ambient cookie authority.
+  if (request.headers.has("authorization")) return null;
+  assertRoomCookieOrigin(request);
+  const user = await getSessionUserFromRequest(request);
+  if (!user) return null;
+  return {
+    userId: user.id,
+    current: async () => (await getSessionUserFromRequest(request))?.id === user.id,
+  };
 }
 
 async function issueChallenge(kid: string) {
@@ -205,6 +253,23 @@ export async function handleHubHttp(request: Request): Promise<Response> {
     return issueChallenge(url.searchParams.get("kid") ?? "");
   }
 
+  // Cookie authority is deliberately limited to Room controls and this one
+  // account-owned device listing. Shell, alias and desktop routes stay OAEP-only.
+  if (isAppRoomPath(path) || (path === "/v1/list_computers" && request.method === "POST")) {
+    try {
+      const actor = await roomHttpActor(request);
+      if (!actor) return json({ error: "unauthorized" }, 401);
+      if (isAppRoomPath(path)) return handleAppRoomHttp(request, actor, roomServices);
+      await readAppRoomBody(request);
+      if (!await actor.current()) return json({ error: "unauthorized" }, 401);
+      const computers = await listComputers(actor.userId);
+      if (!await actor.current()) return json({ error: "unauthorized" }, 401);
+      const response = json({ computers });
+      response.headers.set("cache-control", "private, no-store");
+      return response;
+    } catch (error) { return roomFailure(error); }
+  }
+
   const got = await lookupHubActor(request.headers.get("authorization"));
   if (got.error) return json({ error: got.error, code: got.code }, 401);
   const userId = got.userId;
@@ -220,10 +285,6 @@ export async function handleHubHttp(request: Request): Promise<Response> {
         return json({ error: "invalid json" }, 400);
       }
     }
-  }
-
-  if (path === "/v1/list_computers" && request.method === "POST") {
-    return json({ computers: await listComputers(userId) });
   }
 
   if (path === "/v1/set_computer_alias" && request.method === "POST") {
@@ -441,6 +502,7 @@ export async function handleHubHttp(request: Request): Promise<Response> {
 
 export async function handleHubUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer) {
   const url = new URL(req.url ?? "/", "http://hub");
+  if (url.pathname === "/v1/room-agent") return handleAppRoomUpgrade(req, socket, head, roomServices);
   if (url.pathname !== "/v1/device") return false;
 
   const got = await lookupHubActor(header(req, "authorization"));

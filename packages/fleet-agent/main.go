@@ -1259,7 +1259,7 @@ func main() {
 		time.Sleep(400 * time.Millisecond)
 		return
 	}
-	go settingsNet.serve(ln, secureSettingsHandler(mux))
+	go settingsNet.serve(ln, roomViewHandler(secureSettingsHandler(mux)))
 	if runtime.GOOS == "linux" {
 		log.Println("linux tray; hub from FLEET_URL + FLEET_TOKEN or", configPath())
 	} else {

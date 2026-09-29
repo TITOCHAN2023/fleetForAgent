@@ -14,6 +14,8 @@
 
 import { cookieMutationAllowed } from "./request-origin.mjs";
 import { handleOAuth } from "./oauth";
+export { RoomRelayDO } from "./room-relay";
+import { readRoomBody } from "./room-relay";
 import { applyBannedState, rejectIfBanned } from "./ban.mjs";
 import { canClaimDevice, deviceOwnerConflict } from "./bind.mjs";
 import {
@@ -102,6 +104,7 @@ import {
 } from "./tokenv1.mjs";
 
 export interface Env {
+  ROOM_RELAY: DurableObjectNamespace;
   DEVICE: DurableObjectNamespace;
   FLEET: DurableObjectNamespace;
   MCP: DurableObjectNamespace;
@@ -729,6 +732,35 @@ export default {
       if (actor.kid) headers.set("x-fleet-kid", actor.kid);
       const stub = env.DEVICE.get(env.DEVICE.idFromName(deviceId));
       return stub.fetch(new Request(request, { headers }));
+    }
+
+    if (["/v1/room-agent", "/v1/room-agents", "/v1/room-control"].includes(url.pathname)) {
+      const resolved = await resolveActor(request, fleet);
+      if (!resolved.actor) return deny(resolved);
+      if (url.pathname === "/v1/room-agent" && !resolved.actor.kid) return json({ error: "Agent connection requires a Fleet token" }, 401);
+      if (request.method === "POST" && request.headers.get("origin") && request.headers.get("origin") !== new URL(request.url).origin) return json({ error: "cross-origin Room mutation denied" }, 403);
+      let body: Uint8Array | undefined;
+      if (request.method === "POST") {
+        try { body = await readRoomBody(request); }
+        catch { return json({ error: "Room request too large or unreadable" }, 413); }
+        // A slow upload must not retain authority across token/session revocation.
+        // OAEP wraps contain a one-use challenge. Recheck the resolved key,
+        // never consume the same handshake twice.
+        if (resolved.actor.kid) {
+          const current = await fleet.fetch(new Request("https://fleet/validate-mcp", {
+            method: "POST", body: JSON.stringify({ id: resolved.actor.id, kid: resolved.actor.kid }),
+          }));
+          if (!current.ok) return current;
+        } else {
+          const current = await resolveSession(request, fleet);
+          if (!current || current.banned || current.id !== resolved.actor.id) return json({ error: "authorization changed" }, 401);
+        }
+      }
+      const headers = new Headers(request.headers);
+      headers.set("x-fleet-user", resolved.actor.id);
+      headers.set("x-fleet-kid", resolved.actor.kid || "");
+      const stub = env.ROOM_RELAY.get(env.ROOM_RELAY.idFromName(resolved.actor.id));
+      return stub.fetch(new Request(request, { headers, ...(body ? { body } : {}) }));
     }
 
     const resolved = await resolveActor(request, fleet);

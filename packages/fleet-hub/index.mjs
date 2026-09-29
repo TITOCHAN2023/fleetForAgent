@@ -32,6 +32,7 @@ import {
   trustPage,
 } from "../fleet-worker/src/source.mjs";
 import { officialPlugin } from "../fleet-tool/operator.mjs";
+import { RoomRelay, relayRegistration, ROOM_FRAME_LIMIT } from "../fleet-room/relay.mjs";
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -88,12 +89,25 @@ export function createHub({
   const desktopWaiters = new Map();
 
   const wss = new WebSocketServer({ noServer: true });
+  const roomWss = new WebSocketServer({ noServer: true, maxPayload: ROOM_FRAME_LIMIT });
+  const roomRelay = new RoomRelay({ devices: async () => listComputers().computers });
   const server = http.createServer((req, res) => {
     void handleHttp(req, res);
   });
 
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url ?? "/", "http://hub");
+    if (url.pathname === "/v1/room-agent") {
+      if (!authorized(req.headers.authorization)) { socket.end("HTTP/1.1 401 Unauthorized\r\n\r\n"); return; }
+      try {
+        const headers = new Headers(Object.entries(req.headers).filter(([, v]) => typeof v === "string"));
+        const meta = relayRegistration(headers);
+        roomWss.handleUpgrade(req, socket, head, (ws) => {
+          try { roomRelay.attach(ws, meta); } catch { ws.close(1008, "registration rejected"); }
+        });
+      } catch { socket.end("HTTP/1.1 400 Bad Request\r\n\r\n"); }
+      return;
+    }
     if (url.pathname !== "/v1/device") {
       socket.destroy();
       return;
@@ -103,6 +117,7 @@ export function createHub({
       socket.destroy();
       return;
     }
+
     const id = header(req, "x-device-id");
     if (!id) {
       socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
@@ -401,6 +416,20 @@ export function createHub({
       return;
     }
 
+    if (url.pathname === "/v1/room-agents" && req.method === "GET") { write(res, 200, roomRelay.list()); return; }
+    if (url.pathname === "/v1/room-control" && req.method === "POST") {
+      try {
+        const chunks = []; let size = 0;
+        for await (const chunk of req) {
+          size += chunk.length;
+          if (size > ROOM_FRAME_LIMIT) throw Object.assign(new Error("Room request too large"), { status: 413 });
+          chunks.push(chunk);
+        }
+        const { leaderId, action, input } = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        write(res, 200, await roomRelay.call(leaderId, { kind: "user", id: "self-host" }, action, input));
+      } catch (e) { write(res, e.status || 400, { error: e.message, code: e.code || "INVALID_REQUEST" }); }
+      return;
+    }
     let body = {};
     if (req.method === "POST") {
       try {
@@ -699,6 +728,7 @@ export function createHub({
   }
 
   function close() {
+    roomRelay.close(); roomWss.close();
     for (const ws of sockets.values()) {
       try {
         ws.close();

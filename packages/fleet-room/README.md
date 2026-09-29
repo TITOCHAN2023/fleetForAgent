@@ -63,6 +63,8 @@ On the leader machine, the existing local page (`http://127.0.0.1:17890` by defa
 
 The leader runner and machine service must use the same Fleet home. Set runner `fleetHome` and machine-service `FLEET_HOME` to the same private directory, or leave both at `~/.fleet-agent`. The runner creates a private `rooms/<leader-id>.json` discovery file containing only a loopback endpoint and a read capability, not messages. The Go service keeps that capability server-side and exposes only read-only same-origin endpoints. Normal shutdown removes the runner's own file; after a crash, verify the previous runner is stopped before deleting its stale discovery file and restarting. Do not delete `room.sqlite` to clear discovery.
 
+Local leader discovery requires the POSIX private-file permissions used by the runner. Windows Sandbox still works as a machine endpoint, but cannot host this local Room viewer: with no discovery directory it returns an empty view; descriptors whose privacy cannot be verified are rejected. Windows ACL-based discovery is not implemented. The Windows suite tests that rejection and the shared HTTP protections; successful private-file reads are tested on POSIX.
+
 The machine-facing product name is **Fleet Sandbox**. Existing `fleet` / `fleet-agent` commands and configuration paths remain compatible; binary renaming is a later migration.
 
 ## Execution and recovery

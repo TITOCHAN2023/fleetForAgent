@@ -42,3 +42,11 @@ Risk classification remains **high** because this adds an authenticated executio
 | ROOM-05 | Member CLI-state containment currently requires Linux. Windows runtime process containment and macOS volatile-state provisioning are not implemented. |
 | ROOM-06 | Nitro production preview reports an `ssr_exports` module error. Rebuilding the untouched `a660775` tree with the same locked dependencies reproduces the identical invalid export in `_ssr/ssr.mjs`; this predates Room. Development-browser validation and Worker bundling do not claim that preview passed. Production rollout must resolve or isolate it. |
 | ROOM-07 | The App relay is process-local. Auto-scaled Vercel HTTP and WebSocket connections lack account-level instance routing; a single-process App or the Worker account-scoped relay is required. Successful Nitro adapter tests do not establish multi-instance hosting support. |
+
+## Windows CI follow-up
+
+The first PR run passed the Web/Worker and Linux jobs but failed two local-view tests on Windows. Those tests assumed that `Mkdir(0700)` / `WriteFile(0600)` establish POSIX private permissions. Windows exposes different mode semantics, so the existing discovery guard correctly refused them before reaching the local leader. The Room runner already requires POSIX; Windows ACL-based local discovery remains unimplemented.
+
+The tests now separate POSIX private-file integration from platform-independent HTTP protections. Windows explicitly verifies an empty view without a runner and refusal of unverifiable discovery without contacting the endpoint or exposing the capability. Redirect and response-limit tests call the HTTP reader directly on every platform, preventing an earlier filesystem rejection from falsely satisfying those tests. The permission test restores a valid URL before loosening file permissions, so it cannot pass because of an unrelated URL error. No production permission check or workflow gate is weakened.
+
+Local follow-up verification: all six Linux RoomView tests and Go vet passed. The PR's Windows job provides native runtime verification; cross-compilation alone is not evidence of a Windows runtime pass.

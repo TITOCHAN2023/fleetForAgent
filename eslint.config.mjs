@@ -16,6 +16,7 @@ export default tseslint.config(
       "node_modules/**",
       "packages/fleet-worker/public/**/*.min.js",
       "src/routeTree.gen.ts",
+      "packages/fleet-worker/public/rooms/assets/**",
     ],
   },
   js.configs.recommended,

@@ -18,6 +18,7 @@ import { Route as LabRouteImport } from './routes/lab'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as PluginsRouteImport } from './routes/plugins'
 import { Route as ReleasesRouteImport } from './routes/releases'
+import { Route as RoomsRouteImport } from './routes/rooms'
 import { Route as DocsIndexRouteImport } from './routes/docs/index'
 import { Route as DocsSlugRouteImport } from './routes/docs/$slug'
 import { Route as McpIndexRouteImport } from './routes/mcp/index'
@@ -70,6 +71,11 @@ const ReleasesRoute = ReleasesRouteImport.update({
   path: '/releases',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RoomsRoute = RoomsRouteImport.update({
+  id: '/rooms',
+  path: '/rooms',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DocsIndexRoute = DocsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -111,6 +117,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/plugins': typeof PluginsRoute
   '/releases': typeof ReleasesRoute
+  '/rooms': typeof RoomsRoute
   '/docs/$slug': typeof DocsSlugRoute
   '/mcp/sse': typeof McpSseRoute
   '/v1/$': typeof V1SplatRoute
@@ -127,6 +134,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/plugins': typeof PluginsRoute
   '/releases': typeof ReleasesRoute
+  '/rooms': typeof RoomsRoute
   '/docs/$slug': typeof DocsSlugRoute
   '/mcp/sse': typeof McpSseRoute
   '/v1/$': typeof V1SplatRoute
@@ -145,6 +153,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/plugins': typeof PluginsRoute
   '/releases': typeof ReleasesRoute
+  '/rooms': typeof RoomsRoute
   '/docs/$slug': typeof DocsSlugRoute
   '/mcp/sse': typeof McpSseRoute
   '/v1/$': typeof V1SplatRoute
@@ -164,6 +173,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/plugins'
     | '/releases'
+    | '/rooms'
     | '/docs/$slug'
     | '/mcp/sse'
     | '/v1/$'
@@ -180,6 +190,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/plugins'
     | '/releases'
+    | '/rooms'
     | '/docs/$slug'
     | '/mcp/sse'
     | '/v1/$'
@@ -197,6 +208,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/plugins'
     | '/releases'
+    | '/rooms'
     | '/docs/$slug'
     | '/mcp/sse'
     | '/v1/$'
@@ -215,6 +227,7 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   PluginsRoute: typeof PluginsRoute
   ReleasesRoute: typeof ReleasesRoute
+  RoomsRoute: typeof RoomsRoute
   McpSseRoute: typeof McpSseRoute
   V1SplatRoute: typeof V1SplatRoute
   McpIndexRoute: typeof McpIndexRoute
@@ -286,6 +299,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ReleasesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/rooms': {
+      id: '/rooms'
+      path: '/rooms'
+      fullPath: '/rooms'
+      preLoaderRoute: typeof RoomsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/docs/': {
       id: '/docs/'
       path: '/'
@@ -353,6 +373,7 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   PluginsRoute: PluginsRoute,
   ReleasesRoute: ReleasesRoute,
+  RoomsRoute: RoomsRoute,
   McpSseRoute: McpSseRoute,
   V1SplatRoute: V1SplatRoute,
   McpIndexRoute: McpIndexRoute,

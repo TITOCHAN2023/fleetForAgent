@@ -165,6 +165,9 @@ export function FleetConsole({ initialTab }: { initialTab?: string } = {}) {
           ))}
         </nav>
         <div className="flex items-center gap-3">
+          <Link to="/rooms" className="text-sm text-muted hover:text-fg">
+            Rooms
+          </Link>
           <Link to="/help" className="text-sm text-muted hover:text-fg">
             {t("header.guide")}
           </Link>

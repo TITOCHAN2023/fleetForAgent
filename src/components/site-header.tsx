@@ -13,6 +13,9 @@ export function SiteHeader({ brand = "Fleet" }: { brand?: string }) {
           {brand}
         </Link>
         <nav className="ml-auto flex flex-wrap items-center gap-3 text-sm text-muted">
+          <Link to="/rooms" className="hover:text-fg">
+            Rooms
+          </Link>
           <Link to="/help" className="hover:text-fg">
             {t("nav.help")}
           </Link>

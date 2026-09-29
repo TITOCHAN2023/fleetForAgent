@@ -1,0 +1,8 @@
+@import "../styles.css";
+
+/* The standalone Vite root does not auto-scan shared components outside it. */
+@source "./main.tsx";
+@source "../components/room-console.tsx";
+@source "../components/ui";
+@source "../components/theme-switch.tsx";
+@source "../components/locale-switch.tsx";

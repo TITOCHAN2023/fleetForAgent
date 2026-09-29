@@ -1,5 +1,5 @@
 name = "fleet-hub"
-main = "src/index.ts"
+main = "src/worker.ts"
 compatibility_date = "2026-04-07"
 workers_dev = false
 
@@ -56,6 +56,10 @@ class_name = "PeerSessionDO"
 name = "REVOCATION"
 class_name = "RevocationDO"
 
+[[durable_objects.bindings]]
+name = "ROOM_RELAY"
+class_name = "RoomRelayDO"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["DeviceDO", "FleetDO"]
@@ -76,3 +80,7 @@ deleted_classes = ["TransferDO"]
 [[migrations]]
 tag = "v5"
 new_sqlite_classes = ["RevocationDO"]
+
+[[migrations]]
+tag = "v6"
+new_sqlite_classes = ["RoomRelayDO"]

@@ -31,6 +31,7 @@ import { createRtcManager } from "./rtc.mjs";
 import { createFileTransferManager } from "./file-transfer-rtc.mjs";
 import { startAndWaitFileTransfer } from "./file-transfer-cli.mjs";
 import { McpStdioCallManager } from "./mcp-protocol.mjs";
+import { createRoomTools } from "./room-client.mjs";
 import {
   highSecAuthorization,
   verifyFleetStatement,
@@ -249,9 +250,10 @@ function mcp() {
     fileTransfer: fileTransferManager,
     env: process.env,
   });
+  const rooms = createRoomTools({ url, token });
   const calls = new McpStdioCallManager({
     shutdown: async () => {
-      await Promise.allSettled([fileTransferManager.shutdown(), rtcManager.shutdown()]);
+      await Promise.allSettled([fileTransferManager.shutdown(), rtcManager.shutdown(), rooms.shutdown()]);
     },
   });
 
@@ -275,11 +277,12 @@ function mcp() {
       const id = msg.id;
       try {
         if (msg.method === "initialize") {
+          rooms.initialize(msg.params?.clientInfo);
           reply(id, {
             protocolVersion: "2024-11-05",
             capabilities: { tools: {}, prompts: {} },
             serverInfo: { name: "fleet", version: FLEET_VERSION },
-            instructions: MCP_INSTRUCTIONS,
+            instructions: MCP_INSTRUCTIONS + "\nFleet Room tools use this Agent identity, never account-owner authority. MCP registration alone does not make an Agent remotely callable. Room contents stay on their leader; retain requestId for uncertain writes and follow message pagination before replying against contextRev.",
           });
           continue;
         }
@@ -294,7 +297,7 @@ function mcp() {
           continue;
         }
         if (msg.method === "tools/list") {
-          reply(id, { tools });
+          reply(id, { tools: [...tools, ...rooms.tools] });
           continue;
         }
         if (msg.method === "tools/call") {
@@ -303,7 +306,8 @@ function mcp() {
           const name = msg.params?.name;
           const args = msg.params?.arguments ?? {};
           const pending = calls.run(async (signal) => {
-            const out = await callTool(name, args, {
+            const invoke = rooms.hasTool(name) ? rooms.callTool : callTool;
+            const out = await invoke(name, args, {
               signal,
               isCancelled: () => signal.aborted,
               onProgress: ({ progress, total }) => {

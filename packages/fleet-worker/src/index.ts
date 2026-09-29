@@ -12,6 +12,7 @@
  * Worker. It grants no extra machine-control authority.
  */
 
+import { cookieMutationAllowed } from "./request-origin.mjs";
 import { handleOAuth } from "./oauth";
 import { applyBannedState, rejectIfBanned } from "./ban.mjs";
 import { canClaimDevice, deviceOwnerConflict } from "./bind.mjs";
@@ -79,6 +80,7 @@ import {
   readPeerSessionControlText,
   type PeerSessionRecord,
 } from "./peer-session";
+import { isSourcePath, isTrustPath, publicSource, sourceHeaders, trustPage } from "./source.mjs";
 import {
   audMismatch,
   bearerToken,
@@ -117,6 +119,11 @@ export interface Env {
   AGENT_UPDATE_CHECKSUMS?: string;
   AGENT_UPDATE_SUMS?: string;
   RTC_STUN_URLS?: string;
+  SOURCE_REPO?: string;
+  SOURCE_COMMIT?: string;
+  SOURCE_TAG?: string;
+  SOURCE_WORKFLOW_RUN?: string;
+  SOURCE_BUNDLE_SHA256?: string;
 }
 
 export { PeerSessionDO };
@@ -578,6 +585,10 @@ export default {
     const path = url.pathname.replace(/\/+$/, "") || "/";
     const hub = url.pathname === "/v1" || url.pathname.startsWith("/v1/");
 
+    if ((hub || path === "/ops") && !cookieMutationAllowed(request, configuredOrigin(env))) {
+      return json({ error: "origin not allowed" }, 403);
+    }
+
     if (path === "/ops") {
       const fleet = env.FLEET.get(env.FLEET.idFromName("fleet"));
       return dispatchOps(request, env, fleet, "/ops");
@@ -596,6 +607,25 @@ export default {
       return dispatchMcpHttp(request, env);
     }
 
+    if (isSourcePath(path) || isTrustPath(path)) {
+      if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return json({ error: "method not allowed" }, 405);
+      }
+      const identity = publicSource(env, { backend: "worker" });
+      if (isTrustPath(path)) {
+        return new Response(
+          request.method === "HEAD" ? null : trustPage(identity, { origin: configuredOrigin(env) }),
+          {
+            headers: { ...sourceHeaders("text/html; charset=utf-8"), ...CORS },
+          },
+        );
+      }
+      return new Response(request.method === "HEAD" ? null : JSON.stringify(identity), {
+        headers: { ...sourceHeaders("application/json"), ...CORS },
+      });
+    }
+
     if (!hub) {
       if (!env.ASSETS) return new Response("site missing", { status: 500 });
       return env.ASSETS.fetch(request);
@@ -604,7 +634,13 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
 
     if (url.pathname === "/v1/health") {
-      return json({ name: "fleet-hub", v: 1, ok: true, ...updateAdvert(env) });
+      return json({
+        name: "fleet-hub",
+        v: 1,
+        ok: true,
+        ...updateAdvert(env),
+        source: publicSource(env, { backend: "worker" }),
+      });
     }
 
     const oauth = await handleOAuth(request, env);

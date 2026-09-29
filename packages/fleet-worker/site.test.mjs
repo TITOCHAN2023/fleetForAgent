@@ -56,6 +56,9 @@ test("hub site explains multi-os fleet and ships a Help page", () => {
   assert.match(html, /ops-switch/);
   assert.match(html, /href="\/ops"/);
   assert.match(html, /href="\/plugins"/);
+  assert.match(html, /href="\/trust"/);
+  assert.match(html, /href="\/source"/);
+  assert.doesNotMatch(html, /data-go="\/trust"/);
   assert.match(html, /plugin-registry\.json/);
   assert.match(html, /plugin-grid/);
   assert.match(html, /TITOCHAN2023\/fleet-plugins/);

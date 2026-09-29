@@ -1,7 +1,25 @@
 {
   "posts": [
     {
+      "slug": "same-source-as-github",
+      "pinned": true,
+      "date": "2026-09-16",
+      "langs": [
+        "en",
+        "zh"
+      ],
+      "title": {
+        "en": "Verifying the Fleet Hub: evidence, limits, and progress",
+        "zh": "如何核验 Fleet Hub：证据、边界与进展"
+      },
+      "summary": {
+        "en": "A living trust document. Inspect release files and track what is implemented, what needs verification, and what remains a trust decision.",
+        "zh": "持续更新的信任说明。先看图，再核对发布文件；已做到什么、仍需信任什么，都放在这里。"
+      }
+    },
+    {
       "slug": "rtc-with-a-brake",
+      "pinned": false,
       "date": "2026-08-27",
       "langs": [
         "en",
@@ -18,6 +36,7 @@
     },
     {
       "slug": "one-machine-was-not-enough",
+      "pinned": false,
       "date": "2026-08-24",
       "langs": [
         "en",
@@ -34,6 +53,7 @@
     },
     {
       "slug": "why-fleet-is-safe",
+      "pinned": false,
       "date": "2026-08-21",
       "langs": [
         "en",

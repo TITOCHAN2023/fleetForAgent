@@ -9,6 +9,7 @@ export type BlogCopy = {
 
 export type BlogListItem = {
   slug: string;
+  pinned?: boolean;
   date: string;
   langs: BlogLocale[];
   title: Partial<Record<BlogLocale, string>> | string;

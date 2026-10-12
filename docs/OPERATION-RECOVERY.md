@@ -53,6 +53,10 @@ stateDiagram-v2
 `npm test` 覆盖 Tool、Hub、Worker 查询与隔离；`npm run test:agent:sandbox` 在只读、无特权 Docker 容器中运行 Go 回归，包含并发重复投递、丢连接后完成与副作用次数检查。
 不会在真实 Fleet 设备上运行这些故障实验。
 
+`npm run test:recovery:network` 另外启动真实 Worker、两个 Go Agent、Tool 和本地 STUN 共五个容器，放在 Docker `--internal` 网络中，不映射宿主端口。需要 Docker、Node 和 Go（可通过 `FLEET_TEST_GO` 指定 Go 可执行文件）；先安装本仓库 Node 依赖。镜像构建阶段允许下载锁定的测试运行依赖，运行阶段不依赖外网。
+
+测试使用新签发的本地 `flt_1` 假账户，覆盖并发隔离、重复请求、丢结果、Hub 缓存丢失、Agent 断网与进程重启、真实 MCP stdio 重启、真实 RTC → WS 回退、设备权限和破坏性命令阻断。`recover_session` 是快照：首轮回查可能仍是 pending，测试只轮询读取，不重发命令。私有证据保留在 `scripts/plugin-peer-vm/.runs/recovery-network.*`；容器和内网结束后清理，不发布。故障注入只存在于独立测试 Worker 入口，不进入生产包。此实验验证内网真实链路，不代表跨公网 NAT 打洞或 Windows 运行时已验证。
+
 ## English
 
 Fleet recovers operation facts and references to existing execution state, not a conversation replay.
@@ -67,3 +71,7 @@ Device receipts contain hashes, state, exit code and timestamps, not tokens, raw
 While the device process survives, results are queried from its actual pane. After device restart a completed receipt can report its exit code with `output_unavailable`; an unfinished intent is `unknown` and requires inspection, never an automatic retry. The bounded store refuses new recovery-mode work at 4096 receipts rather than silently deleting deduplication evidence. User-approved receipt removal ends the corresponding deduplication guarantee.
 
 This does not promise exactly-once arbitrary shell side effects or power-loss durability. It does not restore dead processes, environment variables, plugin internals or external database transactions. Tests use disposable containers for real child processes, never production devices.
+
+Run `npm run test:recovery:network` for a real Worker, two Go Agents, Tool and local STUN on an internal-only Docker network with no published host ports. Install the repository's Node dependencies first; Docker, Node and Go are required (`FLEET_TEST_GO` can override the Go executable). Image construction downloads locked lab dependencies; runtime has no external gateway. A fresh local `flt_1` account is used, never a production credential. Fault injection exists only in the lab Worker entry point, not the production bundle.
+
+The suite checks concurrent isolation, duplicate delivery, missing responses/cache, network partition, Agent and actual MCP stdio restarts, real RTC-to-WS recovery, device permit enforcement, destructive-command rejection, private receipts and session locks. Recovery snapshots may initially be pending; only reads are polled, never command replay. Private evidence stays under `scripts/plugin-peer-vm/.runs/recovery-network.*`; created containers/network are removed afterward. This LAN experiment does not prove public-NAT traversal or Windows runtime behavior.

@@ -3,6 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, chmodSync, symlinkSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { openRecovery } from "./recovery.mjs";
 import { createOperator, operationCorr, operationInput, formatMcpText, isFinishedResult } from "./operator.mjs";
 
@@ -38,6 +40,20 @@ test("different checkpoint paths never share operator identity", (t) => {
   const b = openRecovery(checkpoint(t), binding);
   assert.notEqual(a.fingerprint, b.fingerprint);
   a.close(); b.close();
+});
+
+test("CLI keeps its argument validation while stdio owns the inherited session path", (t) => {
+  const path = checkpoint(t);
+  const saved = openRecovery(path, binding);
+  try {
+    const output = spawnSync(process.execPath, [fileURLToPath(new URL("./index.mjs", import.meta.url)), "run"], {
+      env: { ...process.env, FLEET_URL: binding.url, FLEET_TOKEN: binding.token, FLEET_SESSION_PATH: path }, encoding: "utf8",
+    });
+    assert.equal(output.status, 1);
+    assert.match(output.stderr, /usage: run/);
+    assert.doesNotMatch(output.stderr, /locked|EEXIST/);
+    assert.throws(() => openRecovery(path, binding), /locked/);
+  } finally { saved.close(); }
 });
 
 test("unsafe checkpoint permissions and symlinks fail closed", { skip: process.platform === "win32" }, (t) => {
@@ -140,4 +156,50 @@ test("a cached completion for different input must never become this command's s
     return {corr, ok:true, exit_code:0, stdout:"original output", input_hash:originalHash};
   } });
   await assert.rejects(op.callTool("run", {device_id:"device-1", command:"different command", request_id}), /already used with different command/);
+});
+
+test("remote MCP retains the request proof even when its adapter owns the fingerprint", async () => {
+  const request_id = "e9301640-c8b3-4d84-9b44-12c458d08e8c";
+  const corr = await operationCorr("remote-mcp-operator", request_id);
+  const calls = [];
+  const rpc = async (route, body) => {
+    calls.push({ route, body });
+    if (route === "/v1/get_computer") return { id: "device-1", caps: ["operation_recovery_v1"] };
+    if (route === "/v1/run") return { corr, status: "running" };
+    if (route === "/v1/get_result") return { corr, ok: true, exit_code: 0 };
+    return { screen: null };
+  };
+  const first = createOperator({ rpc });
+  await first.callTool("run", { device_id: "device-1", command: "echo safe", request_id, wait_ms: 0 });
+  const resumed = createOperator({ rpc, state: first.getState() });
+  await resumed.callTool("recover_session", {});
+  const query = calls.find(call => call.route === "/v1/get_result");
+  assert.equal(query.body.request_id, request_id);
+  assert.equal(query.body.corr, corr);
+  assert.equal(calls.filter(call => call.route === "/v1/run").length, 1);
+});
+
+test("invalid explicit request IDs fail before command dispatch", async () => {
+  let runs = 0;
+  const operator = createOperator({ rpc: async (route) => {
+    if (route === "/v1/get_computer") return { id: "device-1", caps: ["operation_recovery_v1"] };
+    runs++; return {};
+  } });
+  for (const request_id of ["", false, 0]) {
+    await assert.rejects(operator.callTool("run", { device_id: "device-1", command: "echo safe", request_id }), /UUID/);
+  }
+  assert.equal(runs, 0);
+});
+
+test("fresh capability lookup invalidates a previously supported recovery device", async () => {
+  let caps = ["operation_recovery_v1"], runs = 0;
+  const operator = createOperator({ rpc: async (route) => {
+    if (route === "/v1/get_computer") return { id: "device-1", caps };
+    runs++; return {};
+  } });
+  await operator.callTool("set_computer", { device_id: "device-1" });
+  caps = ["shell"];
+  await operator.callTool("get_computer", {});
+  await assert.rejects(operator.callTool("run", { command: "echo safe", request_id: "e9301640-c8b3-4d84-9b44-12c458d08e8c" }), /update the Agent/);
+  assert.equal(runs, 0);
 });

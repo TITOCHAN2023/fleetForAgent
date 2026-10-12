@@ -2,8 +2,9 @@ import { OFFICIAL_PLUGIN_CATALOG as GENERATED_PLUGIN_CATALOG, PLUGIN_REGISTRY_SO
 import { createFileTransferPeerConfig } from "./file-transfer-contract.mjs";
 
 /**
- * MCP operator surface. Last-used lives in this process only.
- * Do not write hub_sessions, ~/.fleet, or a workspace file.
+ * MCP operator surface. Last-used is process-local by default. Only an
+ * explicit saveState adapter opts in to a caller-selected checkpoint.
+ * Never create implicit hub_sessions, ~/.fleet or workspace state here.
  */
 
 export const FLEET_VERSION = "0.6.3";
@@ -941,6 +942,7 @@ export function createOperator({
     if (!id) throw new Error(`device not found: ${ref}`);
     canonicalIds.add(id);
     if (row.caps?.includes("operation_recovery_v1")) recoveryDevices.add(id);
+    else recoveryDevices.delete(id);
     return { id, row };
   }
 
@@ -1075,12 +1077,15 @@ export function createOperator({
 
   async function execOnDevice(deviceId, command, waitMs, trace, hooks, requestId) {
     const body = { device_id: deviceId, command };
-    if (requestId && !recoveryDevices.has(deviceId)) throw new Error("Device does not support operation recovery; update the Agent before using request_id");
-    if (recoveryDevices.has(deviceId) && (requestId || saveState)) {
-      body.request_id = requestId || crypto.randomUUID();
-      const corr = await operationCorr(fingerprint, body.request_id);
+    if (requestId != null) await operationCorr(fingerprint, requestId);
+    if (requestId != null && !recoveryDevices.has(deviceId)) throw new Error("Device does not support operation recovery; update the Agent before using request_id");
+    if (recoveryDevices.has(deviceId) && (requestId != null || saveState)) {
+      body.request_id = requestId ?? crypto.randomUUID();
+      // Remote MCP owns the operator fingerprint in its transport adapter.
+      // Retain its request proof too; the acknowledged corr arrives below.
+      requestByDevice.set(deviceId, body.request_id);
       // Persist BEFORE dispatch, so a lost HTTP acknowledgement is recoverable.
-      if (fingerprint) { requestByDevice.set(deviceId, body.request_id); rememberCorr(deviceId, corr); }
+      if (fingerprint) rememberCorr(deviceId, await operationCorr(fingerprint, body.request_id));
     } else {
       requestByDevice.delete(deviceId);
     }

@@ -130,7 +130,7 @@ async function inside() {
   }
   function mcp(session) {
     const child = spawn(process.execPath, ["/workspace/packages/fleet-tool/index.mjs"], {
-      env: { ...process.env, FLEET_URL: HUB, FLEET_TOKEN: token, FLEET_SESSION_PATH: `/shared/${session}.json` },
+      env: { ...process.env, FLEET_URL: HUB, FLEET_TOKEN: token, FLEET_SESSION_PATH: `/shared/${session}.json`, FLEET_AGENT_ID: "recovery-lab-mcp" },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let seq = 0, errors = "";
@@ -138,7 +138,12 @@ async function inside() {
     child.stderr.on("data", data => { errors += data; });
     createInterface({ input: child.stdout }).on("line", line => {
       const row = JSON.parse(line); const waiter = pending.get(row.id);
-      if (waiter) { clearTimeout(waiter.timer); pending.delete(row.id); row.error ? waiter.reject(new Error(JSON.stringify(row.error))) : waiter.resolve(row.result); }
+      if (waiter) {
+        clearTimeout(waiter.timer);
+        pending.delete(row.id);
+        if (row.error) waiter.reject(new Error(JSON.stringify(row.error)));
+        else waiter.resolve(row.result);
+      }
     });
     child.on("exit", code => { for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(new Error(`MCP exited ${code}: ${errors}`)); } pending.clear(); });
     const call = (method, params) => new Promise((resolve, reject) => {
@@ -245,6 +250,12 @@ async function inside() {
       const init = () => process.call("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "isolated-recovery-test", version: "1" } });
       try {
         await init();
+        const toolNames = (await process.call("tools/list", {})).tools.map(tool => tool.name);
+        for (const name of ["run", "recover_session", "install_plugin", "start_file_transfer", "fleet_agents", "room_list", "room_delegate"]) assert(toolNames.includes(name), `existing tool ${name} must remain available`);
+        const registration = await process.tool("fleet_agents", {});
+        assert(!registration.isError, JSON.stringify(registration));
+        const directory = JSON.parse(registration.content[0].text);
+        assert.equal(directory.self.mode, "mcp"); assert.equal(directory.self.callable, false);
         const reply = await process.tool("run", { device_id: B, command: "printf 'x\\n' >> /data/stdio; printf 'STDIO_RECEIPT\\n'", wait_ms: 3000 });
         assert(reply.content[0].text.includes("STDIO_RECEIPT"), JSON.stringify(reply));
         const before = await json("/shared/stdio.json"); await process.close();
@@ -259,7 +270,7 @@ async function inside() {
         assert.equal(value.replayed, false); assert.equal(value.result.exit_code, 0);
         assert.equal((await json("/shared/stdio.json")).fingerprint, before.fingerprint);
         await counter("stdio", 1, B);
-        return { corr: value.corr, replayed: value.replayed, transport: recovered._meta?.fleet_transport };
+        return { corr: value.corr, replayed: value.replayed, transport: recovered._meta?.fleet_transport, room_registration: directory.self.mode };
       } finally { await process.close(); }
     });
     await test("real RTC execution; lost direct path falls back to WS", async () => {
@@ -333,7 +344,7 @@ async function host() {
     await docker("build", "-t", image, "-f", "scripts/plugin-peer-vm/recovery.Dockerfile", "."); imageCreated = true;
     await docker("network", "create", "--internal", network); networkCreated = true;
     const hubState = path.join(run, "hub"); await mkdir(hubState);
-    const bindings = { DEVICE: "DeviceDO", FLEET: "FleetDO", MCP: "McpDO", PEER_SESSION: "PeerSessionDO", REVOCATION: "RevocationDO" };
+    const bindings = { DEVICE: "DeviceDO", FLEET: "FleetDO", MCP: "McpDO", PEER_SESSION: "PeerSessionDO", REVOCATION: "RevocationDO", ROOM_RELAY: "RoomRelayDO" };
     await put(path.join(hubState, "wrangler.json"), {
       name: "fleet-recovery-lab", main: "/workspace/scripts/plugin-peer-vm/recovery-worker.ts", compatibility_date: "2026-04-07", workers_dev: false,
       vars: { HUB_ORIGIN: HUB, RTC_STUN_URLS: "stun:stun:3478" },

@@ -60,11 +60,12 @@ loadDotEnv(join(homedir(), ".fleet", "mcp.env"));
 
 const url = (process.env.FLEET_URL || "").replace(/\/$/, "");
 const token = process.env.FLEET_TOKEN || "";
-const recovery = openRecovery(process.env.FLEET_SESSION_PATH, { url, token });
+const argv = applyCliDevFlag(process.argv.slice(2), process.env);
+// Checkpoints belong to stdio MCP, not an unrelated CLI invocation that
+// happens to inherit the same environment.
+const recovery = argv.length === 0 ? openRecovery(process.env.FLEET_SESSION_PATH, { url, token }) : null;
 const operatorFingerprint = recovery?.fingerprint || newOperatorFingerprint();
 process.once("exit", () => recovery?.close());
-
-const argv = applyCliDevFlag(process.argv.slice(2), process.env);
 
 async function hubHeaders({ signal, fingerprint = operatorFingerprint } = {}) {
   signal?.throwIfAborted?.();

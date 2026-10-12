@@ -1,9 +1,9 @@
 import fixture from "./worker";
 import {
-  DeviceDO as ProductionDeviceDO, FleetDO, McpDO, PeerSessionDO, RevocationDO, type Env,
+  DeviceDO as ProductionDeviceDO, FleetDO, McpDO, PeerSessionDO, RevocationDO, RoomRelayDO, type Env,
 } from "../../packages/fleet-worker/src/index";
 
-export { FleetDO, McpDO, PeerSessionDO, RevocationDO };
+export { FleetDO, McpDO, PeerSessionDO, RevocationDO, RoomRelayDO };
 type LabEnv = Env & { VM_SEED_KEY?: string };
 
 // Fault injection belongs in the lab entry point, never in the public Worker.

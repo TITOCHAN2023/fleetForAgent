@@ -43,6 +43,18 @@ export class UnauthorizedError extends Error {
 
 export type VerifiedUser = { id: string; email: string | null };
 
+/** Explicit HTTP requests must use a live session, never the dev-user fallback
+ * or a cached session cookie after its database session has been revoked. */
+export async function getSessionUserFromRequest(request: Request): Promise<VerifiedUser | null> {
+  if (!authConfigured) return null;
+  const session = await auth.api.getSession({
+    headers: request.headers,
+    query: { disableCookieCache: true, disableRefresh: true },
+  });
+  if (!session?.user) return null;
+  return { id: session.user.id, email: session.user.email ?? null };
+}
+
 /**
  * Resolve the signed-in user from the current request, or `null` when auth isn't
  * configured / nobody is signed in. Safe to call from server functions and SSR

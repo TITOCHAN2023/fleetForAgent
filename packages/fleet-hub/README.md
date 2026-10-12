@@ -18,4 +18,6 @@ Agent: paste `http://127.0.0.1:8787` (local) or `hub.example.com` (behind TLS).
 
 Production: put Caddy/nginx in front for HTTPS, set `SELF_HOST_TOKEN`, bind `0.0.0.0`.
 
+`GET /source` and `GET /trust` stay public. Set `SOURCE_COMMIT=$(git rev-parse HEAD)` (and optional `SOURCE_REPO`) so operators can check the running process against git. Same document as the Worker: [docs/en/trust.md](../../docs/en/trust.md).
+
 Full steps: [English](../../docs/en/deploy.md) · [中文](../../docs/zh/deploy.md)

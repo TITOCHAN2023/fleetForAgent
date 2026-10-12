@@ -57,7 +57,7 @@ function pgliteBootstrapPlugin(): Plugin {
  * (full-page OAuth redirect), so `apply: "serve"` is enough.
  */
 /**
- * Device WebSocket on the website origin: WSS /v1/device.
+ * Device and Room WebSockets on the website origin.
  * HTTP /v1/* is the TanStack route src/routes/v1/$.ts.
  * Only consume this path so Vite HMR upgrades still work.
  */
@@ -72,7 +72,7 @@ function fleetHubPlugin(): Plugin {
         (httpServer as { __fleetHub?: boolean }).__fleetHub = true;
         httpServer.on("upgrade", (req, socket, head) => {
           const pathOnly = (req.url ?? "").split("?", 1)[0] ?? "";
-          if (pathOnly !== "/v1/device") return;
+          if (pathOnly !== "/v1/device" && pathOnly !== "/v1/room-agent") return;
           void (async () => {
             try {
               const mod = (await server.ssrLoadModule("/src/lib/fleet/v1.server.ts")) as {
@@ -212,6 +212,7 @@ export default defineConfig(({ command, isPreview }) => ({
       ? [
           nitro({
             preset: "vercel",
+            features: { websocket: true },
             // Auto-registers server/middleware/* (the PWA install page +
             // manifest + head-tag middleware). Nitro v3 defaults serverDir to
             // false, so removing this silently unwires /?install=1 on deploys.

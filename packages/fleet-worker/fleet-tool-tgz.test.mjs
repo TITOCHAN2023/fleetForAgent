@@ -53,6 +53,9 @@ function assertNpmTarball(tgz) {
     "package/operator.mjs",
     "package/rtc.mjs",
     "package/mcp-protocol.mjs",
+    "package/room-client.mjs",
+    "package/room/client.mjs",
+    "package/room/relay.mjs",
     "package/file-transfer-cli.mjs",
     "package/file-transfer-contract.mjs",
     "package/file-transfer-rtc.mjs",
@@ -71,10 +74,13 @@ function assertNpmTarball(tgz) {
   assert.equal(manifest.name, "fleet-tool");
   assert.equal(manifest.version, "0.6.3");
   assert.equal(manifest.bin?.["fleet-tool"], "./index.mjs");
+  assert.equal(manifest.dependencies.ws, "8.18.3");
   assertPEMachine(tgz, "package/bin/fleet-tool-windows-job-host-amd64.exe", 0x8664);
   assertPEMachine(tgz, "package/bin/fleet-tool-windows-job-host-arm64.exe", 0xaa64);
   assert.match(tarballFile(tgz, "package/index.mjs"), /from "\.\/tokenv1\.mjs"/);
   assert.doesNotMatch(tarballFile(tgz, "package/index.mjs"), /\.\.\/fleet-worker/);
+  assert.match(tarballFile(tgz, "package/room-client.mjs"), /import\("\.\/room\/client\.mjs"\)/);
+  assert.match(tarballFile(tgz, "package/room/client.mjs"), /from "\.\.\/tokenv1\.mjs"/);
 }
 
 test("public /fleet-tool.tgz is a gzip npm pack, not HTML", () => {
@@ -87,7 +93,7 @@ test("packer output matches the committed tarball contents", () => {
   try {
     packFleetTool({ outFile: fresh });
     assertNpmTarball(fresh);
-    for (const name of ["package/package.json", "package/index.mjs", "package/operator.mjs", "package/rtc.mjs", "package/mcp-protocol.mjs", "package/file-transfer-cli.mjs", "package/file-transfer-contract.mjs", "package/file-transfer-rtc.mjs", "package/plugin-peer-api.mjs", "package/plugin-peer-plugin.mjs", "package/plugin-peer-runtime.mjs", "package/official-plugins.generated.mjs", "package/tokenv1.mjs", "package/README.md"]) {
+    for (const name of ["package/package.json", "package/index.mjs", "package/operator.mjs", "package/rtc.mjs", "package/mcp-protocol.mjs", "package/room-client.mjs", "package/room/client.mjs", "package/room/relay.mjs", "package/file-transfer-cli.mjs", "package/file-transfer-contract.mjs", "package/file-transfer-rtc.mjs", "package/plugin-peer-api.mjs", "package/plugin-peer-plugin.mjs", "package/plugin-peer-runtime.mjs", "package/official-plugins.generated.mjs", "package/tokenv1.mjs", "package/README.md"]) {
       assert.equal(tarballFile(publicTgz, name), tarballFile(fresh, name), name);
     }
     for (const name of ["package/bin/fleet-tool-windows-job-host-amd64.exe", "package/bin/fleet-tool-windows-job-host-arm64.exe"]) {
@@ -222,7 +228,10 @@ test("Worker serves /fleet-tool.tgz without hiding asset response semantics", as
 
 test("wrangler keeps SPA fallback, explicit DO migrations, and token vars secret", () => {
   assert.match(wrangler, /not_found_handling = "single-page-application"/);
-  assert.match(wrangler, /run_worker_first = \["\/v1", "\/v1\/\*", "\/mcp", "\/mcp\/sse", "\/ops", "\/fleet-tool\.tgz"\]/);
+  const routes = JSON.parse(wrangler.match(/^run_worker_first\s*=\s*(\[[^\n]+\])/m)?.[1] ?? "[]");
+  for (const route of ["/source", "/trust", "/v1", "/v1/*", "/mcp", "/mcp/sse", "/ops", "/fleet-tool.tgz"]) {
+    assert.ok(routes.includes(route), `missing Worker route: ${route}`);
+  }
   assert.doesNotMatch(wrangler, /run_worker_first = true/);
   assert.match(worker, /isFleetToolTgzPath/);
   assert.match(worker, /serveFleetToolTgz/);

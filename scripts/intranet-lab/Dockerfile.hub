@@ -1,0 +1,16 @@
+FROM node:20-alpine
+WORKDIR /app
+COPY packages/fleet-hub/package.json ./packages/fleet-hub/
+COPY packages/fleet-hub/index.mjs ./packages/fleet-hub/
+COPY packages/fleet-hub/node_modules ./packages/fleet-hub/node_modules
+COPY packages/fleet-worker/src ./packages/fleet-worker/src
+COPY packages/fleet-tool/operator.mjs \
+     packages/fleet-tool/official-plugins.generated.mjs \
+     packages/fleet-tool/file-transfer-contract.mjs \
+     ./packages/fleet-tool/
+WORKDIR /app/packages/fleet-hub
+RUN chmod -R a+rX /app
+ENV HOST=0.0.0.0 PORT=8787
+EXPOSE 8787
+USER node
+CMD ["node", "index.mjs"]

@@ -79,6 +79,7 @@ export function packFleetTool({ outFile = DEFAULT_OUT } = {}) {
       "operator.mjs",
       "recovery.mjs",
       "mcp-protocol.mjs",
+      "room-client.mjs",
       "rtc.mjs",
       "file-transfer-cli.mjs",
       "file-transfer-contract.mjs",
@@ -89,8 +90,12 @@ export function packFleetTool({ outFile = DEFAULT_OUT } = {}) {
       "official-plugins.generated.mjs",
     ];
     for (const module of modules) {
-      writeFileSync(join(stage, module), normalizedText(join(TOOL_DIR, module)));
+      const source = normalizedText(join(TOOL_DIR, module)).replaceAll('import("../fleet-room/client.mjs")', 'import("./room/client.mjs")');
+      writeFileSync(join(stage, module), source);
     }
+    mkdirSync(join(stage, "room"));
+    writeFileSync(join(stage, "room/client.mjs"), normalizedText(join(ROOT, "packages/fleet-room/client.mjs")).replaceAll(WORKER_IMPORT, 'from "../tokenv1.mjs"'));
+    writeFileSync(join(stage, "room/relay.mjs"), normalizedText(join(ROOT, "packages/fleet-room/relay.mjs")));
     buildWindowsJobHosts(stage);
     writeFileSync(join(stage, "tokenv1.mjs"), normalizedText(TOKEN_SRC));
     writeFileSync(join(stage, "README.md"), normalizedText(join(TOOL_DIR, "README.md")));
@@ -103,10 +108,12 @@ export function packFleetTool({ outFile = DEFAULT_OUT } = {}) {
           license: "MIT",
           type: "module",
           bin: { "fleet-tool": "./index.mjs" },
-          dependencies: { werift: "0.24.4" },
+          dependencies: { werift: "0.24.4", ws: "8.18.3" },
           files: [
             "index.mjs",
             ...modules,
+            "room/client.mjs",
+            "room/relay.mjs",
             "bin/fleet-tool-windows-job-host-amd64.exe",
             "bin/fleet-tool-windows-job-host-arm64.exe",
             "tokenv1.mjs",

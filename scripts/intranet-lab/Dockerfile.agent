@@ -1,0 +1,8 @@
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+COPY fleet-agent /usr/local/bin/fleet-agent
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod 0755 /usr/local/bin/fleet-agent /entrypoint.sh \
+  && mkdir -p /data && chmod 1777 /data
+WORKDIR /data
+ENTRYPOINT ["/entrypoint.sh"]

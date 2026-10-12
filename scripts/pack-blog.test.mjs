@@ -74,3 +74,19 @@ test("compileBlog merges .zh.md/.en.md and skips welcome.md", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("pinned translated posts stay ahead of newer posts without duplicating the entry", () => {
+  const dir = mkdtempSync(join(tmpdir(), "fleet-blog-pinned-"));
+  try {
+    writeFileSync(join(dir, "trust.zh.md"), "---\npinned: true\ndate: 2020-01-01\n---\n说明\n");
+    writeFileSync(join(dir, "trust.en.md"), "---\ndate: 2020-01-01\n---\nGuide\n");
+    writeFileSync(join(dir, "new.md"), "---\npinned: false\ndate: 2030-01-01\n---\nNews\n");
+    const { posts } = compileBlog({ srcDir: dir });
+    assert.deepEqual(posts.map((post) => post.slug), ["trust", "new"]);
+    assert.equal(posts[0].pinned, true);
+    assert.equal(posts[1].pinned, false);
+    assert.deepEqual(posts[0].langs, ["en", "zh"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

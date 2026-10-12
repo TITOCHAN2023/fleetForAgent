@@ -34,8 +34,17 @@ jobs:
       - name: Install locked Worker dependencies
         run: npm ci --prefix packages/fleet-worker
 
+      - name: Build Room static assets
+        run: npm run pack:room
+
       - name: Test
         run: npm test
+
+      - name: Room state, relay, runner, and MCP tests
+        run: npm run test:room
+
+      - name: Room two-endpoint intranet test (1 CPU / 1 GiB each)
+        run: npm run test:room:intranet
 
       - name: Typecheck
         run: npm run typecheck
@@ -51,6 +60,9 @@ jobs:
         env:
           WRANGLER_SEND_METRICS: "false"
         run: npm exec -- wrangler deploy --dry-run --outdir "$RUNNER_TEMP/fleet-worker-bundle"
+
+      - name: Verify real Worker runtime and Room account isolation
+        run: node scripts/room-lab/worker.mjs "$RUNNER_TEMP/fleet-worker-bundle/worker.js"
 
   agent-linux:
     name: Agent tests (Linux)

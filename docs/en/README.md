@@ -8,7 +8,7 @@ Live hub: **[https://fleet.ginfo.cc](https://fleet.ginfo.cc)**
 
 Install an Agent on each computer, then import the tool with **this URL + a hub token**. Cursor / Claude talks to the server; the server already has a WebSocket from every Windows, Linux, and Mac box that dialed out — any arch the Agent runs on.
 
-[Try fleet.ginfo.cc](https://fleet.ginfo.cc) · [Docs](https://fleet.ginfo.cc/docs) · [Deploy](deploy.md) · [Auth](auth.md) · [Notes](notes.md)
+[Try fleet.ginfo.cc](https://fleet.ginfo.cc) · [Docs](https://fleet.ginfo.cc/docs) · [Source](https://fleet.ginfo.cc/source) · [Deploy](deploy.md) · [Trust](trust.md) · [Auth](auth.md) · [Notes](notes.md)
 
 中文：[../zh/README.md](../zh/README.md)
 

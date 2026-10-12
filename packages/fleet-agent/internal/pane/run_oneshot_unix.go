@@ -16,7 +16,7 @@ func (s *Supervisor) spawnOneshotPTY(fingerprint, corr, command string) (*Pane, 
 	if home := userHome(); home != "" {
 		cmd.Dir = home
 	}
-	cmd.Env = runCommandEnv()
+	cmd.Env = append(runCommandEnv(), "FLEET_SESSION_OWNER="+fingerprint)
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: livePtyRows, Cols: livePtyCols})
 	if err != nil {

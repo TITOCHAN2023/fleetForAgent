@@ -165,6 +165,7 @@ export function compileBlog({ srcDir = BLOG_SRC } = {}) {
     const images = collectImages(body, file);
     const html = mdToHtml(rewriteImageSrc(body, slug));
     const cur = bySlug.get(slug) || { slug, date: "", images: [], variants: {} };
+    cur.pinned = cur.pinned || meta.pinned === "true";
     if (date && (!cur.date || date > cur.date)) cur.date = date;
     cur.images.push(...images);
     cur.variants[lang || ""] = { title, summary, html, lang };
@@ -178,6 +179,7 @@ export function compileBlog({ srcDir = BLOG_SRC } = {}) {
     const langs = ["en", "zh"].filter((l) => row.variants[l]);
     return {
       slug: row.slug,
+      pinned: row.pinned,
       date: row.date,
       images: row.images,
       langs,
@@ -186,9 +188,10 @@ export function compileBlog({ srcDir = BLOG_SRC } = {}) {
       summary: Object.fromEntries(langs.map((l) => [l, row.variants[l].summary])),
     };
   });
-  compiled.sort((a, b) => String(b.date).localeCompare(String(a.date)) || a.slug.localeCompare(b.slug));
+  compiled.sort((a, b) => Number(b.pinned) - Number(a.pinned) || String(b.date).localeCompare(String(a.date)) || a.slug.localeCompare(b.slug));
   const posts = compiled.map((p) => ({
     slug: p.slug,
+    pinned: p.pinned,
     date: p.date,
     langs: p.langs,
     title: p.title,

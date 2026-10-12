@@ -17,6 +17,7 @@ func TestRTCDataChannelUsesSharedEnvelopeDispatch(t *testing.T) {
 
 	agent := &Agent{
 		enabled: true, permit: PermitAllow, panes: pane.NewSupervisor(),
+		cfgPath:       t.TempDir() + "/config.json",
 		policyBlocked: func(command string) bool { return command == "printf must-not-run" },
 	}
 	relayReplies := make(chan Envelope, 16)
@@ -99,11 +100,23 @@ func TestRTCDataChannelUsesSharedEnvelopeDispatch(t *testing.T) {
 	send(Envelope{V: 1, Type: "rtc_ack_ready", ID: "ack-ready", T: time.Now().UnixMilli(), Body: map[string]any{"version": 1}})
 	send(Envelope{V: 1, Type: "run", ID: "one", Corr: "rtc-ok", T: time.Now().UnixMilli(), Body: map[string]any{
 		"command": "printf rtc-ok", "fingerprint": "test-operator",
+		"request_id": "d7f6e516-faad-4768-9c6b-47e1f7dc649b",
 	}})
 	waitRTCReply(t, ctx, replies, "rtc-ok", func(env Envelope) bool {
 		return env.Type == "result" && env.Body["ok"] == true && strings.Contains(env.Body["stdout"].(string), "rtc-ok")
 	})
 	assertNoRTCRelayResult(t, relayReplies, "rtc-ok", rtcAckTimeout+200*time.Millisecond)
+	send(Envelope{V: 1, Type: "run", ID: "duplicate", Corr: "rtc-ok", T: time.Now().UnixMilli(), Body: map[string]any{
+		"command": "printf rtc-ok", "fingerprint": "test-operator", "request_id": "d7f6e516-faad-4768-9c6b-47e1f7dc649b",
+	}})
+	waitRTCReply(t, ctx, replies, "rtc-ok", func(env Envelope) bool { return env.Type == "result" && env.Body["ok"] == true })
+	if len(agent.panes.List()) != 1 {
+		t.Fatal("duplicate RTC delivery spawned another pane")
+	}
+	send(Envelope{V: 1, Type: "get_result", ID: "query", Corr: "rtc-ok", T: time.Now().UnixMilli(), Body: map[string]any{"corr": "rtc-ok", "fingerprint": "test-operator"}})
+	waitRTCReply(t, ctx, replies, "rtc-ok", func(env Envelope) bool {
+		return env.Type == "result" && strings.Contains(env.Body["stdout"].(string), "rtc-ok")
+	})
 
 	send(Envelope{V: 1, Type: "run", ID: "two", Corr: "rtc-blocked", T: time.Now().UnixMilli(), Body: map[string]any{
 		"command": "printf must-not-run", "fingerprint": "test-operator",

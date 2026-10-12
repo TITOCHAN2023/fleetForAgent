@@ -2,6 +2,8 @@
 
 Operator client. Config is the website origin plus the hub token from Settings.
 
+Optional local stdio recovery: set `FLEET_SESSION_PATH` to an absolute private file path unique to this agent. After a restart, `recover_session` observes the original operation without rerunning it. Requires a recovery-capable Agent for durable receipts; unknown outcomes require inspection. Never share a checkpoint between agents. A hard crash can leave a lock that requires manual verification and removal. See `docs/OPERATION-RECOVERY.md` in the Fleet repository for the full guarantees and limits.
+
 ```bash
 FLEET_URL=https://fleet.ginfo.cc
 FLEET_TOKEN=flt_...

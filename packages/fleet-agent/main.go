@@ -129,6 +129,8 @@ type State struct {
 
 type Agent struct {
 	mu                  sync.Mutex
+	operationMu         sync.Mutex
+	operations          map[string]*operationReceipt
 	enabled             bool
 	permit              Permit
 	hubInput            string
@@ -405,7 +407,11 @@ func (a *Agent) disconnectLocked(reason string) {
 		_ = a.ws.Close(websocket.StatusNormalClosure, reason)
 		a.ws = nil
 	}
+	pending := a.pending
 	a.pending = nil
+	if pending != nil && pending.Kind == pendingKindRun {
+		go rejectPending(pending, errors.New("fleet: connection closed before local approval; command not started"))
+	}
 	sessions := a.takeRTCSessionsLocked()
 	peerSessions := a.takePluginPeersLocked()
 	if len(sessions) > 0 {
@@ -595,7 +601,7 @@ func deviceName() string {
 }
 
 func agentCaps() []string {
-	caps := []string{"shell", "pane", "plugins", "rtc_v1", "plugin_peer_session_v1"}
+	caps := []string{"shell", "pane", "plugins", "rtc_v1", "plugin_peer_session_v1", "operation_recovery_v1"}
 	if runtime.GOOS != "windows" {
 		caps = append(caps, "live_shell")
 	}
@@ -607,6 +613,7 @@ func agentCaps() []string {
 
 func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 	defer func() {
+		var pending *Pending
 		var sessions []*rtcAgentSession
 		var peerSessions []*pluginPeerSession
 		a.mu.Lock()
@@ -616,6 +623,7 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 				a.conn = "offline"
 			}
 			a.paneSinks = nil
+			pending = a.pending
 			a.pending = nil
 			sessions = a.takeRTCSessionsLocked()
 			peerSessions = a.takePluginPeersLocked()
@@ -623,6 +631,9 @@ func (a *Agent) readLoop(ctx context.Context, c *websocket.Conn) {
 			a.log("warn", "socket closed")
 		}
 		a.mu.Unlock()
+		if pending != nil && pending.Kind == pendingKindRun {
+			rejectPending(pending, errors.New("fleet: connection closed before local approval; command not started"))
+		}
 		closeRTCSessions(sessions)
 		abortPluginPeers(peerSessions)
 		a.pushUI()
@@ -732,7 +743,13 @@ func (a *Agent) dispatchEnvelope(ctx context.Context, sink EnvelopeSink, env Env
 	switch env.Type {
 	case "run":
 		cmd, _ := env.Body["command"].(string)
-		go a.handleRun(ctx, sink, env.Corr, cmd, envelopeFingerprint(env.Body))
+		if _, ok := env.Body["request_id"].(string); ok {
+			go a.handleRecoverableRun(ctx, sink, env.Corr, cmd, envelopeFingerprint(env.Body))
+		} else {
+			go a.handleRun(ctx, sink, env.Corr, cmd, envelopeFingerprint(env.Body))
+		}
+	case "get_result":
+		go a.handleResultQuery(ctx, sink, env)
 	case "type":
 		keys, _ := env.Body["keys"].(string)
 		key, _ := env.Body["key"].(string)
@@ -836,11 +853,9 @@ func (a *Agent) spawnPane(ctx context.Context, sink EnvelopeSink, corr, cmd, fin
 				a.mu.Unlock()
 				return
 			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(50 * time.Millisecond):
-			}
+			// The job belongs to the device, not this transport connection.
+			// Keep collecting completion even if the reply socket disappears.
+			time.Sleep(50 * time.Millisecond)
 		}
 	}()
 }

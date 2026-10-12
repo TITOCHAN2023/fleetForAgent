@@ -1,4 +1,5 @@
 const CONNECT_TIMEOUT_MS = 12_000;
+import { operationCorr } from "./operator.mjs";
 const REPLY_TIMEOUT_MS = 8_000;
 const MAX_SESSION_ROWS = 256;
 const ACK_TYPES = new Set(["result", "plugin_result", "desktop"]);
@@ -399,6 +400,9 @@ export function createRtcManager({
       const corr = String(body.corr || session.lastCorr || "");
       if (!corr) return { handled: false };
       if (session.rows.get(corr)?.result || (!session.closed && session.open)) {
+        if (!session.rows.get(corr)?.result) {
+          if (!sendDirect(deviceId, session, envelope("get_result", { corr, fingerprint: operatorId }, corr))) return { handled: false };
+        }
         return { handled: true, value: session.result(corr), transport: "rtc" };
       }
       return { handled: false };
@@ -430,7 +434,7 @@ export function createRtcManager({
     if (!session) return { handled: false };
 
     if (path === "/v1/run") {
-      const corr = crypto.randomUUID();
+      const corr = body.request_id == null ? crypto.randomUUID() : await operationCorr(operatorId, body.request_id);
       session.lastCorr = corr;
       if (
         !sendDirect(
@@ -438,7 +442,7 @@ export function createRtcManager({
           session,
           envelope(
             "run",
-            { command: body.command, mode: "pane", fingerprint: operatorId },
+            { command: body.command, mode: "pane", fingerprint: operatorId, ...(body.request_id != null ? { request_id: body.request_id } : {}) },
             corr,
           ),
         )

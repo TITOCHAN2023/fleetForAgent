@@ -31,13 +31,12 @@ import { createRtcManager } from "./rtc.mjs";
 import { createFileTransferManager } from "./file-transfer-rtc.mjs";
 import { startAndWaitFileTransfer } from "./file-transfer-cli.mjs";
 import { McpStdioCallManager } from "./mcp-protocol.mjs";
+import { openRecovery } from "./recovery.mjs";
 import {
   highSecAuthorization,
   verifyFleetStatement,
   verifyTokenV1,
 } from "../fleet-worker/src/tokenv1.mjs";
-
-const operatorFingerprint = newOperatorFingerprint();
 
 function loadDotEnv(path) {
   try {
@@ -60,6 +59,9 @@ loadDotEnv(join(homedir(), ".fleet", "mcp.env"));
 
 const url = (process.env.FLEET_URL || "").replace(/\/$/, "");
 const token = process.env.FLEET_TOKEN || "";
+const recovery = openRecovery(process.env.FLEET_SESSION_PATH, { url, token });
+const operatorFingerprint = recovery?.fingerprint || newOperatorFingerprint();
+process.once("exit", () => recovery?.close());
 
 const argv = applyCliDevFlag(process.argv.slice(2), process.env);
 
@@ -248,6 +250,9 @@ function mcp() {
     rpc: (path, body, options) => hubRpc(path, body, { timed: true, ...options }),
     fileTransfer: fileTransferManager,
     env: process.env,
+    fingerprint: operatorFingerprint,
+    state: recovery?.state,
+    saveState: recovery?.save,
   });
   const calls = new McpStdioCallManager({
     shutdown: async () => {

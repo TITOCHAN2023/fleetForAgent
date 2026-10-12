@@ -27,6 +27,7 @@ test("guide advertises only the MCP tools shipped on main", () => {
     "get_computer",
     "heartbeat",
     "run",
+    "recover_session",
     "get_result",
     "wait",
     "read_screen",

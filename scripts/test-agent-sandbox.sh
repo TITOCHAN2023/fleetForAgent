@@ -11,6 +11,7 @@ docker run --rm --init \
   --pids-limit 512 \
   --memory 2g \
   --cpus 2 \
+  --env FLEET_OPERATION_LAB=1 \
   --mount "type=bind,src=${repo_root},dst=/workspace,readonly" \
   --tmpfs /tmp:rw,exec,nosuid,nodev,size=512m \
   --tmpfs /go/pkg/mod:rw,nosuid,nodev,size=768m \

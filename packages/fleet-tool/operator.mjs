@@ -101,7 +101,7 @@ export function shQuote(value) {
 }
 
 export const MCP_INSTRUCTIONS =
-  "Fleet: remote Windows/Linux/macOS machines via a cloud hub. list_computers, then set_computer (or pass device_id). run waits up to 30s; if the text is still running, call wait — do not run again. Official plugin execution and software changes follow the target Agent permit: off refuses, ask prompts locally, allow runs without another click; poll get_plugin_task with its corr. start_file_transfer creates direct-only file transfer; Tool endpoints require this local stdio process, while device-to-device also works through remote MCP. Hub tokens are flt_1 values minted in website Settings. Stdio uses Fleet-OAEP; remote /mcp uses Streamable HTTP and /mcp/sse keeps classic SSE compatibility.";
+  "Fleet: remote Windows/Linux/macOS machines via a cloud hub. list_computers, then set_computer (or pass device_id). run waits up to 30s; if the text is still running, call wait — do not run again. After a lost response or session restart, use recover_session/get_result to inspect actual device state. Unknown is not failure or permission to retry; never rerun automatically. Recovery restores handles and observations, not shell variables or dead processes. Official plugin execution and software changes follow the target Agent permit: off refuses, ask prompts locally, allow runs without another click; poll get_plugin_task with its corr. start_file_transfer creates direct-only file transfer; Tool endpoints require this local stdio process, while device-to-device also works through remote MCP. Hub tokens are flt_1 values minted in website Settings. Stdio uses Fleet-OAEP; remote /mcp uses Streamable HTTP and /mcp/sse keeps classic SSE compatibility.";
 
 export function buildPrompts() {
   return [
@@ -203,7 +203,7 @@ export function parseOptionalMs(value, name) {
 export function isFinishedResult(row) {
   if (!row || typeof row !== "object") return false;
   if (row.status === "pending" || row.status === "running") return false;
-  if (row.status === "done") return true;
+  if (row.status === "done" || row.status === "unknown") return true;
   return row.ok !== undefined || row.exit_code !== undefined;
 }
 
@@ -217,6 +217,20 @@ function nonemptyText(value) {
 /** One UUID per MCP stdio process. Do not read FLEET_OPERATOR or any model-filled env. */
 export function newOperatorFingerprint() {
   return crypto.randomUUID();
+}
+
+export async function operationCorr(fingerprint, requestId) {
+  if (typeof requestId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestId)) {
+    throw new Error("request_id must be a UUID");
+  }
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${fingerprint || ""}\0${requestId.toLowerCase()}`));
+  const hex = Array.from(new Uint8Array(hash).slice(0, 16), (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+}
+
+export async function operationInput(command) {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(command));
+  return Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 export function fleetHubHeaders({ token, authorization, fingerprint, extra } = {}) {
@@ -457,6 +471,8 @@ export function formatMcpText(name, out, env = {}) {
     } else text = JSON.stringify(out);
   } else if (!out || typeof out !== "object") {
     text = out == null ? "" : String(out);
+  } else if (out.status === "unknown") {
+    text = out.error || "Execution outcome unknown. Inspect the device before retrying; do not rerun automatically.";
   } else if (!isFinishedResult(out)) {
     text = "still running";
   } else {
@@ -477,6 +493,8 @@ export function formatMcpText(name, out, env = {}) {
       text = lines.join("\n");
     }
   }
+  if (out?.output_unavailable) text += `${text ? "\n" : ""}[Output unavailable after device restart; completion receipt retained.]`;
+  if (out?.receipt_error) text += `${text ? "\n" : ""}[Warning: ${out.receipt_error}]`;
   if (!isFleetDev(env)) return text;
   const trailer = formatDevTrailer(out && typeof out === "object" ? out.dev : null);
   if (!trailer) return text;
@@ -550,12 +568,18 @@ export function buildTools() {
         properties: {
           device_id: deviceId,
           command: { type: "string" },
+          request_id: { type: "string", description: "Optional stable UUID for recovery-capable devices. Reuse ONLY with the identical command after inspecting an uncertain outcome. Never generates a new execution for an existing receipt." },
           wait_ms: waitMsSchema({
             defaultMs: RUN_WAIT_DEFAULT_MS,
             role: "Optional. Omitted waits up to 30s; 0 is the immediate ticket.",
           }),
         },
       },
+    },
+    {
+      name: "recover_session",
+      description: "Read-only recovery: inspect this operator's saved device, operation result and pane. Never reruns a command or recreates an environment. Stdio restart recovery requires a unique FLEET_SESSION_PATH configured before the original run.",
+      inputSchema: { type: "object", properties: { device_id: deviceId } },
     },
     {
       name: "get_result",
@@ -849,6 +873,8 @@ export function createOperator({
   fileTransfer,
   env = {},
   state = {},
+  fingerprint = "",
+  saveState,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   now = () => Date.now(),
 } = {}) {
@@ -859,7 +885,13 @@ export function createOperator({
   const envDefault = trimId(env.FLEET_DEVICE_ID) || null;
   let envResolved = null;
   const corrByDevice = new Map();
+  const requestByDevice = new Map(Object.entries(state.requestByDevice || {}));
+  const cwdByDevice = new Map(Object.entries(state.cwdByDevice || {}));
+  if (lastUsed && lastCwd && !cwdByDevice.has(lastUsed)) cwdByDevice.set(lastUsed, lastCwd);
   const canonicalIds = new Set();
+  const recoveryDevices = new Set();
+  const snapshotState = () => ({ lastUsed, lastCwd, envDefault, corrByDevice: Object.fromEntries(corrByDevice), cwdByDevice: Object.fromEntries(cwdByDevice), requestByDevice: Object.fromEntries(requestByDevice) });
+  const checkpoint = () => { if (saveState) saveState(snapshotState()); };
   if (state.corrByDevice && typeof state.corrByDevice === "object" && !Array.isArray(state.corrByDevice)) {
     for (const [rawDeviceId, rawCorr] of Object.entries(state.corrByDevice)) {
       const deviceId = trimId(rawDeviceId);
@@ -908,6 +940,7 @@ export function createOperator({
     const id = trimId(row?.id);
     if (!id) throw new Error(`device not found: ${ref}`);
     canonicalIds.add(id);
+    if (row.caps?.includes("operation_recovery_v1")) recoveryDevices.add(id);
     return { id, row };
   }
 
@@ -977,6 +1010,7 @@ export function createOperator({
     }
     if (source === "env") envResolved = resolved.id;
     else lastUsed = resolved.id;
+    checkpoint();
     return resolved;
   }
 
@@ -985,15 +1019,16 @@ export function createOperator({
     if (typeof out.stdout === "string") {
       const meta = stripSessionMeta(out.stdout);
       out = { ...out, stdout: meta.stdout };
-      if (meta.cwd) lastCwd = meta.cwd;
+      if (meta.cwd) { lastCwd = meta.cwd; cwdByDevice.set(deviceId, meta.cwd); }
     }
-    if (isFinishedResult(out)) out = { ...out, cwd: lastCwd };
+    if (isFinishedResult(out)) out = { ...out, cwd: cwdByDevice.get(deviceId) || null };
+    checkpoint();
     return out;
   }
 
   function rememberCorr(deviceId, value) {
     const corr = trimId(value);
-    if (corr) corrByDevice.set(deviceId, corr);
+    if (corr) { corrByDevice.set(deviceId, corr); checkpoint(); }
     return corr;
   }
 
@@ -1005,9 +1040,10 @@ export function createOperator({
     const body = { device_id: deviceId };
     const ticket = corr || currentCorr(deviceId);
     if (ticket) body.corr = ticket;
+    if (ticket === currentCorr(deviceId) && requestByDevice.has(deviceId)) body.request_id = requestByDevice.get(deviceId);
     if (waitMs > 0) body.wait_ms = waitMs;
     const row = await callRpc(trace, "/v1/get_result", body, { signal });
-    rememberCorr(deviceId, row?.corr);
+    if (!currentCorr(deviceId)) rememberCorr(deviceId, row?.corr);
     return decorateResult(row, deviceId);
   }
 
@@ -1015,9 +1051,9 @@ export function createOperator({
     const budget = clampWaitMs(timeoutMs);
     const startedAt = now();
     const deadline = startedAt + budget;
-    let ticket = rememberCorr(deviceId, corr) || currentCorr(deviceId);
+    let ticket = trimId(corr) || currentCorr(deviceId);
     let snapshot = await peekResult(deviceId, trace, 0, ticket, hooks?.signal);
-    ticket = rememberCorr(deviceId, snapshot?.corr) || ticket;
+    ticket = trimId(snapshot?.corr) || ticket;
     if (isFinishedResult(snapshot) || budget <= 0) {
       return isFinishedResult(snapshot) ? snapshot : runningSnapshot(snapshot, ticket, deviceId);
     }
@@ -1031,16 +1067,31 @@ export function createOperator({
       if (trace) trace.sleep_ms += sl;
       await waitWithSignal(sleep(sl), hooks?.signal);
       snapshot = await peekResult(deviceId, trace, 0, ticket, hooks?.signal);
-      ticket = rememberCorr(deviceId, snapshot?.corr) || ticket;
+      ticket = trimId(snapshot?.corr) || ticket;
     }
     if (isFinishedResult(snapshot)) return snapshot;
     return runningSnapshot(snapshot, ticket, deviceId);
   }
 
-  async function execOnDevice(deviceId, command, waitMs, trace, hooks) {
+  async function execOnDevice(deviceId, command, waitMs, trace, hooks, requestId) {
     const body = { device_id: deviceId, command };
+    if (requestId && !recoveryDevices.has(deviceId)) throw new Error("Device does not support operation recovery; update the Agent before using request_id");
+    if (recoveryDevices.has(deviceId) && (requestId || saveState)) {
+      body.request_id = requestId || crypto.randomUUID();
+      const corr = await operationCorr(fingerprint, body.request_id);
+      // Persist BEFORE dispatch, so a lost HTTP acknowledgement is recoverable.
+      if (fingerprint) { requestByDevice.set(deviceId, body.request_id); rememberCorr(deviceId, corr); }
+    } else {
+      requestByDevice.delete(deviceId);
+    }
     const t0 = now();
     const started = await callRpc(trace, "/v1/run", body, { signal: hooks?.signal });
+    const expectedInput = body.request_id ? await operationInput(command) : "";
+    const checked = (row) => {
+      if (expectedInput && row?.input_hash && row.input_hash !== expectedInput) throw new Error("request_id already used with different command; original operation was not rerun");
+      return row;
+    };
+    checked(started);
     const corr = rememberCorr(deviceId, started?.corr);
     if (waitMs <= 0) {
       return withDevice({ ...started, corr, status: started?.status ?? "running" }, deviceId);
@@ -1049,7 +1100,7 @@ export function createOperator({
     if (isFinishedResult(started) || isFinishedResult(finished)) return finished;
     const left = waitMs - Math.max(0, now() - t0);
     if (left <= 0) return runningSnapshot(started, corr, deviceId);
-    return waitForResult(deviceId, left, trace, corr, hooks);
+    return checked(await waitForResult(deviceId, left, trace, corr, hooks));
   }
 
   async function callTool(name, rawArgs, hooks = {}) {
@@ -1085,7 +1136,7 @@ export function createOperator({
         last_used: lastUsed,
         env_default: envDefault,
         source: cur.source,
-        cwd: lastCwd,
+        cwd: cwdByDevice.get(cur.device_id) || null,
       };
     }
 
@@ -1094,7 +1145,16 @@ export function createOperator({
       if (!command) throw new Error("command required");
       const { id: deviceId } = await targetDevice(args, trace, hooks.signal);
       const waitMs = clampWaitMs(parseOptionalMs(args.wait_ms, "wait_ms") ?? RUN_WAIT_DEFAULT_MS);
-      return withDev(await execOnDevice(deviceId, command, waitMs, trace, hooks), trace);
+      return withDev(await execOnDevice(deviceId, command, waitMs, trace, hooks, args.request_id), trace);
+    }
+
+    if (name === "recover_session") {
+      const { id: deviceId, row } = await targetDevice(args, trace, hooks.signal, { fresh: true });
+      const corr = currentCorr(deviceId);
+      if (!corr) return { status: "empty", device_id: deviceId, error: "No saved operation in this session; no command was dispatched." };
+      const result = await peekResult(deviceId, trace, 0, corr, hooks.signal);
+      const screen = await callRpc(trace, "/v1/read_screen", { device_id: deviceId, corr }, { signal: hooks.signal });
+      return withDev({ device: row, device_id: deviceId, corr, cwd: cwdByDevice.get(deviceId) || null, result, pane: screen.screen ?? null, replayed: false }, trace);
     }
 
     if (name === "get_result") {
@@ -1298,6 +1358,6 @@ export function createOperator({
     callTool,
     resolveDevice,
     currentDevice,
-    getState: () => ({ lastUsed, lastCwd, envDefault, corrByDevice: Object.fromEntries(corrByDevice) }),
+    getState: snapshotState,
   };
 }

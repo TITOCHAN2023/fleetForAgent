@@ -34,6 +34,77 @@ import fleetWorker, {
 } from "./src/index.ts";
 import { handleOAuth } from "./src/oauth.ts";
 import { MCP_SESSION_IDLE_MS, MCP_SESSION_MAX_AGE_MS } from "./src/mcp-sse.mjs";
+import { operationCorr } from "../fleet-tool/operator.mjs";
+
+test("DeviceDO recovery uses one scoped ID, queries the device and never demotes completion", async () => {
+  const sent: Array<{ type: string; corr: string; body: Record<string, unknown> }> = [];
+  const ws = {
+    deserializeAttachment: () => ({ caps: ["operation_recovery_v1"] }),
+    send: (raw: string) => sent.push(JSON.parse(raw)),
+  } as unknown as WebSocket;
+  const { device, state } = fakeDeviceHarness([ws]);
+  const requestId = "d7f6e516-faad-4768-9c6b-47e1f7dc649b";
+  const corr = await operationCorr("operator-a", requestId);
+  const run = () => device.fetch(new Request("https://device/run", {
+    method: "POST", headers: { "X-Fleet-Operator": "operator-a" },
+    body: JSON.stringify({ command: "echo safe", request_id: requestId }),
+  }));
+  assert.equal(((await (await run()).json()) as {corr: string}).corr, corr);
+  assert.equal(((await (await run()).json()) as {corr: string}).corr, corr);
+  assert.equal(sent[0]!.body.request_id, requestId);
+  assert.equal(sent[0]!.corr, sent[1]!.corr);
+  await device.fetch(new Request(`https://device/result?corr=${corr}`, { headers: { "X-Fleet-Operator": "operator-a" } }));
+  assert.equal(sent.at(-1)!.type, "get_result");
+  assert.equal(sent.at(-1)!.body.fingerprint, "operator-a");
+  await device.webSocketMessage(ws, JSON.stringify({ v:1, type:"result", corr, t:Date.now(), body:{ ok:true, exit_code:0, stdout:"actual completed output" } }));
+  await device.webSocketMessage(ws, JSON.stringify({ v:1, type:"accepted", corr, body:{ status:"running" } }));
+  assert.equal(state.value<Record<string, unknown>>(`res:${corr}`)!.stdout, "actual completed output");
+  const completed = await device.fetch(new Request(`https://device/result?corr=${corr}`, { headers: { "X-Fleet-Operator": "operator-a" } }));
+  assert.equal(((await completed.json()) as {stdout:string}).stdout, "actual completed output");
+  const beforeForeign = sent.length;
+  const foreign = await device.fetch(new Request(`https://device/result?corr=${corr}`, { headers: { "X-Fleet-Operator": "operator-b" } }));
+  assert.deepEqual(await foreign.json(), { status:"pending" });
+  assert.equal(sent.length, beforeForeign);
+});
+
+test("DeviceDO preserves unknown and restart-output metadata without inventing exit codes", async () => {
+  const ws = { deserializeAttachment: () => ({}) } as unknown as WebSocket;
+  const { device } = fakeDeviceHarness();
+  const corr = "d7f6e516-faad-4768-9c6b-47e1f7dc649b";
+  await device.webSocketMessage(ws, JSON.stringify({ v:1, type:"rtc_claim", corr, body:{sid:SESSION, operator_id:"operator-a"} }));
+  await device.webSocketMessage(ws, JSON.stringify({ v:1, type:"result", corr, body:{status:"unknown", error:"inspect first"} }));
+  const unknown = await device.fetch(new Request(`https://device/result?corr=${corr}`, { headers:{"X-Fleet-Operator":"operator-a"} }));
+  const body = await unknown.json() as Record<string, unknown>;
+  assert.equal(body.status, "unknown");
+  assert.equal(body.exit_code, undefined);
+  assert.equal(body.ok, undefined);
+  await device.webSocketMessage(ws, JSON.stringify({ v:1, type:"result", corr, body:{ok:true, exit_code:0, output_unavailable:true} }));
+  const done = await device.fetch(new Request(`https://device/result?corr=${corr}`, { headers:{"X-Fleet-Operator":"operator-a"} }));
+  assert.equal((await done.json() as Record<string, unknown>).output_unavailable, true);
+});
+
+test("DeviceDO old agents reject recovery requests but retain legacy runs", async () => {
+  const sent: string[] = [];
+  const { device } = fakeDeviceHarness([{ deserializeAttachment: () => ({ caps:["shell"] }), send:(data:string)=>sent.push(data) } as unknown as WebSocket]);
+  const run = (body: Record<string, unknown>) => device.fetch(new Request("https://device/run", { method:"POST", body:JSON.stringify(body) }));
+  assert.equal((await run({command:"echo safe", request_id:"d7f6e516-faad-4768-9c6b-47e1f7dc649b"})).status, 409);
+  assert.equal(sent.length, 0);
+  assert.equal((await run({command:"echo safe"})).status, 200);
+  assert.equal(sent.length, 1);
+});
+
+test("DeviceDO cache expiry recovery rebuilds query ownership only with the scoped request proof", async () => {
+  const sent: Array<{type:string; corr:string}> = [];
+  const { device } = fakeDeviceHarness([{ deserializeAttachment:()=>({caps:["operation_recovery_v1"]}), send:(data:string)=>sent.push(JSON.parse(data)) } as unknown as WebSocket]);
+  const requestId = "d7f6e516-faad-4768-9c6b-47e1f7dc649b";
+  const corr = await operationCorr("operator-a", requestId);
+  const query = (fp:string) => device.fetch(new Request(`https://device/result?corr=${corr}&request_id=${requestId}`, {headers:{"X-Fleet-Operator":fp}}));
+  assert.equal((await query("operator-b")).status, 400);
+  assert.equal(sent.length, 0);
+  assert.equal((await query("operator-a")).status, 200);
+  assert.deepEqual(sent.map((message)=>message.type), ["get_result"]);
+  assert.equal(sent[0]!.corr, corr);
+});
 
 const SESSION = "00000000-0000-4000-8000-000000000001";
 const CONNECTION_OLD = "00000000-0000-4000-8000-000000000011";

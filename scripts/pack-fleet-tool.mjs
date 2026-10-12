@@ -77,6 +77,7 @@ export function packFleetTool({ outFile = DEFAULT_OUT } = {}) {
     writeFileSync(join(stage, "index.mjs"), rewriteToolIndex(normalizedText(join(TOOL_DIR, "index.mjs"))));
     const modules = [
       "operator.mjs",
+      "recovery.mjs",
       "mcp-protocol.mjs",
       "rtc.mjs",
       "file-transfer-cli.mjs",

@@ -131,6 +131,7 @@ type Agent struct {
 	mu                  sync.Mutex
 	operationMu         sync.Mutex
 	operations          map[string]*operationReceipt
+	runAdmissions       map[string]int
 	enabled             bool
 	permit              Permit
 	hubInput            string
@@ -743,11 +744,16 @@ func (a *Agent) dispatchEnvelope(ctx context.Context, sink EnvelopeSink, env Env
 	switch env.Type {
 	case "run":
 		cmd, _ := env.Body["command"].(string)
-		if _, ok := env.Body["request_id"].(string); ok {
-			go a.handleRecoverableRun(ctx, sink, env.Corr, cmd, envelopeFingerprint(env.Body))
-		} else {
-			go a.handleRun(ctx, sink, env.Corr, cmd, envelopeFingerprint(env.Body))
-		}
+		fp := envelopeFingerprint(env.Body)
+		release := a.admitRun(env.Corr, fp)
+		go func() {
+			defer release()
+			if _, ok := env.Body["request_id"].(string); ok {
+				a.handleRecoverableRun(ctx, sink, env.Corr, cmd, fp)
+			} else {
+				a.handleRun(ctx, sink, env.Corr, cmd, fp)
+			}
+		}()
 	case "get_result":
 		go a.handleResultQuery(ctx, sink, env)
 	case "type":

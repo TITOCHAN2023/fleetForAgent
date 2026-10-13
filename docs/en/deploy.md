@@ -243,6 +243,14 @@ Protocol envelope: `{ v:1, type, id, corr, t, body }`. The device path is only `
 
 The job lives in a **pane on the device**, not on the hub request.
 
+The Agent retains the newest **256 completed panes globally**, in completion
+order. Running and queued tasks are never evicted by this limit. Eviction only
+releases in-memory output; durable anti-replay receipts remain untouched. For
+recoverable requests, a later query can return the recorded exit code with
+`output_unavailable`; missing output is not permission to execute again. Legacy
+requests without receipts cannot recover evicted output. This is a count limit,
+not a hard byte limit, and does not close explicitly named persistent terminals.
+
 | Don't | Do |
 |---|---|
 | Stream stdout bytes through the hub | Local ring buffer, like tmux pane history |
@@ -311,8 +319,8 @@ More info → Run anyway. Normal for an unsigned exe.
 **list_computers is empty**  
 The Agent must show connected first. Wait a few seconds and POST again.
 
-**Windows jobs vs Mac/Linux live shell**
-Mac/Linux share a login PTY (cwd and env persist across commands). Windows uses `cmd /C` oneshot so the agent still compiles and runs without ConPTY. Same hub protocol either way.
+**One-shot commands and persistent terminals**
+Ordinary `run` calls are independent jobs: cwd and environment do not carry into the next command or another operator. For a persistent terminal on Mac/Linux, explicitly run `fleet session NAME`, then use `type` / `read_screen`; identical session names remain isolated by operator identity. Windows uses `cmd /C` one-shot jobs. The hub protocol remains the same.
 
 **Tray says connected, list says offline**  
 The hub advertised `heartbeat_s` but older agents never sent a heartbeat, so a half-open socket (common on Windows after sleep or NAT idle) stayed “online” on the machine and “offline” on the hub. Current agents ping the hub every 25s; a failed ping reconnects. Restart the Agent once to pick that up.

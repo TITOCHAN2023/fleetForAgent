@@ -30,6 +30,7 @@ const (
 var (
 	invokePluginTask                 = invokePlugin
 	resolveInstalledPluginTaskAction = installedPluginForTaskAction
+	errPluginIdentityChanged         = errors.New("plugin reply discarded: Hub identity changed or revoked")
 )
 
 const pluginOperationLockStripes = 64
@@ -195,6 +196,7 @@ func pluginResultEnv(corr string, result any, err error) Envelope {
 }
 
 func (a *Agent) handlePlugin(ctx context.Context, sink EnvelopeSink, env Envelope) {
+	sink = a.pluginReplySink(sink)
 	req, err := decodePluginRequest(env.Body)
 	if err != nil {
 		_ = sink(ctx, pluginResultEnv(env.Corr, nil, fmt.Errorf("invalid plugin request: %w", err)))
@@ -275,8 +277,11 @@ func (a *Agent) executePlugin(ctx context.Context, sink EnvelopeSink, corr strin
 	default:
 		err = fmt.Errorf("unknown plugin operation %q", req.Operation)
 	}
-	_ = sink(ctx, pluginResultEnv(corr, result, err))
+	deliveryErr := deliverPluginResult(ctx, sink, pluginResultEnv(corr, result, err))
 	a.mu.Lock()
+	if deliveryErr != nil {
+		a.log("error", "plugin result delivery: "+deliveryErr.Error())
+	}
 	if err != nil {
 		a.log("error", "plugin "+req.Operation+": "+err.Error())
 	} else {
@@ -292,6 +297,61 @@ func (a *Agent) executePlugin(ctx context.Context, sink EnvelopeSink, corr strin
 		}
 	}
 	a.pushUI()
+}
+
+// A task outlives its request socket, but never its authorization identity.
+// Snapshot the fallback socket under the same lock as the identity check so a
+// token/origin change cannot redirect an old result into another Hub account.
+func (a *Agent) pluginReplySink(original EnvelopeSink) EnvelopeSink {
+	a.mu.Lock()
+	token, origin, socket := a.hubToken, a.hubInput, a.ws
+	a.mu.Unlock()
+	return func(ctx context.Context, env Envelope) error {
+		a.mu.Lock()
+		if a.authRevoked || a.hubToken != token || a.hubInput != origin {
+			a.mu.Unlock()
+			return errPluginIdentityChanged
+		}
+		relay := a.relaySink
+		if relay == nil && a.ws != nil {
+			relay = wsEnvelopeSink(a.ws)
+		}
+		reconnected := a.ws != socket
+		a.mu.Unlock()
+		// A replaced socket can still accept a local write without delivering
+		// anything. Its generation, not Write's return value, is authoritative.
+		if reconnected {
+			if relay == nil {
+				return errors.New("plugin reply waiting for Hub reconnect")
+			}
+			return relay(ctx, env)
+		}
+		err := original(ctx, env)
+		if err == nil || relay == nil {
+			return err
+		}
+		return relay(ctx, env)
+	}
+}
+
+// Retry only a completion envelope, never plugin execution. Retention is
+// volatile and bounded: a two-minute outage is recoverable; process death is not.
+func deliverPluginResult(ctx context.Context, sink EnvelopeSink, env Envelope) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	for {
+		err := sink(ctx, env)
+		if err == nil || errors.Is(err, errPluginIdentityChanged) {
+			return err
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func pluginsDir() string { return filepath.Join(fleetHome(), "plugins") }

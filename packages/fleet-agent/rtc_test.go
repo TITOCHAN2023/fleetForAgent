@@ -3,11 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/TITOCHAN2023/fleetForAgent/internal/pane"
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -165,6 +169,99 @@ func TestRTCClaimIsOnceAndResponseFallsBackToRelay(t *testing.T) {
 	}
 	if len(got) != 2 || got[1].Type != "result" || got[1].Corr != "corr-1" {
 		t.Fatalf("fallback envelopes=%+v", got)
+	}
+}
+
+func TestRTCFallbackCannotCrossHubIdentity(t *testing.T) {
+	for _, mutation := range []string{"token", "origin", "revoked"} {
+		t.Run(mutation, func(t *testing.T) {
+			sends := 0
+			a := &Agent{hubToken: "old", hubInput: "old", relaySink: func(context.Context, Envelope) error {
+				sends++
+				return nil
+			}}
+			sink := a.rtcSink(&rtcAgentSession{authorized: true})
+			switch mutation {
+			case "token":
+				a.hubToken = "new"
+			case "origin":
+				a.hubInput = "new"
+			case "revoked":
+				a.authRevoked = true
+			}
+			if err := sink(context.Background(), resultEnv("corr", true, 0, "private", "")); err == nil || sends != 0 {
+				t.Fatalf("old RTC result reached new relay: err=%v sends=%d", err, sends)
+			}
+		})
+	}
+}
+
+func TestRTCFallbackDoesNotReuseCancelledSessionContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sends := 0
+	a := &Agent{relaySink: func(ctx context.Context, env Envelope) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("fallback write must be bounded")
+		}
+		sends++
+		return nil
+	}}
+	s := &rtcAgentSession{authorized: true, cancel: cancel}
+	if err := a.rtcSink(s)(ctx, resultEnv("corr", true, 0, "ok", "")); err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Err() == nil || sends != 1 {
+		t.Fatalf("session must close while relay survives: cancelled=%v sends=%d", ctx.Err(), sends)
+	}
+}
+
+func TestRTCFallbackKeepsRealControlWebSocketAlive(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	received := make(chan Envelope, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		for range 2 {
+			var env Envelope
+			if wsjson.Read(ctx, c, &env) != nil {
+				return
+			}
+			received <- env
+		}
+	}))
+	defer server.Close()
+	c, _, err := websocket.Dial(ctx, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	a := &Agent{ws: c}
+	sessionCtx, closeSession := context.WithCancel(ctx)
+	defer closeSession()
+	s := &rtcAgentSession{authorized: true, cancel: closeSession}
+	if err := a.rtcSink(s)(sessionCtx, resultEnv("fallback", true, 0, "ok", "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := wsEnvelopeSink(c)(ctx, Envelope{V: 1, Type: "pong", Corr: "control"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, corr := range []string{"fallback", "control"} {
+		select {
+		case env := <-received:
+			if env.Corr != corr {
+				t.Fatalf("got %q, want %q", env.Corr, corr)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
 	}
 }
 

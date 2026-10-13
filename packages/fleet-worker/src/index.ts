@@ -3231,6 +3231,7 @@ export class DeviceDO implements DurableObject {
     }
 
     if (parsed.type === "plugin_accepted" && parsed.corr) {
+      if (isHubResultDone(await this.readStoredResult(parsed.corr))) return;
       await this.putDeviceExpiry(
         `res:${parsed.corr}`,
         { status: parsed.body.status ?? "running" },
@@ -3240,6 +3241,7 @@ export class DeviceDO implements DurableObject {
     }
 
     if (parsed.type === "plugin_result" && parsed.corr) {
+      const previous = await this.readStoredResult(parsed.corr);
       const stored = boundedStoredPayload("plugin_result", {
         status: "done",
         ok: parsed.body.ok ?? false,
@@ -3247,6 +3249,9 @@ export class DeviceDO implements DurableObject {
         error: parsed.body.error ?? "",
         t: parsed.t,
       });
+      if (previous && Object.hasOwn(previous, STORED_RESULT_OWNER)) {
+        stored[STORED_RESULT_OWNER] = previous[STORED_RESULT_OWNER];
+      }
       await this.putDeviceExpiry(`res:${parsed.corr}`, stored, Date.now() + DEVICE_RESULT_TTL_MS);
       await this.finishSession(parsed.corr);
       return;

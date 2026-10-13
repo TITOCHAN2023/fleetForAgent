@@ -434,6 +434,9 @@ func (a *Agent) claimRTCEnvelope(ctx context.Context, s *rtcAgentSession, corr s
 }
 
 func (a *Agent) rtcSink(s *rtcAgentSession) EnvelopeSink {
+	a.mu.Lock()
+	token, origin := a.hubToken, a.hubInput
+	a.mu.Unlock()
 	direct := s.sink()
 	return func(ctx context.Context, env Envelope) error {
 		var err error
@@ -447,11 +450,25 @@ func (a *Agent) rtcSink(s *rtcAgentSession) EnvelopeSink {
 		}
 		s.close()
 		a.dropRTCSession(s.sid, s)
-		relay := a.relayEnvelopeSink()
+		// A reconnect can replace the socket, not the request's Hub identity.
+		a.mu.Lock()
+		var relay EnvelopeSink
+		if !a.authRevoked && a.hubToken == token && a.hubInput == origin {
+			relay = a.relaySink
+			if relay == nil && a.ws != nil {
+				relay = wsEnvelopeSink(a.ws)
+			}
+		}
+		a.mu.Unlock()
 		if relay == nil {
 			return fmt.Errorf("rtc and websocket transports unavailable")
 		}
-		return relay(ctx, env)
+		// Closing RTC cancels its session context. Passing that context to
+		// websocket.Write can close the shared control socket as well. The
+		// authorized fallback write has its own bounded transport lifetime.
+		relayCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		return relay(relayCtx, env)
 	}
 }
 

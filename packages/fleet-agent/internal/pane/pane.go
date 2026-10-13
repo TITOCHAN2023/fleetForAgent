@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	ScreenInterval = 250 * time.Millisecond
-	ringLines      = 200
-	headLines      = 200
-	screenLines    = 80
+	ScreenInterval     = 250 * time.Millisecond
+	ringLines          = 200
+	headLines          = 200
+	screenLines        = 80
+	completedPaneLimit = 256
 )
 
 type streamBuf struct {
@@ -75,6 +76,8 @@ func (s *streamBuf) render() string {
 }
 
 type Pane struct {
+	supervisor        *Supervisor
+	retained          bool // guarded by supervisor.mu, not the pane mutex
 	id, corr, command string
 	fingerprint       string
 	mu                sync.Mutex
@@ -107,9 +110,10 @@ type liveSlot struct {
 }
 
 type Supervisor struct {
-	mu    sync.Mutex
-	panes map[string]*Pane
-	order []string
+	mu        sync.Mutex
+	panes     map[string]*Pane
+	order     []string
+	completed []*Pane // completion order; running/queued panes never enter this queue
 	// live is the anonymous (empty fingerprint) slot. Tests and 0.2.7 hubs.
 	live  *liveShell
 	slots map[string]*liveSlot
@@ -117,6 +121,54 @@ type Supervisor struct {
 
 func NewSupervisor() *Supervisor {
 	return &Supervisor{panes: map[string]*Pane{}}
+}
+
+// registerLocked gives every backend the same retention lifecycle.
+func (s *Supervisor) registerLocked(p *Pane) {
+	p.supervisor = s
+	s.panes[p.id] = p
+	if p.corr != "" {
+		s.panes[p.corr] = p
+	}
+	s.order = append(s.order, p.id)
+}
+
+// Retire only the supervisor's references. In-flight result delivery may still
+// hold p and must retain its output. Execution receipts live outside this cache.
+func (p *Pane) retainCompletion() {
+	s := p.supervisor
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p.retained || s.panes[p.id] != p || p.StillRunning() {
+		return
+	}
+	p.retained = true
+	s.completed = append(s.completed, p)
+	if len(s.completed) <= completedPaneLimit {
+		return
+	}
+	old := s.completed[0]
+	copy(s.completed, s.completed[1:])
+	s.completed[len(s.completed)-1] = nil
+	s.completed = s.completed[:len(s.completed)-1]
+	if s.panes[old.id] != old {
+		return // never remove a newer registration with the same identifier
+	}
+	delete(s.panes, old.id)
+	if s.panes[old.corr] == old {
+		delete(s.panes, old.corr)
+	}
+	order := s.order[:0]
+	for _, id := range s.order {
+		if id != old.id {
+			order = append(order, id)
+		}
+	}
+	clear(s.order[len(order):])
+	s.order = order
 }
 
 func (p *Pane) ID() string   { return p.id }
@@ -275,11 +327,7 @@ func (s *Supervisor) spawnOneshotFor(fingerprint, corr, command string) (*Pane, 
 		stderr:      newStreamBuf(),
 	}
 	s.mu.Lock()
-	s.panes[p.id] = p
-	if corr != "" {
-		s.panes[corr] = p
-	}
-	s.order = append(s.order, p.id)
+	s.registerLocked(p)
 	s.mu.Unlock()
 	go drain(p, stdout, "stdout")
 	go drain(p, stderr, "stderr")
@@ -298,6 +346,7 @@ func (s *Supervisor) spawnOneshotFor(fingerprint, corr, command string) (*Pane, 
 		p.dirty = true
 		p.mu.Unlock()
 		p.closeStdin(stdin)
+		p.retainCompletion()
 	}()
 	return p, nil
 }

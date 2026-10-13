@@ -1,15 +1,77 @@
 package main
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestChallengeTransportFailureRemainsReconnectable(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    int
+		body      string
+		close     bool
+		permanent bool
+	}{
+		{name: "connection refused", close: true},
+		{name: "unavailable HTML", status: 503, body: "temporarily unavailable"},
+		{name: "rate limited", status: 429, body: `{"error":"busy"}`},
+		{name: "truncated challenge", status: 200, body: `{`},
+		{name: "revoked key", status: 401, body: `{"error":"HIGH_SEC: revoked key"}`, permanent: true},
+		{name: "invalid signature", status: 200, body: `{"nonce":"fake","sig":"fake"}`, permanent: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			priv, err := rsa.GenerateKey(rand.Reader, 2048)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pub, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			claims := tokenV1Claims{V: 1, Aud: server.URL, Kid: "lab-key", Pub: b64urlEncode(pub), Iat: 1, Sec: strings.Repeat("ab", 32)}
+			payload, _ := json.Marshal(claims)
+			sum := sha256.Sum256(payload)
+			sig, err := rsa.SignPSS(rand.Reader, priv, crypto.SHA256, sum[:], &rsa.PSSOptions{SaltLength: pssSaltLen})
+			if err != nil {
+				t.Fatal(err)
+			}
+			token := tokenV1Prefix + b64urlEncode(payload) + "." + b64urlEncode(sig)
+			if tc.close {
+				server.Close()
+			}
+			_, err = highSecAuthorization(context.Background(), server.URL, token)
+			if err == nil {
+				t.Fatal("untrusted/unavailable challenge must not authorize")
+			}
+			permanent := strings.Contains(err.Error(), "HIGH_SEC:")
+			if permanent != tc.permanent {
+				t.Fatalf("permanent=%v: %v", permanent, err)
+			}
+			a := &Agent{enabled: true, hubInput: server.URL, conn: "error"}
+			if permanent {
+				a.conn = "auth_failed"
+			}
+			if a.wantsReconnectLocked() == tc.permanent {
+				t.Fatalf("wrong reconnect decision for %v", err)
+			}
+		})
+	}
+}
 
 func TestHubOrigin(t *testing.T) {
 	if got := hubOrigin("wss://Fleet.Ginfo.CC/v1/device"); got != "https://fleet.ginfo.cc" {

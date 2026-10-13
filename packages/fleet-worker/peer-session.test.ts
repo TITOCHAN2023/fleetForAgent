@@ -67,6 +67,23 @@ test("DeviceDO recovery uses one scoped ID, queries the device and never demotes
   assert.equal(sent.length, beforeForeign);
 });
 
+test("DeviceDO plugin completion stays owned after duplicate result and late acceptance", async () => {
+  const ws = { deserializeAttachment: () => ({}) } as unknown as WebSocket;
+  const { device } = fakeDeviceHarness();
+  const corr = "plugin-completion-retry";
+  await device.webSocketMessage(ws, JSON.stringify({ v: 1, type: "rtc_claim", corr, body: { sid: SESSION, operator_id: "operator-a" } }));
+  const result = JSON.stringify({ v: 1, type: "plugin_result", corr, t: Date.now(), body: { ok: true, result: "private completion" } });
+  const query = (owner: string) => device.fetch(new Request(`https://device/plugin-result?corr=${corr}`, { headers: { "X-Fleet-Operator": owner } })).then(r => r.json()) as Promise<Record<string, unknown>>;
+  await device.webSocketMessage(ws, result);
+  assert.equal((await query("operator-a")).result, "private completion");
+  await device.webSocketMessage(ws, result);
+  assert.equal((await query("operator-a")).result, "private completion", "duplicate completion lost its owner");
+  await device.webSocketMessage(ws, JSON.stringify({ v: 1, type: "plugin_accepted", corr, body: { status: "running" } }));
+  assert.equal((await query("operator-a")).result, "private completion", "late acceptance demoted completion");
+  assert.equal((await query("operator-b")).status, "pending");
+  assert.equal((await query("operator-b")).result, undefined);
+});
+
 test("DeviceDO preserves unknown and restart-output metadata without inventing exit codes", async () => {
   const ws = { deserializeAttachment: () => ({}) } as unknown as WebSocket;
   const { device } = fakeDeviceHarness();

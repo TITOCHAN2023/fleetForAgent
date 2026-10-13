@@ -111,6 +111,63 @@ test('App Room HTTP and native/Nitro WS use real sessions, OAEP and account-scop
     assert.equal((await sql`SELECT * FROM protocol_events`).length, 0);
     assert.equal((await sql`SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename LIKE 'room%'`).length, 0);
   });
+  await t.test('recovery history isolates identical operation IDs across machines and accounts', async () => {
+    const devices = [];
+    for (const [account, id] of [['account-a', 'account-a-device'], ['account-a', 'account-a-second'], ['account-b', 'account-b-device']]) {
+      const ws = new WebSocket(url.replace('http:', 'ws:') + '/v1/device', { headers: {
+        authorization: await highSecAuthorization(tokens[account].raw, url), 'x-device-id': id,
+      } });
+      const hello = await once(ws, 'message');
+      assert.equal(JSON.parse(String(hello[0])).type, 'hello_ok');
+      devices.push({ account, id, ws });
+    }
+    try {
+      const requestId = '2e793d55-9d18-4c9e-8bd0-64c06c52e67f';
+      let corr;
+      for (const device of devices) {
+        const received = once(device.ws, 'message');
+        const response = await http('/v1/run', { account: device.account, headers: {
+          authorization: await highSecAuthorization(tokens[device.account].raw, url), 'x-fleet-operator': 'same-operator',
+        }, body: { device_id: device.id, command: 'echo ' + device.id, request_id: requestId, wait_ms: 0 } });
+        assert.equal(response.status, 200);
+        const result = await response.json();
+        if (corr) assert.equal(result.corr, corr);
+        corr = result.corr;
+        assert.equal(JSON.parse(String((await received)[0])).corr, corr);
+      }
+      const rows = await sql`SELECT device_id, command FROM commands ORDER BY device_id`;
+      assert.equal(rows.length, 3, 'each device must keep its own history row');
+      for (const device of devices) {
+        device.ws.send(JSON.stringify({ v: 1, type: 'result', id: crypto.randomUUID(), corr, t: Date.now(),
+          body: { ok: true, exit_code: 0, stdout: device.id, error: '' } }));
+      }
+      const deadline = Date.now() + 5000;
+      let completed;
+      do {
+        completed = await sql`SELECT device_id, stdout FROM commands ORDER BY device_id`;
+        if (completed.every(row => row.stdout === row.device_id)) break;
+        await new Promise(r => setTimeout(r, 20));
+      } while (Date.now() < deadline);
+      assert(completed.every(row => row.stdout === row.device_id), JSON.stringify(completed));
+      devices[0].ws.send(JSON.stringify({ v: 1, type: 'result', id: crypto.randomUUID(), corr, t: Date.now(),
+        body: { status: 'conflict', ok: false, exit_code: 126, stdout: '', error: 'different command' } }));
+      // A following result on the same socket is a processing barrier below.
+      // Pre-upgrade and website console rows still use the wire corr as id.
+      const legacy = crypto.randomUUID();
+      await sql`INSERT INTO commands (id,user_id,device_id,command,status) VALUES (${legacy},'account-a','account-a-device','legacy','running')`;
+      devices[0].ws.send(JSON.stringify({ v: 1, type: 'result', id: crypto.randomUUID(), corr: legacy, t: Date.now(), body: { ok: true, exit_code: 0, stdout: 'legacy-result', error: '' } }));
+      for (let i = 0; i < 100; i++) {
+        const [row] = await sql`SELECT stdout FROM commands WHERE id=${legacy}`;
+        if (row.stdout === 'legacy-result') break;
+        await new Promise(r => setTimeout(r, 20));
+      }
+      assert.equal((await sql`SELECT stdout FROM commands WHERE id=${legacy}`)[0].stdout, 'legacy-result');
+      const original = await sql`SELECT stdout FROM commands WHERE device_id='account-a-device' AND command='echo account-a-device'`;
+      assert.equal(original[0].stdout, 'account-a-device');
+    } finally {
+      await Promise.all(devices.map(async ({ ws }) => { const closed = once(ws, 'close'); ws.close(); await closed; }));
+    }
+  });
   await t.test('bounded bodies and forged authority are rejected before relay', async () => {
     assert.equal((await http('/v1/room-control', { body: 'x'.repeat(128*1024+1) })).status, 413);
     assert.equal((await http('/v1/room-control', { body: '{bad' })).status, 400);

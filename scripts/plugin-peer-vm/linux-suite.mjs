@@ -91,8 +91,15 @@ async function mcp(name) {
     if (!['run', 'get_result', 'wait'].includes(name)) return JSON.parse(r.content[0].text);
     // Public MCP intentionally returns plain shell output, not JSON envelopes.
     if (r.content[0].text === 'still running') return { status: 'running' };
-    const snapshot = await request('tools/call', { name: 'recover_session', arguments: { device_id: args.device_id } });
-    const row = JSON.parse(snapshot.content[0].text).result;
+    // RTC completion can precede its Hub snapshot. Poll only the saved handle;
+    // never repeat run to make the read-side assertion pass under load.
+    const row = await until(async () => {
+      const snapshot = await request('tools/call', { name: 'recover_session', arguments: { device_id: args.device_id } });
+      assert(!snapshot.isError, JSON.stringify(snapshot));
+      const result = JSON.parse(snapshot.content[0].text).result;
+      return isFinishedResult(result) ? result : false;
+    });
+    assert.equal(typeof row.stdout, 'string', JSON.stringify(row));
     assert.equal(row.stdout.trim(), r.content[0].text.trim()); return row;
   }, close: async () => { child.stdin.end(); await Promise.race([new Promise(r => child.once('exit', r)), delay(5000).then(() => { if (child.exitCode === null) child.kill(); })]); } };
   clients.push(c);

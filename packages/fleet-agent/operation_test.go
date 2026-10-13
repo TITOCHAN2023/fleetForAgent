@@ -243,6 +243,42 @@ func TestOperationUnavailableStoreNeverStartsCommand(t *testing.T) {
 	if got.Body["status"] != "unknown" || len(a.panes.List()) != 0 {
 		t.Fatalf("write failure allowed execution %#v", got)
 	}
+	a.handleResultQuery(context.Background(), sink, Envelope{Corr: "operation-1", Body: map[string]any{"fingerprint": "operator-1"}})
+	if queried := awaitOperation(t, replies, "result"); queried.Body["status"] != "unknown" {
+		t.Fatalf("unsafe store query invented an outcome: %#v", queried)
+	}
+}
+
+func TestReadOperationValidatesStoreBeforeMissingReceipt(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "operations")
+	path := filepath.Join(dir, "missing.json")
+	if row, err := readOperation(path); row != nil || err != nil {
+		t.Fatalf("fresh store: row=%+v err=%v", row, err)
+	}
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if row, err := readOperation(path); row != nil || err != nil {
+		t.Fatalf("missing receipt in valid store: row=%+v err=%v", row, err)
+	}
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if row, err := readOperation(filepath.Join(file, "missing.json")); row != nil || err == nil {
+		t.Fatalf("invalid store became a missing receipt: row=%+v err=%v", row, err)
+	}
+}
+
+func TestReadOperationRejectsSymlinkStore(t *testing.T) {
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "operations")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if row, err := readOperation(filepath.Join(link, "missing.json")); row != nil || err == nil {
+		t.Fatalf("symlink store accepted: row=%+v err=%v", row, err)
+	}
 }
 
 func TestOperationPartialDoneReceiptCannotInventSuccess(t *testing.T) {

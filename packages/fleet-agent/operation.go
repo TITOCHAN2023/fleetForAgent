@@ -47,6 +47,19 @@ func readOperation(path string) (*operationReceipt, error) {
 	if path == "" {
 		return nil, nil
 	}
+	// Windows can report a missing child when its parent is a regular file.
+	// Validate the store first: an inaccessible/unsafe store is unknown, not
+	// evidence that this request has never run. Match writeOperation's boundary.
+	dir, err := os.Lstat(filepath.Dir(path))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !dir.IsDir() || dir.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("unsafe operation directory")
+	}
 	stat, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		return nil, nil

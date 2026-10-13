@@ -83,5 +83,5 @@ test("hosted deploy requires verification on main and uploads the attested scrip
   assert.match(verification, /npm test/);
   assert.match(verification, /npm run typecheck/);
   assert.doesNotMatch(verification, /secrets\./);
-  assert.match(source, /wrangler deploy "\$SOURCE_BUNDLE_PATH" --no-bundle/);
+  assert.match(source, /wrangler deploy "\$SOURCE_BUNDLE_PATH" --no-bundle --config wrangler\.toml/);
 });

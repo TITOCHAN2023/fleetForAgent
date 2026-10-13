@@ -86,10 +86,13 @@ func updateBusyPhase(phase string) bool {
 }
 
 func (a *Agent) isIdleLocked() bool {
-	if a.pending != nil || a.desktopPending != nil || a.restarting {
+	if a.pending != nil || a.desktopPending != nil || a.restarting || a.updateCommitting || a.activeWork != 0 {
 		return false
 	}
-	return !a.panes.Busy()
+	if len(a.runAdmissions) != 0 || len(a.peerSessions) != 0 || len(a.peerCancelRecovery) != 0 {
+		return false
+	}
+	return a.panes == nil || !a.panes.Busy()
 }
 
 func (a *Agent) noteHubUpdate(body map[string]any) {

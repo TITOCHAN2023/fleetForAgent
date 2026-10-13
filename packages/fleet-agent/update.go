@@ -861,6 +861,18 @@ func applyUpdate(a *Agent, req updateRequest) error {
 		_ = os.Remove(archive)
 		return fmt.Errorf("update: sha256 mismatch")
 	}
+	// Downloading is deliberately not exclusive: existing and new tasks keep
+	// working. Recheck and close admission atomically before touching live files.
+	if req.Auto {
+		if !a.beginAutoUpdateCommit() {
+			setUpdateStatus(func(s *updateInfo) {
+				s.Phase = "available"
+				s.Error = ""
+			})
+			return nil
+		}
+		defer a.endAutoUpdateCommit()
+	}
 
 	live, err := liveBinaryPath()
 	if err != nil {

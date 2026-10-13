@@ -171,6 +171,8 @@ type Agent struct {
 	peerRecoveryOrder   []string
 	hb                  time.Duration
 	restarting          bool
+	updateCommitting    bool
+	activeWork          int
 	autoUpdate          bool
 	updateSig           versionSignal
 	policyBlocked       func(string) bool
@@ -741,19 +743,26 @@ func (a *Agent) handleAuthRevoked(c *websocket.Conn, env Envelope) bool {
 // dispatchEnvelope is shared by every data transport. Keep business message
 // handling here so adding RTC cannot fork shell, pane, desktop, or plugin rules.
 func (a *Agent) dispatchEnvelope(ctx context.Context, sink EnvelopeSink, env Envelope) {
+	if updateGuardedEnvelope(env.Type) {
+		if !a.beginWork() {
+			go a.replyUpdateBusy(ctx, sink, env)
+			return
+		}
+		defer a.finishWork()
+	}
 	switch env.Type {
 	case "run":
 		cmd, _ := env.Body["command"].(string)
 		fp := envelopeFingerprint(env.Body)
 		release := a.admitRun(env.Corr, fp)
-		go func() {
+		a.goWork(func() {
 			defer release()
 			if _, ok := env.Body["request_id"].(string); ok {
 				a.handleRecoverableRun(ctx, sink, env.Corr, cmd, fp)
 			} else {
 				a.handleRun(ctx, sink, env.Corr, cmd, fp)
 			}
-		}()
+		})
 	case "get_result":
 		go a.handleResultQuery(ctx, sink, env)
 	case "type":
@@ -763,7 +772,7 @@ func (a *Agent) dispatchEnvelope(ctx context.Context, sink EnvelopeSink, env Env
 		if id == "" {
 			id, _ = env.Body["corr"].(string)
 		}
-		go a.handleType(ctx, sink, env.Corr, id, keys, key, envelopeFingerprint(env.Body))
+		a.goWork(func() { a.handleType(ctx, sink, env.Corr, id, keys, key, envelopeFingerprint(env.Body)) })
 	case "read_screen":
 		id, _ := env.Body["pane_id"].(string)
 		if id == "" {
@@ -776,9 +785,9 @@ func (a *Agent) dispatchEnvelope(ctx context.Context, sink EnvelopeSink, env Env
 		a.mu.Unlock()
 		_ = sink(ctx, Envelope{V: 1, Type: "panes", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: env.Corr, T: time.Now().UnixMilli(), Body: map[string]any{"panes": list}})
 	case "desktop_screenshot":
-		go a.handleDesktopScreenshot(ctx, sink, env)
+		a.goWork(func() { a.handleDesktopScreenshot(ctx, sink, env) })
 	case "desktop_action":
-		go a.handleDesktopAction(ctx, sink, env)
+		a.goWork(func() { a.handleDesktopAction(ctx, sink, env) })
 	case "plugin":
 		a.handlePlugin(ctx, sink, env)
 	}
@@ -843,7 +852,7 @@ func (a *Agent) spawnPane(ctx context.Context, sink EnvelopeSink, corr, cmd, fin
 	a.log("info", "pane accepted "+p.ID())
 	a.mu.Unlock()
 	_ = sink(ctx, Envelope{V: 1, Type: "accepted", ID: fmt.Sprintf("%d", time.Now().UnixNano()), Corr: corr, T: time.Now().UnixMilli(), Body: map[string]any{"pane_id": p.ID(), "status": "running"}})
-	go func() {
+	a.goWork(func() {
 		defer func() {
 			a.mu.Lock()
 			delete(a.paneSinks, corr)
@@ -863,7 +872,7 @@ func (a *Agent) spawnPane(ctx context.Context, sink EnvelopeSink, corr, cmd, fin
 			// Keep collecting completion even if the reply socket disappears.
 			time.Sleep(50 * time.Millisecond)
 		}
-	}()
+	})
 }
 
 func clip(s string, n int) string { return tray.Clip(s, n) }
@@ -1006,6 +1015,13 @@ func runCmd(command string) (string, string, int) {
 
 func (a *Agent) approve() {
 	a.mu.Lock()
+	if a.updateCommitting || a.restarting {
+		a.mu.Unlock()
+		return
+	}
+	// Transfer pending consent to active work without an idle gap.
+	a.activeWork++
+	defer a.finishWork()
 	if a.desktopPending != nil {
 		p := a.desktopPending
 		a.desktopPending = nil
@@ -1027,13 +1043,13 @@ func (a *Agent) approve() {
 	}
 	if p.Kind == pendingKindPlugin && p.Plugin != nil {
 		_ = p.Sink(context.Background(), pluginAcceptedEnv(p.Corr, "running"))
-		go a.executePlugin(context.Background(), p.Sink, p.Corr, *p.Plugin)
+		a.goWork(func() { a.executePlugin(context.Background(), p.Sink, p.Corr, *p.Plugin) })
 	} else if p.Peer != nil {
-		go p.Peer.approve()
+		a.goWork(func() { p.Peer.approve() })
 	} else if p.Kind == pendingKindType {
-		go a.deliverType(context.Background(), p.Sink, p.Corr, p.PaneID, p.Keys, p.Key, p.Fingerprint)
+		a.goWork(func() { a.deliverType(context.Background(), p.Sink, p.Corr, p.PaneID, p.Keys, p.Key, p.Fingerprint) })
 	} else {
-		go a.spawnPane(context.Background(), p.Sink, p.Corr, p.Command, p.Fingerprint)
+		a.goWork(func() { a.spawnPane(context.Background(), p.Sink, p.Corr, p.Command, p.Fingerprint) })
 	}
 	a.mu.Lock()
 	a.log("info", "approved: "+p.Command)

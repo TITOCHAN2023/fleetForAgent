@@ -457,6 +457,11 @@ func newPluginPeerSession(a *Agent, ctx context.Context, sink EnvelopeSink, req 
 }
 
 func (a *Agent) handlePluginPeerPrepare(ctx context.Context, sink EnvelopeSink, env Envelope) bool {
+	if !a.beginWork() {
+		a.sendPluginPeerFailure(ctx, sink, fmt.Sprint(env.Body["session_id"]), fmt.Sprint(env.Body["round_id"]), "DEVICE_DISABLED")
+		return false
+	}
+	defer a.finishWork()
 	req, err := decodePluginPeerPrepare(env.Body)
 	if err != nil {
 		a.sendPluginPeerFailure(ctx, sink, fmt.Sprint(env.Body["session_id"]), fmt.Sprint(env.Body["round_id"]), "INVALID_PREPARE")

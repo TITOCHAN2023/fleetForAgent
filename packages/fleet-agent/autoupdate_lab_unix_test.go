@@ -166,10 +166,10 @@ type autoUpdateLab struct {
 	hub      *labHub
 }
 
-func newAutoUpdateLab(t *testing.T, oldBin, archive, asset, sum string) *autoUpdateLab {
+func newAutoUpdateLab(t *testing.T, oldBin, archive, asset, sum string, beforeDownload ...func()) *autoUpdateLab {
 	t.Helper()
 	hub := startLabHub(t)
-	dl := startAssetServer(t, archive, asset, sum)
+	dl := startAssetServer(t, archive, asset, sum, beforeDownload...)
 	lab := &autoUpdateLab{
 		t:        t,
 		oldBin:   oldBin,
@@ -316,11 +316,12 @@ type labHub struct {
 	advert  map[string]any
 	devices map[string]map[string]any
 	conns   map[string]*websocket.Conn
+	replies chan Envelope
 }
 
 func startLabHub(t *testing.T) *labHub {
 	t.Helper()
-	h := &labHub{devices: map[string]map[string]any{}, conns: map[string]*websocket.Conn{}, advert: map[string]any{}}
+	h := &labHub{devices: map[string]map[string]any{}, conns: map[string]*websocket.Conn{}, advert: map[string]any{}, replies: make(chan Envelope, 128)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/device", h.handleDevice)
 	mux.HandleFunc("/v1/list_computers", h.handleList)
@@ -390,6 +391,10 @@ func (h *labHub) handleDevice(w http.ResponseWriter, r *http.Request) {
 			var env Envelope
 			if err := wsjson.Read(ctx, c, &env); err != nil {
 				return
+			}
+			select {
+			case h.replies <- env:
+			default:
 			}
 			h.mu.Lock()
 			d := h.devices[id]
@@ -509,13 +514,16 @@ func cloneLabRow(row map[string]any) map[string]any {
 	return out
 }
 
-func startAssetServer(t *testing.T, archive, name, sum string) string {
+func startAssetServer(t *testing.T, archive, name, sum string, beforeDownload ...func()) string {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/checksums.txt", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, "%s  %s\n", sum, name)
 	})
 	mux.HandleFunc("/"+name, func(w http.ResponseWriter, r *http.Request) {
+		for _, hook := range beforeDownload {
+			hook()
+		}
 		f, err := os.Open(archive)
 		if err != nil {
 			http.Error(w, err.Error(), 500)

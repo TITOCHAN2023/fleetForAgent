@@ -184,13 +184,7 @@ func (a *Agent) handleRecoverableRun(ctx context.Context, sink EnvelopeSink, cor
 		a.operations[key] = row
 		copy := *row
 		a.operationMu.Unlock()
-		if copy.Input != input {
-			env := resultEnv(corr, false, 126, "", "request_id already used with different command")
-			env.Body["status"] = "conflict"
-			_ = sink(ctx, env)
-			return
-		}
-		a.replyOperation(ctx, sink, corr, fp, &copy)
+		a.replyStoredRun(ctx, sink, corr, cmd, fp, &copy)
 		return
 	}
 	row = &operationReceipt{Version: 1, Input: input, Status: "running", CreatedAt: time.Now().UnixMilli()}
@@ -222,6 +216,16 @@ func (a *Agent) handleRecoverableRun(ctx context.Context, sink EnvelopeSink, cor
 		return sink(sendCtx, env)
 	}
 	a.handleRun(ctx, tracked, corr, cmd, fp)
+}
+
+func (a *Agent) replyStoredRun(ctx context.Context, sink EnvelopeSink, corr, cmd, fp string, row *operationReceipt) {
+	if row.Input != digestOperation(cmd) {
+		env := resultEnv(corr, false, 126, "", "request_id already used with different command")
+		env.Body["status"] = "conflict"
+		_ = sink(ctx, env)
+		return
+	}
+	a.replyOperation(ctx, sink, corr, fp, row)
 }
 
 // Reserve before launching the dispatch goroutine. Ordered WS/RTC messages do

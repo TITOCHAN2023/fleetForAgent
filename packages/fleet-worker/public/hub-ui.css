@@ -62,44 +62,12 @@ body { font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
 .fleet-page .plugin-card h2 { font-size: 20px; }
 .fleet-page .plugin-summary { margin-top: 14px; }
 .fleet-error { border: 1px solid var(--bad); border-radius: 12px; padding: 14px; color: var(--bad); margin-bottom: 20px; }
-.fleet-room-shell { max-width: 1440px; margin: auto; padding: 36px 32px; display: grid; grid-template-columns: 220px minmax(0,1fr); gap: 28px; align-items: start; }
-.fleet-room-sidebar { min-width: 0; }
-.fleet-room-main { min-width: 0; }
-.fleet-room-sidebar select { font-size: 13px; }
-.fleet-room-sidebar select { border-radius: 10px; }
-.fleet-room-list button { border-radius: 14px; border-color: transparent; }
-.fleet-room-list { max-height: calc(100svh - 330px); overflow-y: auto; }
-.fleet-room-list button[aria-pressed=true] { background: var(--surface); }
-.fleet-room-sidebar #rooms-heading { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.fleet-room-sidebar button { max-width: 100%; }
-.fleet-room-intro { font-size: 12px; line-height: 1.6; color: var(--muted); margin-top: 24px; }
-.fleet-room-title { display: flex; align-items: start; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
-.fleet-room-title h1 { font-size: 24px; font-weight: 600; letter-spacing: -.03em; overflow-wrap: anywhere; }
-.fleet-room-tabs { display: flex; align-items: center; gap: 22px; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
-.fleet-room-tabs button { background: transparent; padding: 12px 0; font-size: 13px; color: var(--muted); border-bottom: 2px solid transparent; }
-.fleet-room-tabs button[aria-pressed=true] { color: var(--fg); border-bottom-color: var(--fg); }
-.fleet-room-tabs button:last-child { margin-left: auto; }
-.fleet-messages { min-height: 270px; max-height: 48vh; overflow-y: auto; padding: 0 0 20px; }
-.fleet-messages li { padding: 20px 0; }
-.fleet-composer { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 12px; padding: 18px; border: 1px solid var(--border); border-radius: 20px; background: var(--surface); }
-.fleet-composer > * { margin: 0 !important; min-width: 0; }
-.fleet-composer > label:nth-of-type(2) { grid-row: 1; grid-column: 1 / -1; }
-.fleet-composer > label:nth-of-type(1) { grid-row: 2; }
-.fleet-composer > label > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.fleet-composer > button { grid-row: 2; }
-.fleet-composer select { border: 0; border-radius: 0; background: transparent; color: var(--muted); width: min(100%,350px); }
-.fleet-composer textarea { border: 0; background: transparent; min-height: 100px; }
-.fleet-room-dialog { width: min(680px, calc(100vw - 32px)); max-height: 85svh; overflow: auto; border: 1px solid var(--border); border-radius: 20px; padding: 24px; background: var(--surface); color: var(--fg); }
-.fleet-room-dialog::backdrop { background: #0008; }
-.fleet-room-dialog-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 20px; }
-.fleet-room-dialog-head h2 { font-size: 20px; font-weight: 600; }
 .fleet-top :focus-visible, .fleet-page :focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
 @media(max-width: 850px) {
   .fleet-top { padding: 12px 20px; gap: 12px; flex-wrap: wrap; }
   .fleet-nav { order: 3; width: 100%; }
   .fleet-tools { gap: 8px; }
   .fleet-page { padding: 28px 20px; }
-  .fleet-room-shell { padding: 24px 20px; grid-template-columns: 190px minmax(0,1fr); gap: 20px; }
   .fleet-machine-head, .fleet-machine { grid-template-columns: minmax(0,1fr) 90px; gap: 10px; padding: 16px; }
   .fleet-machine-head { display: none; }
   .fleet-machine-os { display: none; }
@@ -129,13 +97,6 @@ body { font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
   .fleet-settings-nav { display: flex; overflow: auto; margin-bottom: 22px; }
   .fleet-settings-nav a { white-space: nowrap; font-size: 13px; padding: 8px 12px; }
   .fleet-settings-content .setup-section { padding: 18px; }
-  .fleet-room-shell { display: block; padding: 20px 16px; }
-  .fleet-room-sidebar { margin-bottom: 28px; }
-  .fleet-room-list { display: flex; max-height: none; overflow: auto; gap: 8px; padding: 4px 0; }
-  .fleet-room-list button { min-width: 150px; width: auto; }
-  .fleet-room-sidebar > button { margin-top: 8px; }
-  .fleet-room-intro { display: none; }
-  .fleet-room-title { flex-wrap: wrap; }
 }
 @media(max-width: 370px) {
   .fleet-top { column-gap: 6px; }

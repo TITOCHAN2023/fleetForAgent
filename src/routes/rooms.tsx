@@ -18,9 +18,9 @@ function RoomsPage() {
     );
   if (!user) return <RedirectToSignIn />;
   return (
-    <main className="min-h-svh bg-bg text-fg">
+    <div className="min-h-svh bg-bg text-fg">
       <SiteHeader />
       <RoomConsole key={user.id} accountId={user.id} />
-    </main>
+    </div>
   );
 }

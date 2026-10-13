@@ -12,7 +12,6 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link href="https://cdn.jsdelivr.net/npm/@chinese-fonts/xiaolai@3.0.0/dist/Xiaolai/result.css" rel="stylesheet" />
     <script>
       (function () {
@@ -214,6 +213,7 @@
         .seg .seg-thumb, .seg button, .btn { transition: none !important; transform: none !important; }
       }
     </style>
+    <link rel="stylesheet" href="/hub-ui.css" />
   </head>
   <body>
     <div id="app"></div>
@@ -371,6 +371,12 @@
         themePref: localStorage.getItem("fleet-theme") || "system",
         user: null,
         tab: "fleet",
+        setupPanel: "mcp",
+        mcpTransport: "http",
+        installOS: "posix",
+        search: "",
+        machineFilter: "all",
+        computersError: "",
         err: "",
         secret: "",
         meta: null,
@@ -381,6 +387,7 @@
         metaReady: false,
       };
       const t = (k) => T[state.locale][k];
+      const label = (zh, en) => state.locale === "zh" ? zh : en;
       const $ = (s) => document.querySelector(s);
       let mermaidLoader = null;
       let mermaidRenderEpoch = 0;
@@ -549,9 +556,19 @@
         }
       }
       async function go(path) {
-        if (location.pathname !== path) history.pushState({}, "", path);
+        if (location.pathname + location.hash !== path) history.pushState({}, "", path);
+        syncRoute();
         await Promise.all([loadBlog(), loadPluginRegistry()]);
         render();
+      }
+      function syncRoute() {
+        const route = location.hash.slice(1);
+        if (route === "downloads") { state.tab = "settings"; state.setupPanel = "desktop"; }
+        else if (route === "settings" || route.startsWith("settings/")) {
+          state.tab = "settings";
+          const panel = route.split("/")[1] || "mcp";
+          state.setupPanel = ["mcp", "install", "credentials", "desktop"].includes(panel) ? panel : "mcp";
+        } else state.tab = "fleet";
       }
       async function api(path, opt) {
         opt = opt || {};
@@ -586,6 +603,7 @@
       async function loadComputers() {
         const j = await api("/v1/list_computers", { method: "POST", body: "{}" });
         state.computers = Array.isArray(j.computers) ? j.computers : [];
+        state.computersError = "";
       }
       function openAliasEditor(deviceId) {
         const computer = state.computers.find((item) => String(item.id) === String(deviceId));
@@ -624,6 +642,7 @@
         render();
       }
       async function boot() {
+        syncRoute();
         applyTheme(state.themePref);
         try {
           const me = await api("/v1/me");
@@ -632,7 +651,7 @@
         if (signedIn()) {
           try { state.meta = await api("/v1/hub_token"); } catch { state.meta = { hasToken: true, prefix: "" }; }
           state.metaReady = true;
-          try { await loadComputers(); } catch { state.computers = []; }
+          try { await loadComputers(); } catch (e) { state.computersError = e.message; }
         }
         await Promise.all([loadBlog(), loadPluginRegistry()]);
         render();
@@ -670,20 +689,26 @@
         if (!(state.user && state.user.ops)) return "";
         return `<a class="ops-switch" href="/ops">${t("ops")}</a>`;
       }
-      function chrome(extra) {
-        return `<header class="top">
-          <a class="brand" href="/" data-go="/"><img src="/logo.png" width="28" height="28" alt="" />Fleet</a>
-          <a class="nav-link" href="/rooms/">Rooms</a>
-          <a class="nav-link" href="/help" data-go="/help">${t("help")}</a>
-          <a class="nav-link" href="/docs" data-go="/docs">${t("docs")}</a>
-          <a class="nav-link" href="/plugins" data-go="/plugins">${t("plugins")}</a>
-          <a class="nav-link" href="/trust">${t("source")}</a>
-          ${opsSwitch()}
-          <span class="spacer"></span>
-          ${extra || ""}
-          ${themeBar()}
-          ${langBar()}
-          ${githubMark()}
+      function chrome() {
+        return `<header class="fleet-top">
+          <a class="fleet-brand" href="/" data-go="/"><img src="/logo.png" width="28" height="28" alt="" />Fleet</a>
+          <nav class="fleet-nav" aria-label="${label("主导航", "Main navigation")}">
+            <a href="/#machines" data-go="/#machines" ${signedIn() && pathNow() === "/" && state.tab === "fleet" ? 'aria-current="page"' : ""}>${t("fleet")}</a>
+            <a href="/rooms/">${label("房间", "Rooms")}</a>
+            <a href="/plugins" data-go="/plugins" ${isPlugins() ? 'aria-current="page"' : ""}>${t("plugins")}</a>
+          </nav>
+          <div class="fleet-tools">
+            <details class="fleet-menu fleet-menu-resources"><summary>${label("资源", "Resources")} ▾</summary><div class="fleet-menu-pop">
+              <a href="/help" data-go="/help">${t("help")}</a><a href="/docs" data-go="/docs">${t("docs")}</a>
+              <a href="/trust">${t("source")}</a><a href="https://github.com/TITOCHAN2023/fleetForAgent" target="_blank" rel="noreferrer">GitHub ↗</a>
+            </div></details>
+            ${signedIn() ? `<details class="fleet-menu"><summary aria-label="${label("账号", "Account")}"><span class="fleet-avatar">${esc(String(state.user.email || "F").slice(0, 1).toUpperCase())}</span></summary><div class="fleet-menu-pop">
+              <span class="fleet-account-email">${esc(state.user.email || "")}</span>
+              <a href="/#settings" data-go="/#settings">${label("接入与设置", "Setup & settings")}</a>${opsSwitch()}
+              <button type="button" id="out">${t("signOut")}</button>
+            </div></details>` : ""}
+            ${themeBar()}${langBar()}
+          </div>
         </header>`;
       }
       function fan() {
@@ -739,7 +764,7 @@
           <pre>${esc(text)}</pre>
         </div>`;
       }
-      function readySetup(origin, token) {
+      function readySetup(origin, token, panel = "all") {
         const base = String(origin || "").replace(/\/+$/, "");
         const stdioEnv = { FLEET_URL: base };
         if (token) stdioEnv.FLEET_TOKEN = token;
@@ -768,16 +793,16 @@
         const windows = `& ([scriptblock]::Create((irm '${base}/install.ps1'))) -Hub '${base}'${windowsToken} -Permit ask`;
         return `<div class="setup">
           ${token ? "" : `<p class="warn" style="margin:0">${t("setupNeedsToken")}</p>`}
-          <section class="setup-section">
+          ${panel === "install" ? "" : `<section class="setup-section">
             <div><h3>${t("mcpTitle")}</h3><p class="muted" style="margin:6px 0 0">${t("mcpBody")}</p></div>
-            <div class="grid-3">${copyBlock(t("mcpStdioConfig"), mcpStdio)}${copyBlock(t("mcpHttpConfig"), mcpHttp)}${copyBlock(t("mcpSseConfig"), mcpSse)}</div>
-          </section>
-          <section class="setup-section">
+            ${panel === "all" ? `<div class="grid-3">${copyBlock(t("mcpStdioConfig"), mcpStdio)}${copyBlock(t("mcpHttpConfig"), mcpHttp)}${copyBlock(t("mcpSseConfig"), mcpSse)}</div>` : `<div class="fleet-protocols" aria-label="MCP">${[["http", "Streamable HTTP"], ["sse", "SSE"], ["stdio", "stdio · npx"]].map(([id, name]) => `<button type="button" data-protocol="${id}" aria-pressed="${state.mcpTransport === id}">${name}</button>`).join("")}</div>${state.mcpTransport === "sse" ? copyBlock(t("mcpSseConfig"), mcpSse) : state.mcpTransport === "stdio" ? copyBlock(t("mcpStdioConfig"), mcpStdio) : copyBlock(t("mcpHttpConfig"), mcpHttp)}`}
+          </section>`}
+          ${panel === "mcp" ? "" : `<section class="setup-section">
             <div><h3>${t("quickTitle")}</h3><p class="muted" style="margin:6px 0 0">${t("quickBody")}</p></div>
-            <div class="grid-2">${copyBlock(t("posixInstall"), posix)}${copyBlock(t("windowsInstall"), windows)}</div>
+            ${panel === "all" ? `<div class="grid-2">${copyBlock(t("posixInstall"), posix)}${copyBlock(t("windowsInstall"), windows)}</div>` : `<div class="fleet-protocols">${[["posix", "macOS / Linux / WSL"], ["windows", "Windows PowerShell"]].map(([id, name]) => `<button type="button" data-install-os="${id}" aria-pressed="${state.installOS === id}">${name}</button>`).join("")}</div>${state.installOS === "windows" ? copyBlock(t("windowsInstall"), windows) : copyBlock(t("posixInstall"), posix)}`}
             ${token ? `<p class="warn" style="margin:0">${t("shellHistory")}</p>` : ""}
             <p class="muted" style="margin:0">${t("desktopHint")} <a class="nav-link" style="text-decoration:underline;text-underline-offset:4px" href="https://github.com/TITOCHAN2023/fleetForAgent/releases/latest" target="_blank" rel="noreferrer">${t("desktopLink")}</a></p>
-          </section>
+          </section>`}
         </div>`;
       }
       function promptView() {
@@ -897,11 +922,7 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
           </div>`;
       }
       function appView() {
-        const tabs = [["fleet", t("fleet")], ["downloads", t("downloads")], ["help", t("help")], ["settings", t("settings")]];
-        return `${chrome(`<nav class="tabs">${tabs.map(([id, label]) => `<button class="tab${state.tab===id?" on":""}" data-tab="${id}">${label}</button>`).join("")}</nav>
-            <span class="who">${state.user.email}</span>
-            <button class="btn ghost" id="out">${t("signOut")}</button>`)}
-          <div class="page">${state.tab === "downloads" ? downloadsView() : state.tab === "fleet" ? fleetView() : state.tab === "help" ? helpInner() : settingsView()}</div>`;
+        return `${chrome()}<main class="fleet-page">${state.err ? `<p role="alert" class="fleet-error">${esc(state.err)}</p>` : ""}${state.tab === "settings" ? settingsView() : fleetView()}</main>`;
       }
       function helpInner() {
         const origin = location.origin;
@@ -917,6 +938,12 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
           </section>`;
       }
       function settingsView() {
+        const items = [["mcp", label("AI 客户端", "AI clients")], ["install", label("安装 Agent", "Install Agent")], ["credentials", label("连接凭证", "Credentials")], ["desktop", label("图形客户端", "Desktop apps")]];
+        return `<div class="fleet-heading"><div><div class="fleet-eyebrow">FLEET / ${label("连接", "CONNECT")}</div><h1>${label("接入与设置", "Setup & settings")}</h1></div></div>
+          <div class="fleet-settings"><nav class="fleet-settings-nav" aria-label="${t("settings")}">${items.map(([id, name]) => `<a href="/#settings/${id}" data-go="/#settings/${id}" ${state.setupPanel === id ? 'aria-current="page"' : ""}>${name}</a>`).join("")}</nav>
+          <div class="fleet-settings-content">${state.setupPanel === "credentials" ? credentialsView() : state.setupPanel === "desktop" ? downloadsView() : readySetup(location.origin, state.secret, state.setupPanel)}</div></div>`;
+      }
+      function credentialsView() {
         const origin = location.origin;
         const shown = state.secret
           ? `<p class="warn">${t("secretOnce")}</p><div class="secret"><code class="box">${esc(state.secret)}</code><button class="btn" type="button" data-copy-secret="1">${t("copy")}</button></div>`
@@ -939,9 +966,6 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
             ${state.meta && state.meta.hasToken ? `<span class="subtle">${t("resetHint")}</span>` : ""}
           </div>
           <p class="muted" style="margin-top:16px">${t("toolHint")}</p>
-          <div style="margin-top:24px;border-top:1px solid var(--border);padding-top:24px">
-            ${readySetup(origin, state.secret)}
-          </div>
         </section>`;
       }
       function downloadsView() {
@@ -954,7 +978,7 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
           [t("macIntelZip"), "FleetAgent-macos-amd64.zip"],
           [t("linux"), "fleet-agent-linux-amd64.tar.gz"],
           [t("linuxArm"), "fleet-agent-linux-arm64.tar.gz"],
-          [t("checksums"), "checksums-0.6.6.txt"],
+          [t("checksums"), "checksums.txt"],
         ];
         return `<section class="card">
           <h3>${t("relTitle")}</h3>
@@ -987,33 +1011,36 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
         }).join("");
         const source = registry.source || {};
         return `${chrome()}
-          <div class="wrap">
-            <section class="card" style="padding:28px">
-              <div class="plugin-head"><div style="max-width:660px"><p class="kicker">Official plugin registry</p><h1 style="max-width:none;font-size:clamp(30px,5vw,44px)">${zh ? "官方收录的开源插件" : "Officially curated open-source plugins"}</h1><p class="lead" style="max-width:650px">${zh ? "每个插件来自注册表仓库中的一个 Markdown 文件。网站、Fleet Tool 和 Hub 使用同一份固定快照。" : "Each plugin comes from one Markdown file in the registry repository. The website, Fleet Tool, and Hub use the same pinned snapshot."}</p></div><a class="btn" href="${esc(source.repository || "https://github.com/TITOCHAN2023/fleet-plugins")}" target="_blank" rel="noreferrer">${zh ? "查看注册表" : "View registry"} ↗</a></div>
-              <div class="plugin-facts"><span>${zh ? "遵循设备权限" : "Follows device permit"}</span><span>Release + SHA-256</span><span style="font-family:var(--mono)">${esc((source.commit || "").slice(0, 12))}</span></div>
-            </section>
+          <div class="fleet-page">
+            <div class="fleet-heading"><div><div class="fleet-eyebrow">FLEET / ${label("扩展", "EXTENSIONS")}</div><h1>${label("为你的机器，添一点能力。", "A little more capability.")}</h1><p>${label("官方收录的开源插件。安装与运行遵循设备权限。", "Curated open-source plugins. Installation and execution follow device permissions.")}</p></div><a class="btn" href="${esc(source.repository || "https://github.com/TITOCHAN2023/fleet-plugins")}" target="_blank" rel="noreferrer">${label("查看注册表", "View registry")} ↗</a></div>
+            <p class="subtle">${label("网站、Tool 和 Hub 使用同一份注册表快照", "Website, Tool and Hub share one registry snapshot")} · ${esc((source.commit || "").slice(0, 12))} · Release + SHA-256</p>
             <div class="plugin-grid">${cards || `<section class="card"><p class="muted">${zh ? "插件注册表暂时不可用。" : "The plugin registry is temporarily unavailable."}</p></section>`}</div>
           </div>`;
       }
       function fleetView() {
-        if (!state.computers.length) return `<section class="card"><h3>${t("fleet")}</h3><p class="muted" style="margin-top:8px">${t("empty")}</p></section>`;
-        return `<section class="card"><h3>${t("fleet")}</h3>
-          <div style="margin-top:16px;display:grid;gap:10px">${state.computers.map((c) => {
+        return `<div class="fleet-heading"><div><div class="fleet-eyebrow">FLEET / ${label("控制台", "CONSOLE")}</div><h1>${label("你的机器，都在这里。", "Your machines, together.")}</h1><p>${label("连接一次，让 Agent 随时找到合适的机器。", "Connect once. Let your agents find the right machine.")}</p></div><div class="fleet-actions"><a class="btn" href="/#settings/mcp" data-go="/#settings/mcp">${label("连接 AI 客户端", "Connect AI client")}</a><a class="btn primary" href="/#settings/install" data-go="/#settings/install">+ ${label("接入机器", "Connect machine")}</a></div></div>
+          ${state.computersError ? `<div class="fleet-error" role="alert">${esc(state.computersError)} <button class="btn" id="refresh-machines">${label("重试", "Retry")}</button></div>` : ""}
+          <div class="fleet-toolbar"><div class="fleet-filters">${[["all", label("全部", "All"), state.computers.length], ["online", t("online"), state.computers.filter(c => c.online).length]].map(([id, name, count]) => `<button type="button" data-filter="${id}" aria-pressed="${state.machineFilter === id}">${name} <span class="subtle">${count}</span></button>`).join("")}</div><div class="fleet-actions"><input class="fleet-search" id="machine-search" type="search" value="${esc(state.search || "")}" placeholder="${label("搜索机器、别名或系统", "Search machines, aliases or OS")}" aria-label="${label("搜索机器", "Search machines")}"/><button class="btn" id="refresh-machines-list">${label("刷新", "Refresh")}</button></div></div>
+          <section class="fleet-table" aria-label="${t("fleet")}"><div class="fleet-machine-head"><span>${t("fleet")}</span><span>${label("系统", "System")}</span><span>${t("agentVersion")}</span><span>${label("状态", "Status")}</span><span></span></div><div id="machine-rows">${machineRows()}</div></section>`;
+      }
+      function machineRows() {
+        const search = (state.search || "").trim().toLocaleLowerCase();
+        const computers = state.computers.filter(c => (state.machineFilter !== "online" || c.online) && [c.alias, c.name, c.id, c.os].some(value => String(value || "").toLocaleLowerCase().includes(search)));
+        if (!computers.length) return `<p class="fleet-empty">${state.computersError ? label("列表暂时不可用，请重试。", "List unavailable. Please retry.") : state.computers.length ? label("没有匹配的机器。", "No matching machines.") : t("empty")}</p>`;
+        return computers.map((c) => {
             const id = String(c.id || "");
             const name = String(c.name || id);
             const alias = String(c.alias || "").trim();
             const os = String(c.os || "");
             const version = String(c.agentVer || "—");
-            const meta = [alias && name !== id ? name : "", id, os, `${t("agentVersion")} ${version}`].filter(Boolean).join(" · ");
-            return `<div class="machine">
-              <div class="machine-main"><div class="machine-title"><strong>${esc(alias || name || id)}</strong></div><div class="subtle machine-meta">${esc(meta)}</div></div>
-              <div class="machine-actions">
-                <span class="muted machine-status"><span class="dot${c.online ? " on" : ""}"></span>${c.online ? t("online") : t("offline")}</span>
-                <button class="btn" type="button" data-alias-device="${esc(id)}">${alias ? t("editAlias") : t("setAlias")}</button>
-              </div>
-            </div>`;
-          }).join("")}</div>
-        </section>`;
+            return `<article class="fleet-machine">
+              <div class="fleet-machine-name"><button type="button" data-alias-device="${esc(id)}">${esc(alias || name || id)}</button><small>${esc(alias && name !== id ? name : os || id)}</small></div>
+              <span class="fleet-machine-os muted">${esc(os || "—")}</span>
+              <span class="fleet-machine-version">${esc(version)}</span>
+              <span class="fleet-machine-status machine-status muted"><span class="dot${c.online ? " on" : ""}"></span>${c.online ? t("online") : t("offline")}</span>
+              <button class="btn fleet-machine-edit" type="button" data-alias-device="${esc(id)}">${alias ? t("editAlias") : t("setAlias")}</button>
+            </article>`;
+          }).join("");
       }
       function aliasPromptView() {
         const editor = state.aliasEditor;
@@ -1028,6 +1055,8 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
             <div class="alias-context">
               <div class="kv"><span class="subtle">${t("originalName")}</span><span>${esc(computer.name || computer.id || "—")}</span></div>
               <div class="kv"><span class="subtle">${t("deviceId")}</span><span>${esc(computer.id || "—")}</span></div>
+              <div class="kv"><span class="subtle">${t("agentVersion")}</span><span>${esc(computer.agentVer || "—")}</span></div>
+              <div class="kv"><span class="subtle">OS</span><span>${esc(computer.os || "—")}</span></div>
             </div>
             <div class="alias-field"><label for="alias-input">${t("aliasLabel")}</label><input id="alias-input" maxlength="64" autocomplete="off" value="${esc(editor.value)}" placeholder="${esc(t("aliasPlaceholder"))}" ${busy ? "disabled" : ""} /><p class="subtle" style="margin:0">${t("aliasHint")}</p></div>
             ${editor.error ? `<p class="err" style="margin:0">${esc(editor.error)}</p>` : ""}
@@ -1066,10 +1095,14 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
           void go(b.dataset.go || "/");
         });
         document.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => {
-          if (b.dataset.tab === "help") { state.tab = "help"; go("/help"); return; }
-          if (isHelp()) history.pushState({}, "", "/");
-          state.tab = b.dataset.tab; render();
+          void go(b.dataset.tab === "help" ? "/help" : "/#" + (b.dataset.tab === "fleet" ? "machines" : b.dataset.tab));
         });
+        document.querySelectorAll("[data-filter]").forEach(b => b.onclick = () => { state.machineFilter = b.dataset.filter; render(); });
+        const search = $("#machine-search");
+        if (search) search.oninput = () => { state.search = search.value; $("#machine-rows").innerHTML = machineRows(); bindMachineButtons(); };
+        document.querySelectorAll("#refresh-machines, #refresh-machines-list").forEach(b => b.onclick = async () => { b.disabled = true; try { await loadComputers(); } catch (e) { state.computersError = e.message; } render(); });
+        document.querySelectorAll("[data-protocol]").forEach(b => b.onclick = () => { state.mcpTransport = b.dataset.protocol; render(); });
+        document.querySelectorAll("[data-install-os]").forEach(b => b.onclick = () => { state.installOS = b.dataset.installOs; render(); });
         const out = $("#out");
         if (out) out.onclick = async () => { try { await api("/v1/logout", { method: "POST", body: "{}" }); } catch {} state.user = null; state.secret = ""; go("/"); };
         const mint = $("#mint");
@@ -1087,7 +1120,7 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
         });
         document.querySelectorAll("[data-copy]").forEach((b) => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy));
         document.querySelectorAll("[data-copy-secret]").forEach((b) => b.onclick = () => { if (state.secret) navigator.clipboard.writeText(state.secret); });
-        document.querySelectorAll("[data-alias-device]").forEach((b) => b.onclick = () => openAliasEditor(b.dataset.aliasDevice));
+        bindMachineButtons();
         document.querySelectorAll("[data-alias-action]").forEach((b) => {
           b.onclick = (e) => {
             const editor = state.aliasEditor;
@@ -1106,7 +1139,11 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
         };
         requestAnimationFrame(syncSegments);
       }
-      window.addEventListener("popstate", () => { void Promise.all([loadBlog(), loadPluginRegistry()]).then(render); });
+      function bindMachineButtons() {
+        document.querySelectorAll("[data-alias-device]").forEach(b => b.onclick = () => openAliasEditor(b.dataset.aliasDevice));
+      }
+      window.addEventListener("popstate", () => { syncRoute(); void Promise.all([loadBlog(), loadPluginRegistry()]).then(render); });
+      window.addEventListener("hashchange", () => { syncRoute(); render(); });
       window.addEventListener("resize", syncSegments);
       window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
         if (state.themePref === "system") { applyTheme("system"); syncSegments(); void renderBlogMermaid(); }

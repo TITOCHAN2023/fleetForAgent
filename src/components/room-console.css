@@ -1,0 +1,193 @@
+/* Imported by RoomConsole so both Node and Worker entries get the same layout. */
+.fleet-room-shell {
+  max-width: 1440px;
+  margin: auto;
+  padding: 36px 32px;
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+}
+.fleet-room-sidebar,
+.fleet-room-main {
+  min-width: 0;
+}
+.fleet-room-sidebar select {
+  font-size: 13px;
+  border-radius: 10px;
+}
+.fleet-room-list button {
+  border-radius: 14px;
+  border-color: transparent;
+}
+.fleet-room-list {
+  max-height: calc(100svh - 330px);
+  overflow-y: auto;
+}
+.fleet-room-list button[aria-pressed="true"] {
+  background: var(--surface);
+}
+.fleet-room-sidebar #rooms-heading {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.fleet-room-sidebar button {
+  max-width: 100%;
+}
+.fleet-room-intro {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+  margin-top: 24px;
+}
+.fleet-room-title {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.fleet-room-title h1 {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  overflow-wrap: anywhere;
+}
+.fleet-room-tabs {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+.fleet-room-tabs button {
+  background: transparent;
+  padding: 12px 0;
+  font-size: 13px;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+}
+.fleet-room-tabs button[aria-pressed="true"] {
+  color: var(--fg);
+  border-bottom-color: var(--fg);
+}
+.fleet-room-tabs button:last-child {
+  margin-left: auto;
+}
+.fleet-room-shell [hidden] {
+  display: none !important;
+}
+.fleet-messages {
+  min-height: 270px;
+  max-height: 48vh;
+  overflow-y: auto;
+  padding: 0 0 20px;
+}
+.fleet-messages li {
+  padding: 20px 0;
+}
+.fleet-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--surface);
+}
+.fleet-composer > * {
+  margin: 0 !important;
+  min-width: 0;
+}
+.fleet-composer > label:nth-of-type(2) {
+  grid-row: 1;
+  grid-column: 1 / -1;
+}
+.fleet-composer > label:nth-of-type(1) {
+  grid-row: 2;
+}
+.fleet-composer > label > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.fleet-composer > button {
+  grid-row: 2;
+}
+.fleet-composer select {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  width: min(100%, 350px);
+}
+.fleet-composer textarea {
+  border: 0;
+  background: transparent;
+  min-height: 100px;
+}
+.fleet-room-dialog {
+  width: min(680px, calc(100vw - 32px));
+  max-height: 85svh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 24px;
+  background: var(--surface);
+  color: var(--fg);
+}
+.fleet-room-dialog::backdrop {
+  background: #0008;
+}
+.fleet-room-dialog-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.fleet-room-dialog-head h2 {
+  font-size: 20px;
+  font-weight: 600;
+}
+@media (max-width: 850px) {
+  .fleet-room-shell {
+    padding: 24px 20px;
+    grid-template-columns: 190px minmax(0, 1fr);
+    gap: 20px;
+  }
+}
+@media (max-width: 600px) {
+  .fleet-room-shell {
+    display: block;
+    padding: 20px 16px;
+  }
+  .fleet-room-sidebar {
+    margin-bottom: 28px;
+  }
+  .fleet-room-list {
+    display: flex;
+    max-height: none;
+    overflow: auto;
+    gap: 8px;
+    padding: 4px 0;
+  }
+  .fleet-room-list button {
+    min-width: 150px;
+    width: auto;
+  }
+  .fleet-room-sidebar > button {
+    margin-top: 8px;
+  }
+  .fleet-room-intro {
+    display: none;
+  }
+  .fleet-room-title {
+    flex-wrap: wrap;
+  }
+}

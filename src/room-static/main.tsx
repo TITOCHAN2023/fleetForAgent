@@ -1,4 +1,5 @@
 import { createRoot } from "react-dom/client";
+import { useState } from "react";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { RoomConsole } from "@/components/room-console";
 import { LocaleSwitch } from "@/components/locale-switch";
@@ -14,6 +15,7 @@ const queryClient = new QueryClient({
 export function StaticRoomPage() {
   const { locale } = useI18n();
   const zh = locale === "zh";
+  const [logoutState, setLogoutState] = useState<"idle" | "pending" | "error">("idle");
   const session = useQuery({
     queryKey: ["room-account"],
     queryFn: async ({ signal }) => {
@@ -26,27 +28,88 @@ export function StaticRoomPage() {
       if (!response.ok)
         throw new Error(zh ? "无法读取登录状态。" : "Unable to read account session.");
       const user = await response.json();
-      return typeof user.id === "string" && user.id ? { id: user.id } : null;
+      return typeof user.id === "string" && user.id
+        ? { id: user.id, email: String(user.email || ""), ops: Boolean(user.ops) }
+        : null;
     },
     refetchOnWindowFocus: true,
     gcTime: 0,
   });
   return (
-    <main className="min-h-svh bg-bg text-fg">
-      <header className="border-b border-border bg-bg/80">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-3 px-5 py-3">
-          <a href="/" className="flex items-center gap-2 font-medium text-fg">
-            <img src="/logo.png" alt="" width={28} height={28} />
-            Fleet
+    <div className="min-h-svh bg-bg text-fg">
+      <header className="fleet-top">
+        <a href="/" className="fleet-brand">
+          <img src="/logo.png" alt="" width={28} height={28} />
+          Fleet
+        </a>
+        <nav className="fleet-nav" aria-label={zh ? "主导航" : "Main navigation"}>
+          <a href="/#machines">{zh ? "机器" : "Machines"}</a>
+          <a href="/rooms/" aria-current="page">
+            {zh ? "房间" : "Rooms"}
           </a>
-          <nav className="ml-auto flex flex-wrap items-center gap-3 text-sm text-muted">
-            <a href="/">{zh ? "设备控制台" : "Machines"}</a>
-            <a href="/help">{zh ? "帮助" : "Help"}</a>
-            <ThemeSwitch />
-            <LocaleSwitch />
-          </nav>
+          <a href="/plugins">{zh ? "插件" : "Plugins"}</a>
+        </nav>
+        <div className="fleet-tools">
+          <details className="fleet-menu fleet-menu-resources">
+            <summary>{zh ? "资源" : "Resources"} ▾</summary>
+            <div className="fleet-menu-pop">
+              <a href="/help">{zh ? "帮助" : "Help"}</a>
+              <a href="/docs">{zh ? "文档" : "Docs"}</a>
+              <a href="/trust">{zh ? "源码" : "Source"}</a>
+              <a
+                href="https://github.com/TITOCHAN2023/fleetForAgent"
+                target="_blank"
+                rel="noreferrer"
+              >
+                GitHub ↗
+              </a>
+            </div>
+          </details>
+          {session.data && (
+            <details className="fleet-menu">
+              <summary aria-label={zh ? "账号" : "Account"}>
+                <span className="fleet-avatar">
+                  {(session.data.email || "F").slice(0, 1).toUpperCase()}
+                </span>
+              </summary>
+              <div className="fleet-menu-pop">
+                <span className="fleet-account-email">{session.data.email}</span>
+                <a href="/#settings">{zh ? "接入与设置" : "Setup & settings"}</a>
+                {session.data.ops && <a href="/ops">{zh ? "管理" : "Ops"}</a>}
+                <button
+                  type="button"
+                  disabled={logoutState === "pending"}
+                  onClick={async () => {
+                    setLogoutState("pending");
+                    try {
+                      const response = await fetch("/v1/logout", {
+                        method: "POST",
+                        credentials: "same-origin",
+                        headers: { "content-type": "application/json" },
+                        body: "{}",
+                      });
+                      if (!response.ok) throw new Error("logout failed");
+                      queryClient.clear();
+                      location.assign("/");
+                    } catch {
+                      setLogoutState("error");
+                    }
+                  }}
+                >
+                  {zh ? "退出" : "Sign out"}
+                </button>
+              </div>
+            </details>
+          )}
+          <ThemeSwitch />
+          <LocaleSwitch />
         </div>
       </header>
+      {logoutState === "error" && (
+        <p role="alert" className="p-6">
+          {zh ? "退出失败，请重试。" : "Sign out failed. Please try again."}
+        </p>
+      )}
       {session.isPending ? (
         <p role="status" className="p-6">
           {zh ? "正在加载账号…" : "Loading account…"}
@@ -71,7 +134,7 @@ export function StaticRoomPage() {
           </a>
         </section>
       )}
-    </main>
+    </div>
   );
 }
 

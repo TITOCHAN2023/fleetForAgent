@@ -120,7 +120,8 @@ export function putScreen(deviceId: string, body: Record<string, unknown>, corr?
 export function getScreen(deviceId: string, corr?: string): Record<string, unknown> | null {
   const slot = store().screens.get(deviceId);
   if (!slot) return null;
-  if (corr && slot.byCorr.get(corr)) return slot.byCorr.get(corr) ?? null;
+  // A missing explicit handle is not permission to show another task's pane.
+  if (corr) return slot.byCorr.get(corr) ?? null;
   return slot.last ?? null;
 }
 

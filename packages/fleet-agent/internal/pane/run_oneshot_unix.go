@@ -39,11 +39,7 @@ func (s *Supervisor) spawnOneshotPTY(fingerprint, corr, command string) (*Pane, 
 	p.screen = newVTScreen(livePtyCols, livePtyRows, ptmx)
 
 	s.mu.Lock()
-	s.panes[p.id] = p
-	if corr != "" {
-		s.panes[corr] = p
-	}
-	s.order = append(s.order, p.id)
+	s.registerLocked(p)
 	s.mu.Unlock()
 
 	drained := make(chan struct{})

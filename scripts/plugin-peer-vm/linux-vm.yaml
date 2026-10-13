@@ -1,0 +1,30 @@
+# Disposable Linux integration machines; never mount the operator's home.
+vmType: vz
+arch: aarch64
+cpus: 2
+memory: 3GiB
+disk: 12GiB
+plain: true
+mounts: []
+images:
+  - location: https://cloud.debian.org/images/cloud/bookworm/20260712-2537/debian-12-genericcloud-arm64-20260712-2537.qcow2
+    arch: aarch64
+    digest: sha512:52eb678130e85a9bf9f3cf4f7181e060fa60a5db45373717474c5ff9305645c5e6cab8b05ca042bcfa7921d2ca29cf9fd2e815f75abe2d168557ad7207af127b
+networks:
+  - lima: fleet-lab
+ssh:
+  forwardAgent: false
+  loadDotSSHPubKeys: false
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -eu
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y ca-certificates curl xz-utils tmux procps nftables
+      useradd --create-home --shell /bin/bash fleet-test
+      useradd --create-home --shell /bin/bash fleet-hub
+      install -d -o fleet-test -g fleet-test -m 700 /var/lib/fleet-lab
+      install -d -o fleet-hub -g fleet-hub -m 700 /var/lib/fleet-hub-lab
+      install -d /opt/fleet-lab

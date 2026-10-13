@@ -2,7 +2,7 @@
  * Hub wire on the website origin. App assembles /v1/*.
  * Operators present Fleet-OAEP wraps of flt_1 tokens, not plaintext Bearer.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
@@ -73,6 +73,12 @@ import {
 
 const HUB_WAIT_MAX_MS = 30_000;
 const HUB_WAIT_POLL_MS = 25;
+
+// Wire correlations are device-scoped; SQL history has one global primary key.
+// Keep that storage identity separate without changing the public run handle.
+function commandHistoryId(userId: string, deviceId: string, corr: string): string {
+  return "op:" + createHash("sha256").update(JSON.stringify([userId, deviceId, corr])).digest("hex");
+}
 
 function clampHubWaitMs(value: unknown): number {
   const n = Number(value);
@@ -446,7 +452,7 @@ export async function handleHubHttp(request: Request): Promise<Response> {
     const sql = await getSql();
     await sql`
       insert into commands (id, user_id, device_id, command, status)
-      values (${corr}, ${userId}, ${deviceId}, ${command}, ${"running"})
+      values (${body.request_id == null ? corr : commandHistoryId(userId, deviceId, corr)}, ${userId}, ${deviceId}, ${command}, ${"running"})
       on conflict (id) do nothing
     `;
     const waitMs = clampHubWaitMs(body.wait_ms);
@@ -646,7 +652,7 @@ async function onDeviceMessage(userId: string, deviceId: string, ws: WebSocket, 
       t: parsed.t,
     };
     putResult(deviceId, parsed.corr, row);
-    if (row.status === "unknown") return;
+    if (row.status === "unknown" || row.status === "conflict") return;
     const sql = await getSql();
     await sql`
       update commands
@@ -654,7 +660,8 @@ async function onDeviceMessage(userId: string, deviceId: string, ws: WebSocket, 
           exit_code = ${Number(row.exit_code)},
           stdout = ${String(row.stdout)},
           stderr = ${String(row.error)}
-      where id = ${parsed.corr} and user_id = ${userId}
+      where id in (${parsed.corr}, ${commandHistoryId(userId, deviceId, parsed.corr)})
+        and user_id = ${userId} and device_id = ${deviceId}
     `;
   }
 }

@@ -47,6 +47,19 @@ func readOperation(path string) (*operationReceipt, error) {
 	if path == "" {
 		return nil, nil
 	}
+	// Windows can report a missing child when its parent is a regular file.
+	// Validate the store first: an inaccessible/unsafe store is unknown, not
+	// evidence that this request has never run. Match writeOperation's boundary.
+	dir, err := os.Lstat(filepath.Dir(path))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !dir.IsDir() || dir.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("unsafe operation directory")
+	}
 	stat, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -211,6 +224,28 @@ func (a *Agent) handleRecoverableRun(ctx context.Context, sink EnvelopeSink, cor
 	a.handleRun(ctx, tracked, corr, cmd, fp)
 }
 
+// Reserve before launching the dispatch goroutine. Ordered WS/RTC messages do
+// not order goroutine scheduling: a following query must see pending admission,
+// not a missing receipt. No I/O or process wait happens on the control loop.
+// This is not execution evidence; durable intent is still required before run.
+func (a *Agent) admitRun(corr, fp string) func() {
+	key, _ := a.operationKey(corr, fp)
+	a.mu.Lock()
+	if a.runAdmissions == nil {
+		a.runAdmissions = make(map[string]int)
+	}
+	a.runAdmissions[key]++
+	a.mu.Unlock()
+	return func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		a.runAdmissions[key]--
+		if a.runAdmissions[key] == 0 {
+			delete(a.runAdmissions, key)
+		}
+	}
+}
+
 func (a *Agent) replyOperation(ctx context.Context, sink EnvelopeSink, corr, fp string, row *operationReceipt) {
 	a.mu.Lock()
 	sup := a.panes
@@ -245,19 +280,26 @@ func (a *Agent) handleResultQuery(ctx context.Context, sink EnvelopeSink, env En
 	}
 	fp := envelopeFingerprint(env.Body)
 	key, path := a.operationKey(corr, fp)
+	// Snapshot admission first: its release happens only after receipt/pane
+	// creation. Reading in the opposite order could miss both generations.
+	a.mu.Lock()
+	sup := a.panes
+	admitted := a.runAdmissions[key] > 0
+	a.mu.Unlock()
 	a.operationMu.Lock()
 	row := a.operations[key]
+	var readErr error
 	if row == nil {
-		row, _ = readOperation(path)
+		row, readErr = readOperation(path)
 	}
 	if row != nil {
 		copy := *row
 		row = &copy
 	}
 	a.operationMu.Unlock()
-	a.mu.Lock()
-	sup := a.panes
-	a.mu.Unlock()
+	if row == nil && readErr == nil && admitted {
+		row = &operationReceipt{Status: "running"}
+	}
 	// Legacy jobs have no disk receipt but are still queryable while alive.
 	if row == nil && sup != nil && sup.GetFor(fp, corr) != nil {
 		row = &operationReceipt{Status: "running"}

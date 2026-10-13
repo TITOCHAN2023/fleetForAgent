@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,92 @@ func operationAgent(t *testing.T) *Agent {
 func captureOperation() (EnvelopeSink, <-chan Envelope) {
 	replies := make(chan Envelope, 128)
 	return func(_ context.Context, env Envelope) error { replies <- env; return nil }, replies
+}
+
+func TestOperationLabEvictedOutputKeepsReceiptAndNeverReplays(t *testing.T) {
+	if os.Getenv("FLEET_OPERATION_LAB") != "1" {
+		t.Skip("disposable VM/container only")
+	}
+	a := operationAgent(t)
+	sink, replies := captureOperation()
+	counter := filepath.Join(t.TempDir(), "counter")
+	command := "echo once >> " + counter + "; printf private-output; exit 7"
+	a.handleRecoverableRun(context.Background(), sink, "original", command, "owner")
+	awaitOperation(t, replies, "result")
+	for i := 0; i < 256; i++ {
+		a.handleRecoverableRun(context.Background(), sink, fmt.Sprintf("filler-%d", i), "printf ok", "other")
+		awaitOperation(t, replies, "result")
+	}
+	if a.panes.GetFor("owner", "original") != nil {
+		t.Fatal("old output did not leave the memory cache")
+	}
+	a.operationMu.Lock()
+	a.operations = nil // force proof from disk, not the in-memory receipt cache
+	a.operationMu.Unlock()
+	a.handleResultQuery(context.Background(), sink, Envelope{Corr: "original", Body: map[string]any{"fingerprint": "owner"}})
+	got := awaitOperation(t, replies, "result")
+	if got.Body["exit_code"] != 7 || got.Body["output_unavailable"] != true || got.Body["stdout"] != "" {
+		t.Fatalf("eviction lost execution evidence: %+v", got)
+	}
+	a.handleRecoverableRun(context.Background(), sink, "original", command, "owner")
+	got = awaitOperation(t, replies, "result")
+	data, err := os.ReadFile(counter)
+	if err != nil || string(data) != "once\n" || got.Body["output_unavailable"] != true {
+		t.Fatalf("evicted command replayed: data=%q err=%v result=%+v", data, err, got)
+	}
+	a.handleResultQuery(context.Background(), sink, Envelope{Corr: "original", Body: map[string]any{"fingerprint": "other"}})
+	if foreign := awaitOperation(t, replies, "result"); foreign.Body["status"] != "unknown" {
+		t.Fatal("eviction exposed another operator's receipt")
+	}
+}
+
+func TestRunAdmissionPreventsFalseUnknownAndRemainsScoped(t *testing.T) {
+	a := operationAgent(t)
+	first, second := a.admitRun("corr", "owner"), a.admitRun("corr", "owner")
+	sink, replies := captureOperation()
+	query := func(fp string) Envelope {
+		a.handleResultQuery(context.Background(), sink, Envelope{Corr: "corr", Body: map[string]any{"fingerprint": fp}})
+		return <-replies
+	}
+	if got := query("owner"); got.Type != "accepted" {
+		t.Fatalf("admitted run became unknown: %+v", got)
+	}
+	if got := query("other"); got.Body["status"] != "unknown" {
+		t.Fatalf("foreign operator saw admission: %+v", got)
+	}
+	first()
+	if got := query("owner"); got.Type != "accepted" {
+		t.Fatalf("one duplicate removed another admission: %+v", got)
+	}
+	second()
+	if got := query("owner"); got.Body["status"] != "unknown" {
+		t.Fatalf("missing durable evidence became success: %+v", got)
+	}
+	if len(a.runAdmissions) != 0 || len(a.panes.List()) != 0 {
+		t.Fatal("admission leaked or executed a command")
+	}
+}
+
+func TestDispatchAdmitsRunBeforeAsyncReceiptCreation(t *testing.T) {
+	a := operationAgent(t)
+	a.permit = PermitOff
+	a.operationMu.Lock()
+	sink, replies := captureOperation()
+	a.dispatchEnvelope(context.Background(), sink, Envelope{Type: "run", Corr: "corr", Body: map[string]any{
+		"fingerprint": "owner", "request_id": "request", "command": "never execute",
+	}})
+	key, _ := a.operationKey("corr", "owner")
+	a.mu.Lock()
+	admissions := a.runAdmissions[key]
+	a.mu.Unlock()
+	a.operationMu.Unlock()
+	if admissions != 1 {
+		t.Fatalf("dispatch returned before registering admission: %d", admissions)
+	}
+	got := awaitOperation(t, replies, "result")
+	if got.Body["exit_code"] != 126 {
+		t.Fatalf("admission bypassed device policy: %+v", got)
+	}
 }
 
 func awaitOperation(t *testing.T, replies <-chan Envelope, kind string) Envelope {
@@ -155,6 +242,42 @@ func TestOperationUnavailableStoreNeverStartsCommand(t *testing.T) {
 	// An unreadable prior receipt is unknown, not proof of safe failure.
 	if got.Body["status"] != "unknown" || len(a.panes.List()) != 0 {
 		t.Fatalf("write failure allowed execution %#v", got)
+	}
+	a.handleResultQuery(context.Background(), sink, Envelope{Corr: "operation-1", Body: map[string]any{"fingerprint": "operator-1"}})
+	if queried := awaitOperation(t, replies, "result"); queried.Body["status"] != "unknown" {
+		t.Fatalf("unsafe store query invented an outcome: %#v", queried)
+	}
+}
+
+func TestReadOperationValidatesStoreBeforeMissingReceipt(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "operations")
+	path := filepath.Join(dir, "missing.json")
+	if row, err := readOperation(path); row != nil || err != nil {
+		t.Fatalf("fresh store: row=%+v err=%v", row, err)
+	}
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if row, err := readOperation(path); row != nil || err != nil {
+		t.Fatalf("missing receipt in valid store: row=%+v err=%v", row, err)
+	}
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if row, err := readOperation(filepath.Join(file, "missing.json")); row != nil || err == nil {
+		t.Fatalf("invalid store became a missing receipt: row=%+v err=%v", row, err)
+	}
+}
+
+func TestReadOperationRejectsSymlinkStore(t *testing.T) {
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "operations")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if row, err := readOperation(filepath.Join(link, "missing.json")); row != nil || err == nil {
+		t.Fatalf("symlink store accepted: row=%+v err=%v", row, err)
 	}
 }
 

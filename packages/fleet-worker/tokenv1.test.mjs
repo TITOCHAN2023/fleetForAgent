@@ -37,7 +37,7 @@ test("challenge list caps live nonces and drops the oldest", () => {
   }
   assert.equal(live.length, CHALLENGE_MAX_LIVE);
   assert.deepEqual(dropped, ["n0", "n1", "n2"]);
-  assert.deepEqual(live, ["n3", "n4", "n5", "n6", "n7", "n8", "n9", "n10"]);
+  assert.deepEqual(live, Array.from({ length: CHALLENGE_MAX_LIVE }, (_, i) => `n${i + 3}`));
   const book = createChallengeBook({ max: 2 });
   book.put("kid", "a", { userId: "u" });
   book.put("kid", "b", { userId: "u" });
@@ -45,6 +45,15 @@ test("challenge list caps live nonces and drops the oldest", () => {
   assert.equal(book.take("a"), undefined);
   assert.equal(book.take("b")?.kid, "kid");
   assert.equal(book.take("c")?.kid, "kid");
+});
+
+test("concurrent personal-fleet operators do not evict each other's unused challenges", () => {
+  const book = createChallengeBook();
+  for (let i = 0; i < 32; i++) book.put("shared-account", `operator-${i}`, { userId: "owner" });
+  for (let i = 0; i < 32; i++) {
+    assert.equal(book.take(`operator-${i}`)?.userId, "owner");
+    assert.equal(book.take(`operator-${i}`), undefined, "challenges remain one-use");
+  }
 });
 
 test("payload JSON uses a stable field order", () => {

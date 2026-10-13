@@ -13,7 +13,99 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 )
+
+func TestPluginReplyIgnoresReplacedSocketEvenIfWriteSucceeds(t *testing.T) {
+	a := &Agent{}
+	oldWrites, newWrites := 0, 0
+	sink := a.pluginReplySink(func(context.Context, Envelope) error { oldWrites++; return nil })
+	a.ws = &websocket.Conn{}
+	a.relaySink = func(context.Context, Envelope) error { newWrites++; return nil }
+	if err := sink(context.Background(), pluginResultEnv("corr", nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if oldWrites != 0 || newWrites != 1 {
+		t.Fatalf("old socket swallowed completion: old=%d new=%d", oldWrites, newWrites)
+	}
+}
+
+func TestPluginReplyFollowsReconnectedTransport(t *testing.T) {
+	a := &Agent{hubInput: "https://lab.invalid", hubToken: "private-lab-token"}
+	oldSocket := func(context.Context, Envelope) error { return errors.New("old socket closed") }
+	sink := a.pluginReplySink(oldSocket)
+	var received Envelope
+	a.relaySink = func(_ context.Context, env Envelope) error { received = env; return nil }
+	env := pluginResultEnv("original-correlation", "finished once", nil)
+	if err := deliverPluginResult(context.Background(), sink, env); err != nil {
+		t.Fatal(err)
+	}
+	if received.Corr != env.Corr || received.Body["result"] != "finished once" {
+		t.Fatalf("completion changed: %+v", received)
+	}
+}
+
+func TestPluginReplyCannotCrossAuthorizationIdentity(t *testing.T) {
+	for _, mutation := range []string{"token", "origin", "revoked"} {
+		t.Run(mutation, func(t *testing.T) {
+			a := &Agent{hubToken: "old", hubInput: "old"}
+			sends := 0
+			send := func(context.Context, Envelope) error { sends++; return nil }
+			sink := a.pluginReplySink(send)
+			a.relaySink = send
+			switch mutation {
+			case "token":
+				a.hubToken = "new"
+			case "origin":
+				a.hubInput = "new"
+			case "revoked":
+				a.authRevoked = true
+			}
+			err := deliverPluginResult(context.Background(), sink, pluginResultEnv("corr", nil, nil))
+			if !errors.Is(err, errPluginIdentityChanged) || sends != 0 {
+				t.Fatalf("old reply escaped: err=%v sends=%d", err, sends)
+			}
+		})
+	}
+}
+
+func TestPluginReplyRetryHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	calls := 0
+	err := deliverPluginResult(ctx, func(context.Context, Envelope) error {
+		calls++
+		return errors.New("offline")
+	}, pluginResultEnv("corr", nil, nil))
+	if !errors.Is(err, context.DeadlineExceeded) || calls != 1 {
+		t.Fatalf("unbounded result retry: err=%v calls=%d", err, calls)
+	}
+}
+
+func TestPluginDeliveryRetryDoesNotInvokeAgain(t *testing.T) {
+	original := invokePluginTask
+	defer func() { invokePluginTask = original }()
+	invocations, sends := 0, 0
+	invokePluginTask = func(context.Context, pluginRequest) (any, error) {
+		invocations++
+		return "completed", nil
+	}
+	a := &Agent{}
+	a.executePlugin(context.Background(), func(_ context.Context, env Envelope) error {
+		sends++
+		if sends == 1 {
+			return errors.New("offline")
+		}
+		if env.Corr != "original" || env.Body["result"] != "completed" {
+			t.Fatalf("changed completion: %+v", env)
+		}
+		return nil
+	}, "original", pluginRequest{Operation: "invoke", PluginID: "fleet.acp"})
+	if invocations != 1 || sends != 2 {
+		t.Fatalf("invoked=%d sent=%d", invocations, sends)
+	}
+}
 
 func testManifest() pluginManifest {
 	name := "fleet-acp-plugin"

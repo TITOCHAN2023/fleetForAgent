@@ -264,15 +264,23 @@ func highSecAuthorization(ctx context.Context, wss, tok string) (string, error) 
 	client := &http.Client{Timeout: 15 * time.Second}
 	res, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("%s", highSecHandshake)
+		return "", fmt.Errorf("Hub challenge request failed: %w", err)
 	}
 	defer res.Body.Close()
+	// A restart, proxy failure or rate limit is not evidence of a bad key.
+	// Keep normal reconnect backoff; only genuine HIGH_SEC errors are terminal.
+	if res.StatusCode == http.StatusTooManyRequests || res.StatusCode >= 500 {
+		return "", fmt.Errorf("Hub challenge temporarily unavailable (HTTP %d)", res.StatusCode)
+	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
-		return "", fmt.Errorf("%s", highSecHandshake)
+		return "", fmt.Errorf("read Hub challenge: %w", err)
 	}
 	var chal challengeBody
 	if err := json.Unmarshal(body, &chal); err != nil {
+		if res.StatusCode == http.StatusOK {
+			return "", fmt.Errorf("invalid Hub challenge response: %w", err)
+		}
 		return "", fmt.Errorf("%s", highSecHandshake)
 	}
 	if res.StatusCode != http.StatusOK {

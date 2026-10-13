@@ -138,7 +138,8 @@ jobs:
           fi
           # Do not keep dashboard vars. A laptop wrangler deploy without these
           # --var flags must drop SOURCE_COMMIT so /source.verified becomes false.
-          npm exec -- wrangler deploy "$SOURCE_BUNDLE_PATH" --no-bundle "${vars[@]}"
+          # The bundle is outside the checkout; do not discover config beside it.
+          npm exec -- wrangler deploy "$SOURCE_BUNDLE_PATH" --no-bundle --config wrangler.toml "${vars[@]}"
 
       - name: Link the build evidence and deployment result
         if: always()

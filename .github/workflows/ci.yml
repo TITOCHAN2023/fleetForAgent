@@ -43,6 +43,14 @@ jobs:
       - name: Room state, relay, runner, and MCP tests
         run: npm run test:room
 
+      - name: Install isolated test browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Hub design interactions and real Room browser acceptance
+        run: |
+          node scripts/room-lab/hub-design-browser.mjs
+          npm run test:room:browser
+
       - name: Room two-endpoint intranet test (1 CPU / 1 GiB each)
         run: npm run test:room:intranet
 

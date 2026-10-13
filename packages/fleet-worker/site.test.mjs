@@ -39,7 +39,7 @@ test("hub site explains multi-os fleet and ships a Help page", () => {
   assert.match(html, /fleet-agent-linux-arm64/);
   assert.match(html, /FleetAgent-macos-arm64\.zip/);
   assert.match(html, /FleetAgent-macos-amd64\.zip/);
-  assert.match(html, /checksums-0\.6\.6\.txt/);
+  assert.match(html, /\[t\("checksums"\), "checksums\.txt"\]/);
   assert.match(html, /resetConfirm/);
   assert.match(html, /anatomyRsa/);
   assert.match(html, /Fleet-OAEP/);
@@ -80,7 +80,7 @@ test("hub site explains multi-os fleet and ships a Help page", () => {
   assert.match(html, /grid-template-columns: minmax\(0, 1fr\) auto/);
   assert.match(html, /white-space: pre; overflow-wrap: normal; word-break: normal/);
   assert.match(html, /class="setup-copy-head"/);
-  assert.match(html, /readySetup\(origin, state\.secret\)/);
+  assert.match(html, /readySetup\(location\.origin, state\.secret, state\.setupPanel\)/);
   assert.doesNotMatch(html, /state\.secret \? readySetup/);
   assert.ok(
     html.indexOf('t("mcpStdioConfig")') < html.indexOf('t("quickTitle")'),
@@ -99,6 +99,7 @@ test("machine cards show aliases, original identity, and Agent version without H
     ] };
     const copy = { fleet: 'Machines', empty: 'empty', online: 'online', offline: 'offline', agentVersion: 'Agent', setAlias: 'Set alias', editAlias: 'Edit alias' };
     function t(k) { return copy[k] || k; }
+    function label(zh, en) { return en; }
     function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\\"/g,"&quot;"); }
     ${html.slice(start, end)}
     return fleetView;
@@ -106,11 +107,14 @@ test("machine cards show aliases, original identity, and Agent version without H
 
   const out = fleetView();
   assert.match(out, /SG &lt;prod&gt; &amp; &quot;fast&quot;/);
-  assert.match(out, /host&lt;&amp;&quot; · id&lt;&amp;&quot; · linux&lt;&amp;&quot; · Agent 0\.6\.1&lt;&amp;&quot;/);
+  assert.match(out, /host&lt;&amp;&quot;/);
+  assert.match(out, /linux&lt;&amp;&quot;/);
+  assert.match(out, /0\.6\.1&lt;&amp;&quot;/);
   assert.match(out, /data-alias-device="id&lt;&amp;&quot;"/);
   assert.match(out, />Edit alias</);
   assert.match(out, />Builder</);
-  assert.match(out, /plain-id · windows · Agent —/);
+  assert.match(out, /fleet-machine-version">—/);
+  assert.match(out, /fleet-machine-os muted">windows/);
   assert.match(out, />Set alias</);
   assert.doesNotMatch(out, /SG <prod>/);
   assert.doesNotMatch(out, /host<&"/);

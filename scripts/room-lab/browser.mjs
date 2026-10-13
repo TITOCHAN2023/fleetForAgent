@@ -145,7 +145,7 @@ try {
   });
   const home = await (await fetch(origin)).text();
   assert.equal(home, originalHome, "Room build must preserve the Worker homepage");
-  assert.match(home, /href="\/rooms\/">Rooms<\/a>/);
+  assert.match(home, /href="\/rooms\/"/);
   const roomHtml = await (await fetch(origin + "/rooms/")).text();
   assert.match(roomHtml, /src="\/rooms\/assets\/[^"]+\.js"/);
   assert(!roomHtml.includes("main.tsx"));
@@ -204,7 +204,7 @@ try {
   signedIn = true;
   await page.reload();
   checks.push("Worker cookie-session gate blocks Room requests until /v1/me succeeds");
-  await page.getByRole("heading", { name: "Fleet Room", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Agent directory ↗", exact: true }).click();
   await page.getByText("Long-ID worker", { exact: true }).waitFor();
   const panelStyle = await page.locator("#agents-heading").evaluate((heading) => {
     const style = getComputedStyle(heading.parentElement);
@@ -215,14 +215,20 @@ try {
     "Shared Room Tailwind utilities must be included in the standalone CSS",
   );
   checks.push("static bundle includes shared Room component layout and styling");
+  await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "New room", exact: true }).first().click();
   await page.getByLabel("New room name", { exact: true }).fill("Real backend browser room");
   await page.getByLabel("Default execution device", { exact: true }).selectOption("device-a");
   await page.getByRole("button", { name: "Create room", exact: true }).click();
   await page.getByRole("heading", { name: "Real backend browser room", exact: true }).waitFor();
+  await page.getByRole("button", { name: /Members & settings/ }).click();
   await page.getByLabel("Invite agent", { exact: true }).selectOption(followerId);
   await page.getByRole("button", { name: "Invite", exact: true }).click();
   await page.getByRole("button", { name: "Remove Long-ID worker", exact: true }).waitFor();
   checks.push("browser creates room and invites real 96-character Agent ID");
+  await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "Tasks 0", exact: true }).click();
+  await page.getByRole("button", { name: "New task", exact: true }).click();
   await page.getByLabel("Assignee", { exact: true }).selectOption(followerId);
   await page.getByLabel("Task objective", { exact: true }).fill("BROWSER_REAL_TASK");
   await page
@@ -234,7 +240,7 @@ try {
     return page.getByText("completed", { exact: true }).isVisible();
   });
   await page.getByRole("button", { name: "View details and result", exact: true }).click();
-  await page.getByText("TASK_COMPLETE", { exact: true }).waitFor();
+  await page.getByText("TASK_COMPLETE", { exact: true }).first().waitFor();
   const delegation = requests.find((request) => request.input?.action === "tasks.delegate");
   assert.equal(delegation.status, 200);
   assert.equal(delegation.input.input.assigneeId.length, 96);
@@ -247,6 +253,7 @@ try {
   checks.push(
     "real ACP task completes; long Agent ID and initial task cursor are accepted; full result displayed",
   );
+  await page.getByRole("button", { name: "Conversation", exact: true }).click();
   await page.getByLabel("Message", { exact: true }).fill("BROWSER_REAL_HISTORY");
   await page.getByRole("button", { name: "Send message", exact: true }).click();
   await page.getByText("BROWSER_REAL_HISTORY", { exact: true }).waitFor();
@@ -261,17 +268,18 @@ try {
   leaderStopped = true;
   await page
     .getByText(
-      "The leader is offline or the directory is unavailable. Room operations are blocked until the connection returns.",
+      "The leader is offline or no online leader is selected. Writes are blocked; no automatic leader switch or task replay.",
       { exact: true },
     )
     .waitFor({ timeout: 12000 });
-  assert.equal(await page.getByText("BROWSER_REAL_HISTORY", { exact: true }).count(), 0);
-  assert.equal(await page.getByText("TASK_COMPLETE", { exact: true }).count(), 0);
+  // Already-read snapshots stay in this session only. No writes or fresh reads.
+  await page.getByText("BROWSER_REAL_HISTORY", { exact: true }).waitFor();
+  assert(await page.getByRole("button", { name: "Send message", exact: true }).isDisabled());
   const controls = () => requests.filter((request) => request.path === "/v1/room-control").length;
   const before = controls();
   await pause(5200);
   assert.equal(controls(), before);
-  checks.push("leader offline removes history/results and stops browser content requests");
+  checks.push("leader offline blocks writes and content requests; in-memory snapshot is retained without replay");
   const storage = await page.evaluate(async () => ({
     local: { ...localStorage },
     session: { ...sessionStorage },

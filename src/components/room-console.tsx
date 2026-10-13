@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,6 +24,7 @@ export function RoomConsole({ accountId }: { accountId: string }) {
   const [name, setName] = useState("");
   const [createDeviceId, setCreateDeviceId] = useState("");
   const [notice, setNotice] = useState("");
+  const [modal, setModal] = useState<"directory" | "create" | "settings" | null>(null);
   const agentsQ = useQuery({
     queryKey: ["room-agents", accountId],
     queryFn: ({ signal }) =>
@@ -64,7 +65,11 @@ export function RoomConsole({ accountId }: { accountId: string }) {
     mutationFn: ({ action, input }: { action: string; input: Record<string, unknown> }) =>
       roomControl<{ room: Room }>(leaderId, action, input),
     retry: false,
-    onSuccess: (result) => {
+    onSuccess: (result, variables) => {
+      if (variables.action === "rooms.create") {
+        setModal(null);
+        setName("");
+      }
       setRoomId(result.room.id);
       qc.setQueryData<{ rooms: Room[] }>(roomsKey, (previous) => ({
         rooms: [
@@ -84,128 +89,297 @@ export function RoomConsole({ accountId }: { accountId: string }) {
   const error = agentsQ.error ?? devicesQ.error ?? roomsQ.error ?? change.error;
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 p-4 md:p-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Fleet Room</h1>
-          <p className="mt-2 max-w-3xl text-sm text-muted">
-            {zh
-              ? "在线 Agent 协作，每房最多 5 位。房间历史与任务账本仅保存在组长设备；组长离线时房间不可用，不自动重跑任务。"
-              : "Up to 5 agents per room. History and task records live only on the leader device. Rooms are unavailable while the leader is offline; tasks never restart automatically."}
-          </p>
-        </div>
-        <a href="/" className="text-sm underline underline-offset-4">
-          {zh ? "返回设备控制台" : "Device console"}
-        </a>
-      </div>
-      {error && (
-        <p role="alert" className="rounded-xl border border-bad/30 bg-bad/10 p-3 text-sm text-bad">
-          {error.message}
-        </p>
-      )}
-      {notice && (
-        <p role="status" className="text-sm text-muted">
-          {notice}
-        </p>
-      )}
-      <section className={panelClass} aria-labelledby="agents-heading">
-        <h2 id="agents-heading" className="font-medium">
-          Fleet Agent
-        </h2>
-        <p className="mt-1 text-sm text-muted">
-          {zh
-            ? "设备在线不代表 Agent 可调用。仅 MCP 的 Agent 不能远程唤醒。"
-            : "An online device does not guarantee a callable agent. MCP-only agents cannot be awakened remotely."}
-        </p>
-        {agentsQ.isPending ? (
-          <p role="status" className="mt-4">
-            {zh ? "正在加载 Agent…" : "Loading agents…"}
-          </p>
-        ) : null}
-        {!agentsQ.isPending && agents.length === 0 && (
-          <p className="mt-4 text-sm text-muted">
-            {zh
-              ? "尚无已登记的 Agent。请先连接 Fleet Agent。"
-              : "No registered agents. Connect a Fleet Agent first."}
-          </p>
-        )}
-        <ul className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {agents.map((agent) => (
-            <li key={agent.id} className="rounded-xl border border-border p-3">
-              <div className="flex items-center justify-between gap-2">
-                <span className="break-all font-medium">{agent.name}</span>
-                <span className="shrink-0 text-xs text-muted">
-                  {agent.online ? (zh ? "在线" : "Online") : zh ? "离线" : "Offline"}
-                </span>
-              </div>
-              <p className="mt-1 break-all font-mono text-xs text-muted">{agent.id}</p>
-              <p className="mt-1 text-xs text-muted">
-                {agent.mode === "mcp"
-                  ? zh
-                    ? "仅 MCP · 不可远程唤醒"
-                    : "MCP only · no remote wake"
-                  : agent.callable
-                    ? zh
-                      ? "可调用"
-                      : "Callable"
-                    : zh
-                      ? "运行器未就绪"
-                      : "Runtime not ready"}
-                {agent.leader ? (zh ? " · 组长" : " · Leader") : ""}
-              </p>
-              <p className="mt-2 text-xs text-muted">
-                {zh ? "运行" : "Running"} {agent.running}/{agent.capacity}
-              </p>
-            </li>
-          ))}
-        </ul>
-      </section>
-      <section className={panelClass} aria-labelledby="leader-heading">
-        <h2 id="leader-heading" className="font-medium">
-          {zh ? "组长与房间" : "Leader and rooms"}
-        </h2>
-        <div className="mt-4 flex flex-wrap items-end gap-3">
-          <label className="min-w-48 flex-1 space-y-2 text-sm">
-            <span>{zh ? "组长" : "Leader"}</span>
-            <select
-              className={selectClass}
-              aria-label={zh ? "组长" : "Leader"}
-              value={leaderId}
-              disabled={change.isPending}
-              onChange={(event) => {
-                setLeaderId(event.target.value);
-                setRoomId("");
-                setNotice("");
-                change.reset();
-              }}
-            >
-              <option value="">{zh ? "选择组长" : "Select a leader"}</option>
-              {leaderId && !leaders.some((item) => item.id === leaderId) && (
-                <option value={leaderId}>
-                  {leaderId} · {zh ? "离线" : "Offline"}
-                </option>
-              )}
-              {leaders.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name} ({item.id}) ·{" "}
-                  {item.online ? (zh ? "在线" : "Online") : zh ? "离线" : "Offline"}
-                </option>
-              ))}
-            </select>
-          </label>
+    <div className="fleet-room-shell">
+      <aside className="fleet-room-sidebar">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-xl font-semibold">{zh ? "房间" : "Rooms"}</h2>
           <Button
-            variant="secondary"
-            disabled={!available || roomsQ.isFetching || change.isPending}
-            onClick={() => void roomsQ.refetch()}
+            size="sm"
+            variant="ghost"
+            disabled={blocked}
+            onClick={() => setModal("create")}
+            aria-label={zh ? "新建房间" : "New room"}
           >
-            {roomsQ.isFetching ? (zh ? "加载中…" : "Loading…") : zh ? "刷新房间" : "Refresh rooms"}
+            +
           </Button>
         </div>
-        {leaderId && !available && (
-          <p role="status" className="mt-3 text-sm text-bad">
+        {agents.length > 0 && (
+          <>
+            <div className="mt-4 flex flex-wrap items-end gap-3">
+              <label className="min-w-48 flex-1 space-y-2 text-sm">
+                <span>{zh ? "组长" : "Leader"}</span>
+                <select
+                  className={selectClass}
+                  aria-label={zh ? "组长" : "Leader"}
+                  value={leaderId}
+                  disabled={change.isPending}
+                  onChange={(event) => {
+                    setLeaderId(event.target.value);
+                    setRoomId("");
+                    setNotice("");
+                    change.reset();
+                  }}
+                >
+                  <option value="">{zh ? "选择组长" : "Select a leader"}</option>
+                  {leaderId && !leaders.some((item) => item.id === leaderId) && (
+                    <option value={leaderId}>
+                      {leaderId} · {zh ? "离线" : "Offline"}
+                    </option>
+                  )}
+                  {leaders.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name} ({item.id}) ·{" "}
+                      {item.online ? (zh ? "在线" : "Online") : zh ? "离线" : "Offline"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <Button
+                variant="secondary"
+                disabled={!available || roomsQ.isFetching || change.isPending}
+                onClick={() => void roomsQ.refetch()}
+              >
+                {roomsQ.isFetching
+                  ? zh
+                    ? "加载中…"
+                    : "Loading…"
+                  : zh
+                    ? "刷新房间"
+                    : "Refresh rooms"}
+              </Button>
+            </div>
+            <section className="mt-5" aria-labelledby="rooms-heading">
+              <h2 id="rooms-heading" className="font-medium">
+                {zh ? "房间" : "Rooms"}
+              </h2>
+              {rooms.length === 0 && (
+                <p className="mt-3 text-sm text-muted">
+                  {roomsQ.isFetching
+                    ? zh
+                      ? "加载中…"
+                      : "Loading…"
+                    : roomsQ.isError
+                      ? zh
+                        ? "读取失败，请刷新。"
+                        : "Could not load rooms. Refresh to retry."
+                      : zh
+                        ? "这位组长还没有房间。"
+                        : "This leader has no rooms yet."}
+                </p>
+              )}
+              <div className="fleet-room-list mt-3 space-y-2">
+                {rooms.map((item) => (
+                  <button
+                    type="button"
+                    key={item.id}
+                    disabled={change.isPending}
+                    aria-pressed={room?.id === item.id}
+                    className={`w-full rounded-xl border p-3 text-left text-sm ${room?.id === item.id ? "border-accent bg-elevated" : "border-border"}`}
+                    onClick={() => {
+                      setRoomId(item.id);
+                      setNotice("");
+                      change.reset();
+                    }}
+                  >
+                    <span className="block break-all font-medium">{item.name}</span>
+                    <span className="mt-1 block text-xs text-muted">
+                      {item.memberIds.length}/5 ·{" "}
+                      {item.paused ? (zh ? "已暂停" : "Paused") : zh ? "开放" : "Open"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          </>
+        )}
+        <Button className="mt-5" variant="ghost" onClick={() => setModal("directory")}>
+          {zh ? "Agent 名录" : "Agent directory"} ↗
+        </Button>
+        <p className="fleet-room-intro">
+          {zh
+            ? "历史与任务保存在组长设备。组长离线时不可操作，不自动重跑任务。"
+            : "History and tasks live on the leader device. No operations or automatic replays while it is offline."}
+        </p>
+      </aside>
+      <main className="fleet-room-main">
+        {error && (
+          <div role="alert" className="fleet-error">
+            {error.message}{" "}
+            <Button
+              variant="secondary"
+              onClick={() => {
+                void agentsQ.refetch();
+                void devicesQ.refetch();
+                if (available) void roomsQ.refetch();
+              }}
+            >
+              {zh ? "重试读取" : "Retry reading"}
+            </Button>
+          </div>
+        )}
+        {notice && (
+          <p role="status" className="mb-4 text-sm text-muted">
+            {notice}
+          </p>
+        )}
+        {agentsQ.isPending && <p role="status">{zh ? "正在加载 Agent…" : "Loading agents…"}</p>}
+        {!agentsQ.isPending && !agentsQ.isError && !agents.length && (
+          <section className="fleet-empty">
+            <h1 className="text-2xl font-semibold text-fg">
+              {zh ? "让 Agent 在这里协作。" : "A place for your agents to work together."}
+            </h1>
+            <p className="my-5">
+              {zh
+                ? "尚无已登记的 Agent。先连接支持 Room 的运行器，再选择组长创建房间。"
+                : "No registered agents. Connect a Room-capable runtime, then select a leader to create a room."}
+            </p>
+            <a
+              href="https://github.com/TITOCHAN2023/fleetForAgent/tree/main/packages/fleet-room"
+              target="_blank"
+              rel="noreferrer"
+              className="underline underline-offset-4"
+            >
+              {zh ? "查看 Room 接入指南" : "Room setup guide"} ↗
+            </a>
+          </section>
+        )}
+        {!agentsQ.isError && agents.length > 0 && !available && (
+          <p role="status" className="mb-5 rounded-xl border border-warn/30 p-4 text-sm text-warn">
             {zh
-              ? "组长离线或目录不可用。房间已停止操作，等待连接恢复。"
-              : "The leader is offline or the directory is unavailable. Room operations are blocked until the connection returns."}
+              ? "组长离线或尚未选择在线组长。写操作已停用；不自动切换组长，不重跑任务。"
+              : "The leader is offline or no online leader is selected. Writes are blocked; no automatic leader switch or task replay."}
+          </p>
+        )}
+        {available && !room && (
+          <section className="fleet-empty">
+            <h1 className="text-2xl font-semibold text-fg">
+              {roomsQ.isFetching
+                ? zh
+                  ? "读取房间中…"
+                  : "Loading rooms…"
+                : roomsQ.isError
+                  ? zh
+                    ? "房间读取失败"
+                    : "Rooms unavailable"
+                  : zh
+                    ? "创建第一个房间"
+                    : "Create your first room"}
+            </h1>
+            {!roomsQ.isFetching && !roomsQ.isError && (
+              <Button className="mt-5" disabled={blocked} onClick={() => setModal("create")}>
+                {zh ? "新建房间" : "New room"}
+              </Button>
+            )}
+          </section>
+        )}
+        {room && (
+          <>
+            <div className="fleet-room-title">
+              <div>
+                <h1>{room.name}</h1>
+                <p className="mt-2 text-xs text-muted">
+                  {leader?.name || leaderId} ·{" "}
+                  {devices.find((item) => item.id === room.defaultDeviceId)?.alias ||
+                    devices.find((item) => item.id === room.defaultDeviceId)?.name ||
+                    room.defaultDeviceId}
+                </p>
+              </div>
+              <Button variant="secondary" size="sm" onClick={() => setModal("settings")}>
+                {zh ? "成员与设置" : "Members & settings"} · {room.memberIds.length}/5
+              </Button>
+            </div>
+            {room.paused && (
+              <p role="status" className="mb-5 text-sm text-warn">
+                {zh
+                  ? "房间已暂停。暂停不等于正在运行的任务已停止。"
+                  : "Room paused. Running tasks are not necessarily stopped."}
+              </p>
+            )}
+            <RoomActivity
+              key={leaderId + ":" + room.id}
+              accountId={accountId}
+              room={room}
+              agents={agents}
+              devices={devices}
+              devicesAvailable={!devicesQ.isError}
+              blocked={blocked}
+              zh={zh}
+            />
+          </>
+        )}
+      </main>
+      <RoomDialog
+        open={modal === "directory"}
+        title={zh ? "Agent 名录" : "Agent directory"}
+        close={() => setModal(null)}
+        zh={zh}
+      >
+        {" "}
+        <section className={panelClass} aria-labelledby="agents-heading">
+          <h2 id="agents-heading" className="font-medium">
+            Fleet Agent
+          </h2>
+          <p className="mt-1 text-sm text-muted">
+            {zh
+              ? "设备在线不代表 Agent 可调用。仅 MCP 的 Agent 不能远程唤醒。"
+              : "An online device does not guarantee a callable agent. MCP-only agents cannot be awakened remotely."}
+          </p>
+          {agentsQ.isPending ? (
+            <p role="status" className="mt-4">
+              {zh ? "正在加载 Agent…" : "Loading agents…"}
+            </p>
+          ) : null}
+          {!agentsQ.isPending && agents.length === 0 && (
+            <p className="mt-4 text-sm text-muted">
+              {zh
+                ? "尚无已登记的 Agent。请先连接 Fleet Agent。"
+                : "No registered agents. Connect a Fleet Agent first."}
+            </p>
+          )}
+          <ul className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {agents.map((agent) => (
+              <li key={agent.id} className="rounded-xl border border-border p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="break-all font-medium">{agent.name}</span>
+                  <span className="shrink-0 text-xs text-muted">
+                    {agent.online ? (zh ? "在线" : "Online") : zh ? "离线" : "Offline"}
+                  </span>
+                </div>
+                <p className="mt-1 break-all font-mono text-xs text-muted">{agent.id}</p>
+                <p className="mt-1 text-xs text-muted">
+                  {agent.mode === "mcp"
+                    ? zh
+                      ? "仅 MCP · 不可远程唤醒"
+                      : "MCP only · no remote wake"
+                    : agent.callable
+                      ? zh
+                        ? "可调用"
+                        : "Callable"
+                      : zh
+                        ? "运行器未就绪"
+                        : "Runtime not ready"}
+                  {agent.leader ? (zh ? " · 组长" : " · Leader") : ""}
+                </p>
+                <p className="mt-2 text-xs text-muted">
+                  {zh ? "运行" : "Running"} {agent.running}/{agent.capacity}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      </RoomDialog>
+      <RoomDialog
+        open={modal === "create"}
+        title={zh ? "创建房间" : "Create room"}
+        close={() => setModal(null)}
+        zh={zh}
+      >
+        <p className="text-sm text-muted">
+          {zh ? "组长" : "Leader"}: {leader?.name || leaderId}
+        </p>
+        {change.error && (
+          <p role="alert" className="text-bad">
+            {change.error.message}
           </p>
         )}
         <form
@@ -262,78 +436,71 @@ export function RoomConsole({ accountId }: { accountId: string }) {
             {zh ? "创建房间" : "Create room"}
           </Button>
         </form>
-      </section>
-      {available && (
-        <div className="grid items-start gap-4 md:grid-cols-[240px_1fr]">
-          <section className={panelClass} aria-labelledby="rooms-heading">
-            <h2 id="rooms-heading" className="font-medium">
-              {zh ? "房间" : "Rooms"}
-            </h2>
-            {rooms.length === 0 && (
-              <p className="mt-3 text-sm text-muted">
-                {roomsQ.isFetching
-                  ? zh
-                    ? "加载中…"
-                    : "Loading…"
-                  : roomsQ.isError
-                    ? zh
-                      ? "读取失败，请刷新。"
-                      : "Could not load rooms. Refresh to retry."
-                    : zh
-                      ? "这位组长还没有房间。"
-                      : "This leader has no rooms yet."}
-              </p>
-            )}
-            <div className="mt-3 space-y-2">
-              {rooms.map((item) => (
-                <button
-                  type="button"
-                  key={item.id}
-                  disabled={change.isPending}
-                  aria-pressed={room?.id === item.id}
-                  className={`w-full rounded-xl border p-3 text-left text-sm ${room?.id === item.id ? "border-accent bg-elevated" : "border-border"}`}
-                  onClick={() => {
-                    setRoomId(item.id);
-                    setNotice("");
-                    change.reset();
-                  }}
-                >
-                  <span className="block break-all font-medium">{item.name}</span>
-                  <span className="mt-1 block text-xs text-muted">
-                    {item.memberIds.length}/5 ·{" "}
-                    {item.paused ? (zh ? "已暂停" : "Paused") : zh ? "开放" : "Open"}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </section>
-          {room && (
-            <RoomDetails
-              key={`${leaderId}:${room.id}`}
-              room={room}
-              agents={agents}
-              devices={devices}
-              devicesAvailable={!devicesQ.isError}
-              blocked={blocked}
-              update={update}
-              zh={zh}
-            />
-          )}
-        </div>
-      )}
-      {available && room && (
-        <RoomActivity
-          key={`${leaderId}:${room.id}`}
-          accountId={accountId}
-          room={room}
-          agents={agents}
-          devices={devices}
-          devicesAvailable={!devicesQ.isError}
-          blocked={blocked}
-          zh={zh}
-        />
-      )}
+      </RoomDialog>
+      <RoomDialog
+        open={modal === "settings"}
+        title={zh ? "成员与房间设置" : "Members & room settings"}
+        close={() => setModal(null)}
+        zh={zh}
+      >
+        {change.error && (
+          <p role="alert" className="text-bad">
+            {change.error.message}
+          </p>
+        )}
+        {room && (
+          <RoomDetails
+            key={leaderId + ":" + room.id}
+            room={room}
+            agents={agents}
+            devices={devices}
+            devicesAvailable={!devicesQ.isError}
+            blocked={blocked}
+            update={update}
+            zh={zh}
+          />
+        )}
+      </RoomDialog>
     </div>
+  );
+}
+
+function RoomDialog({
+  open,
+  title,
+  close,
+  zh,
+  children,
+}: {
+  open: boolean;
+  title: string;
+  close: () => void;
+  zh: boolean;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+  useEffect(() => {
+    const dialog = ref.current;
+    if (open && !dialog?.open) dialog?.showModal();
+    if (!open && dialog?.open) dialog.close();
+  }, [open]);
+  return (
+    <dialog
+      ref={ref}
+      className="fleet-room-dialog"
+      aria-labelledby={titleId}
+      onCancel={close}
+      onClose={close}
+    >
+      <div className="fleet-room-dialog-head">
+        <h2 id={titleId}>{title}</h2>
+        <Button variant="ghost" size="sm" onClick={close} aria-label={zh ? "关闭" : "Close"}>
+          ×
+        </Button>
+      </div>
+      {children}
+    </dialog>
   );
 }
 
@@ -581,12 +748,15 @@ function RoomActivity({
   const [criteria, setCriteria] = useState("");
   const [target, setTarget] = useState("");
   const [taskId, setTaskId] = useState("");
+  const [view, setView] = useState<"chat" | "tasks">("chat");
+  const [delegating, setDelegating] = useState(false);
   // Keep request IDs on a failed response: an unknown outcome must not become a new task.
   const requests = useRef(new Map<string, { action: string; input: Record<string, unknown> }>());
   const messagesKey = ["room-messages", accountId, room.leaderId, room.id];
   const tasksKey = ["room-tasks", accountId, room.leaderId, room.id];
   const messagesQ = useInfiniteQuery({
     queryKey: messagesKey,
+    enabled: !blocked,
     initialPageParam: 0,
     queryFn: ({ signal, pageParam }) =>
       roomControl<{
@@ -607,6 +777,7 @@ function RoomActivity({
   });
   const tasksQ = useInfiniteQuery({
     queryKey: tasksKey,
+    enabled: !blocked,
     initialPageParam: "",
     queryFn: ({ signal, pageParam }) =>
       roomControl<{ tasks: RoomTask[]; nextCursor: string | null; hasMore: boolean }>(
@@ -630,7 +801,7 @@ function RoomActivity({
         { roomId: room.id, taskId },
         signal,
       ),
-    enabled: Boolean(taskId),
+    enabled: Boolean(taskId) && !blocked,
     retry: false,
     gcTime: 0,
     refetchOnWindowFocus: false,
@@ -646,6 +817,7 @@ function RoomActivity({
     onSuccess: (_result, variables) => {
       if (variables.action === "messages.send") setText("");
       if (variables.action === "tasks.delegate") {
+        setDelegating(false);
         setDescription("");
         setCriteria("");
       }
@@ -682,14 +854,19 @@ function RoomActivity({
   const disabled = blocked || operation.isPending;
   const error = operation.error ?? messagesQ.error ?? tasksQ.error ?? taskQ.error;
   return (
-    <section className={`${panelClass} space-y-5`} aria-labelledby="activity-heading">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 id="activity-heading" className="font-medium">
-          {zh ? "消息与任务" : "Messages and tasks"}
-        </h2>
+    <section aria-label={zh ? "消息与任务" : "Messages and tasks"}>
+      <div className="fleet-room-tabs" role="group" aria-label={zh ? "房间视图" : "Room views"}>
+        <button type="button" aria-pressed={view === "chat"} onClick={() => setView("chat")}>
+          {zh ? "对话" : "Conversation"}
+        </button>
+        <button type="button" aria-pressed={view === "tasks"} onClick={() => setView("tasks")}>
+          {zh ? "任务" : "Tasks"} {tasks.length}
+          {tasksQ.hasNextPage ? "+" : ""}
+        </button>
         <Button
           variant="secondary"
           size="sm"
+          aria-label={zh ? "刷新消息与任务" : "Refresh messages and tasks"}
           disabled={disabled || messagesQ.isFetching || tasksQ.isFetching}
           onClick={() => {
             void messagesQ.refetch();
@@ -702,11 +879,11 @@ function RoomActivity({
               ? "加载中…"
               : "Loading…"
             : zh
-              ? "刷新消息与任务"
-              : "Refresh messages and tasks"}
+              ? "刷新进度"
+              : "Refresh"}
         </Button>
       </div>
-      <p className="text-xs text-muted">
+      <p className="mb-5 text-xs text-muted">
         {zh
           ? "从组长设备读取，点击刷新获取进展。普通消息只记录；指定收件人会排队唤醒该成员。"
           : "Read from the leader device; refresh for updates. Broadcast messages only enter history. Selecting a recipient queues a reply from that member."}
@@ -719,13 +896,9 @@ function RoomActivity({
             : "Requests are not retried automatically. Refresh to check the outcome; revise conflicting messages after reading the latest discussion."}
         </p>
       )}
-      <div className="grid gap-6 lg:grid-cols-2">
-        <div className="min-w-0 space-y-4">
-          <h3 className="text-sm font-medium">{zh ? "房间消息" : "Room messages"}</h3>
-          <ol
-            className="max-h-96 space-y-3 overflow-y-auto rounded-xl border border-border p-3"
-            aria-label={zh ? "消息历史" : "Message history"}
-          >
+      <div>
+        <div className="min-w-0 space-y-4" hidden={view !== "chat"}>
+          <ol className="fleet-messages space-y-3" aria-label={zh ? "消息历史" : "Message history"}>
             {messages.map((message) => (
               <li key={message.id} className="border-b border-border pb-3 last:border-0 last:pb-0">
                 <p className="break-all text-xs text-muted" title={message.authorId}>
@@ -765,7 +938,7 @@ function RoomActivity({
             </Button>
           )}
           <form
-            className="space-y-3"
+            className="fleet-composer space-y-3"
             onSubmit={(event) => {
               event.preventDefault();
               if (contextRev === undefined || messagesQ.hasNextPage) return;
@@ -799,6 +972,8 @@ function RoomActivity({
               <span>{zh ? "消息内容" : "Message"}</span>
               <textarea
                 className={`${selectClass} h-28 resize-y py-3`}
+                aria-label={zh ? "消息内容" : "Message"}
+                placeholder={zh ? "给房间留一条消息…" : "Leave a message for the room…"}
                 maxLength={20000}
                 required
                 value={text}
@@ -826,8 +1001,17 @@ function RoomActivity({
             </Button>
           </form>
         </div>
-        <div className="min-w-0 space-y-4">
-          <h3 className="text-sm font-medium">{zh ? "委派任务" : "Delegate task"}</h3>
+        <RoomDialog
+          open={delegating}
+          title={zh ? "委派任务" : "Delegate task"}
+          close={() => setDelegating(false)}
+          zh={zh}
+        >
+          {operation.error && (
+            <p role="alert" className="mb-4 text-sm text-bad">
+              {operation.error.message}
+            </p>
+          )}
           <form
             className="space-y-3"
             onSubmit={(event) => {
@@ -887,6 +1071,7 @@ function RoomActivity({
               <span>{zh ? "任务目标" : "Task objective"}</span>
               <textarea
                 className={`${selectClass} h-24 resize-y py-3`}
+                aria-label={zh ? "任务目标" : "Task objective"}
                 maxLength={20000}
                 required
                 value={description}
@@ -926,10 +1111,15 @@ function RoomActivity({
               {zh ? "委派任务" : "Delegate task"}
             </Button>
           </form>
-        </div>
+        </RoomDialog>
       </div>
-      <div className="space-y-3 border-t border-border pt-4">
-        <h3 className="text-sm font-medium">{zh ? "任务账本" : "Task ledger"}</h3>
+      <div className="space-y-4" hidden={view !== "tasks"}>
+        <div className="flex justify-between gap-4">
+          <h3 className="text-sm font-medium">{zh ? "任务账本" : "Task ledger"}</h3>
+          <Button size="sm" disabled={disabled || room.paused} onClick={() => setDelegating(true)}>
+            {zh ? "新建任务" : "New task"}
+          </Button>
+        </div>
         <p className="text-xs text-muted">
           {zh
             ? "入队不等于完成。取消请求需等待运行器确认；待确认任务不自动重做。"

@@ -7,9 +7,13 @@ const publicDir = new URL("../../packages/fleet-worker/public/", import.meta.url
 
 test("Worker ships a separate Room entry with every referenced local asset", () => {
   const home = readFileSync(new URL("index.html", publicDir), "utf8");
-  assert.match(home, /<a class="nav-link" href="\/rooms\/">Rooms<\/a>/);
+  assert.match(home, /href="\/rooms\/"/);
+  assert.match(home, /href="\/hub-ui\.css"/);
   const page = readFileSync(new URL("rooms/index.html", publicDir), "utf8");
   assert.match(page, /<title>Fleet Room<\/title>/);
+  assert.match(page, /href="\/hub-ui\.css"/);
+  for (const file of ["hub-ui.css", "fonts/Inter-400.ttf", "fonts/Inter-500.ttf", "fonts/Inter-600.ttf"])
+    assert(existsSync(fileURLToPath(new URL(file, publicDir))), file);
   assert(!page.includes("main.tsx"), "Serve compiled JavaScript, not a Vite development entry");
   const assets = [...page.matchAll(/(?:src|href)="(\/rooms\/assets\/[^"]+)"/g)].map((m) => m[1]);
   assert(assets.some((path) => path.endsWith(".js")));

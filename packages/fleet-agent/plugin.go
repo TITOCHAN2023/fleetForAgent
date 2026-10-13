@@ -204,7 +204,7 @@ func (a *Agent) handlePlugin(ctx context.Context, sink EnvelopeSink, env Envelop
 	}
 	if req.Operation == "list" {
 		_ = sink(ctx, pluginAcceptedEnv(env.Corr, "running"))
-		go a.executePlugin(context.Background(), sink, env.Corr, req)
+		a.goWork(func() { a.executePlugin(context.Background(), sink, env.Corr, req) })
 		return
 	}
 	if req.Operation == "invoke" {
@@ -246,7 +246,7 @@ func (a *Agent) handlePlugin(ctx context.Context, sink EnvelopeSink, env Envelop
 	}
 	a.mu.Unlock()
 	_ = sink(ctx, pluginAcceptedEnv(env.Corr, "running"))
-	go a.executePlugin(context.Background(), sink, env.Corr, req)
+	a.goWork(func() { a.executePlugin(context.Background(), sink, env.Corr, req) })
 }
 
 func (a *Agent) executePlugin(ctx context.Context, sink EnvelopeSink, corr string, req pluginRequest) {

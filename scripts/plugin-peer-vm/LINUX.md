@@ -126,6 +126,12 @@ original test/source/config fixtures inside the guest.
 Stop only `linux-a` and `linux-b` after exporting redacted evidence. Stopping
 retains their disks for investigation; do not delete a whole Lima home.
 
+For real legacy compatibility, compile a recorded `main` revision as
+`/opt/fleet-lab/fleet-agent-main-compat` on VM B, then run
+`linux-legacy-compat.mjs` as `fleet-test`. It starts only that binary in a fresh
+private directory, uses `127.0.0.1:17891`, and stops its own process afterward.
+It must not replace or restart either candidate Agent during the steady window.
+
 ## Limits
 
 - A passed 30-minute window is not an uptime guarantee.

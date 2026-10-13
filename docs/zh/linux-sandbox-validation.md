@@ -135,10 +135,11 @@ Hub/Tool/Agent 链路验证回收不允许重放。原收据目录数量不变�
 
 ## 失败记录与限制
 
-审查时父 PR #22 已存在 Windows CI 失败：
+最初审查时父 PR #22 存在 Windows CI 失败：
 `TestOperationUnavailableStoreNeverStartsCommand` 断言必须为 unknown，而 Windows
-文件系统路径返回执行前拒绝（退出码 126，无法持久化 intent）。父分支 Linux/Web
-检查通过。本次不修改这处跨平台状态契约，也不声称 Windows CI 全绿。
+文件系统路径返回执行前拒绝（退出码 126，无法持久化 intent）。后续提交 `be72e28`
+先校验收据目录，再检查子文件是否缺失，保留两种平台一致的安全失败 `unknown`
+契约。Windows CI 已通过（运行 `38360468758`），没有放宽测试断言。
 
 回收验证期间曾在 VM A 启动 Node 测试，但该机缺少测试专用 Hub 源码和共享 JSON
 夹具；换到完整的 VM B 后为 236 通过、1 跳过。macOS 上完整 Room CLI 测试的 13 项
@@ -161,3 +162,62 @@ unknown 不能视为失败或允许自动重跑。有限时长测试也不能保
 已有同一 Agent 二进制提供 `fleet start/status/--daemon`；没有新增第二套 Mac 守护进程。
 
 [English](../en/linux-sandbox-validation.md)
+
+## 后续整合 CR
+
+PR #23 基于 #22；整合候选同时与 `main` 的
+`a60e6ea54aeea245ed8a5b7ed041259738771119` 对齐，未发现其他开放 PR。
+没有引入数据库或线协议迁移，没有重置 Token、发布 Agent 或操作真实设备。
+原先含 UI 修改的工作区保持不动。
+
+除 Windows 收据读取外，CR 又修复了两个 App/Node 路径的问题：
+
+- 确定性线协议 `corr` 不是跨机器、跨账户的全局主键。恢复模式的 SQL 历史记录
+  改用单独的账户/设备范围存储 ID；结果更新包含设备条件，兼容旧记录，输入冲突
+  不再覆盖原完成结果。真实 PGLite/HTTP/WebSocket 回归先复现“三条只剩一条”，
+  修复后连续 20 轮通过。
+- 指定任务的屏幕快照不存在时返回空，不再回退到别的任务的最新画面。不指定任务
+  的旧版查询保持原样；先失败后通过的单测及带认证的 App 路由回归均覆盖此点。
+
+叠加压测暴露了实验脚本的断言竞态：RTC 已返回结果时，Hub 恢复快照可能尚未到达。
+脚本改为只轮询原句柄至终态，再严格比对输出，不重发 `run`。失败的
+`integration-round-2` 证据保留；替代的三轮完整测试全部通过。
+
+本地回归：npm 571 通过、7 跳过；App 集成 7 通过；Worker/DO/Room TypeScript
+79 通过；Linux Go 270 通过、2 跳过；Tool/Room Node 236 通过、1 跳过。
+类型检查通过，lint 仅保留两个已有宣传组件警告。私有 Linux VM 没有 C 编译器，
+因此其中的 race detector 尝试没有实际运行。Linux CI 已加入三轮恢复/回收
+race 检查并启用真实进程测试，运行 `38361709015` 通过。
+
+新增 `linux-legacy-compat.mjs` 在 VM B 并行启动上述 `main` 源码编译的旧 Agent，
+使用独立私有状态及回环设置端口。候选 Hub/Tool 可正常执行、读取旧 Agent 的普通
+命令；开启 checkpoint 也不会向旧设备自动添加 `request_id`，显式要求不支持的
+恢复能力在下发前拒绝，执行计数保持 1。旧、新构建的版本字段仍为 `0.6.6`，
+这里用源码提交区分，不把相同标签误当成相同代码。
+
+### 整合候选：第二次完整回收窗口
+
+后续 Agent 的 SHA-256 为
+`22bc4ac0b5d94b6b616e11fba832fc4f775965be79aef39e55ca2e81dc0ee95f`。
+再完成四波共 4,096 个短任务及两个 15 分钟任务。稳态前六项故障测试全部通过；
+三轮完整功能测试、80 个 HTTP/SSE 远程任务、32 个同时一次性握手，以及官方 ACP
+604.907 秒长任务（118 次检查）也通过。旧 main Agent 兼容性有三轮记录通过。
+原收据数量仍为 2,890 和 949，没有删收据腾空间。
+
+健康窗口：2026-10-13 07:09:07–07:29:12 UTC。82 条采样全部在线，六个服务
+PID 不变、重启增量为 0、无 OOM。观测器第一次启动因 VM 重启清空 `/tmp` 而缺少
+辅助脚本，补齐后从负载开始后采满 20 分钟。测量期间没有重启 Agent/Hub 或强制 GC。
+
+| 指标（MiB） | Agent A | Agent B | 本地 Hub 服务组 |
+|---|---:|---:|---:|
+| cgroup 结束 / 峰值 | 114.8 / 116.5 | 108.3 / 122.1 | 549.5 / 557.0 |
+| 匿名内存结束 / 峰值 | 76.8 / 100.8 | 94.9 / 107.5 | 502.8 / 513.0 |
+| Agent RSS 结束 / 峰值 | 86.4 / 104.5 | 104.3 / 104.3 | — |
+| 最后 8 分钟 Agent RSS 范围 | 86.4–86.7 | 104.0–104.3 | — |
+
+两个长任务均正常完成。随后只清理可丢弃 Hub 的结果缓存，被回收任务仍返回退出码 7
+及 `output_unavailable`；相同请求的执行次数仍为 **1**。这重复验证了有限窗口内
+内存平台期及不重放，不是永久在线保证。脱敏证据为 `retention-integration-final`、
+`integration-fixed-1/2/3`、`faults-integration-1`、`plugins-integration-final`、
+`sessions-integration-final`、`remote-integration-final`、`auth-integration-final`
+和 `health-integration-final.ndjson`。

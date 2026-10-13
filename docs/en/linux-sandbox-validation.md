@@ -174,11 +174,12 @@ The failed `unified-round-1` is retained as well.
 
 ## Failed runs and limits
 
-At review time, parent PR #22 already has a failed Windows workflow:
+At the initial review, parent PR #22 had a failed Windows workflow:
 `TestOperationUnavailableStoreNeverStartsCommand` expects `unknown`, while the
 Windows filesystem path returns a refusal before execution (exit 126, cannot
-persist intent). Linux/Web parent jobs pass. This patch does not change that
-cross-platform status contract or claim that Windows CI is green.
+persist intent). The follow-up `be72e28` validates the receipt directory before
+checking a missing child, preserving the fail-closed `unknown` contract on both
+platforms. Windows CI now passes (run `38360468758`); the test was not relaxed.
 
 During retention validation, a Node test launch on VM A lacked test-only Hub
 sources and a shared JSON fixture. The complete fixture on VM B passed 236 tests
@@ -209,3 +210,74 @@ deployment are outside this validation. The existing Agent binary already has
 `fleet start/status/--daemon`; no second Mac daemon was introduced.
 
 [中文](../zh/linux-sandbox-validation.md)
+
+## Follow-up integration review
+
+PR #23 is stacked on #22. The combined candidate was also checked against
+`main` at `a60e6ea54aeea245ed8a5b7ed041259738771119`; no extra open PR was found.
+No schema or wire migration, token reset, Agent release or real-device operation
+was needed. The original dirty UI checkout remains untouched.
+
+Review found two App/Node-path issues in addition to Windows receipt handling:
+
+- A deterministic wire correlation is scoped to an operator, not globally to a
+  machine/account. SQL history now uses a separate account/device-scoped key for
+  recovery requests. Result updates include the device and preserve legacy rows;
+  conflicting input cannot overwrite the original completion. A real
+  PGLite/HTTP/WebSocket regression failed with one row instead of three before
+  the fix, then passed 20 consecutive runs.
+- An explicit missing screen handle no longer falls back to a different task's
+  latest screen. Unspecified legacy latest-screen reads remain unchanged. Both
+  a failing-before unit test and authenticated App route regression cover this.
+
+The combined load exposed a lab assertion race: an RTC result can precede its
+Hub recovery snapshot. The lab now polls only the saved handle until terminal,
+then compares exact output. It never repeats `run`. The failed
+`integration-round-2` evidence is retained; three replacement full rounds pass.
+
+Local regression: 571 npm tests passed, 7 skipped; App integration 7 passed;
+Worker/DO/Room TypeScript 79 passed; Linux Go 270 passed, 2 skipped; Tool/Room
+Node 236 passed, 1 skipped; typecheck passes, lint retains only two existing
+promo warnings. The private Linux guests have no C compiler, so race-detector
+attempts there did not run. Linux CI now runs the recovery/retention race suite
+three times with real-process tests enabled; run `38361709015` passed.
+
+The new `linux-legacy-compat.mjs` runs an Agent compiled from the above `main`
+alongside the candidate in VM B, using private state and a separate loopback
+settings port. The candidate Hub/Tool can run and read its ordinary command;
+checkpoint mode does not add `request_id` to an older device, and explicitly
+requested unsupported recovery fails before dispatch. Execution count stays one.
+The field still says `0.6.6`; source revision, not that unchanged label, identifies
+the old and new builds.
+
+### Combined candidate: second complete retention window
+
+The follow-up Agent SHA-256 is
+`22bc4ac0b5d94b6b616e11fba832fc4f775965be79aef39e55ca2e81dc0ee95f`.
+Another four waves / 4,096 short tasks and two 15-minute jobs passed. All six
+fault scenarios passed before the steady run; three full functional rounds,
+80 remote HTTP/SSE tasks, 32 simultaneous one-use handshakes and an official
+ACP 604.907-second task (118 checks) also passed. Main-Agent compatibility
+passed three recorded rounds. Original receipt counts remain 2,890 and 949.
+
+Health window: 2026-10-13 07:09:07–07:29:12 UTC. All 82 samples were online;
+all six services retained their PIDs, had zero restart deltas and no OOM.
+The observer started after the load began (its first launch lacked the helper
+in reboot-cleared `/tmp`); it still recorded a full 20-minute window. No Agent
+or Hub was restarted and no GC was forced during the measured window.
+
+| Metric (MiB) | Agent A | Agent B | Local Hub group |
+|---|---:|---:|---:|
+| cgroup end / peak | 114.8 / 116.5 | 108.3 / 122.1 | 549.5 / 557.0 |
+| Anonymous end / peak | 76.8 / 100.8 | 94.9 / 107.5 | 502.8 / 513.0 |
+| Agent RSS end / peak | 86.4 / 104.5 | 104.3 / 104.3 | — |
+| Agent RSS range, final 8 minutes | 86.4–86.7 | 104.0–104.3 | — |
+
+Both long jobs completed. After clearing only the disposable Hub cache, the
+evicted task retained exit code 7 with `output_unavailable`; the same request
+still had execution count **one**. This repeats the bounded-memory/no-replay
+evidence, not an unlimited-uptime guarantee. Redacted evidence uses
+`retention-integration-final`, `integration-fixed-1/2/3`,
+`faults-integration-1`, `plugins-integration-final`,
+`sessions-integration-final`, `remote-integration-final`,
+`auth-integration-final` and `health-integration-final.ndjson`.

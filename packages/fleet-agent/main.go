@@ -28,7 +28,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
-var agentVersion = "0.6.6"
+var agentVersion = "0.6.7"
 
 //go:embed ui/index.html
 var uiHTML []byte

@@ -12,7 +12,10 @@
 
 export const TOKEN_V1_PREFIX = "flt_1.";
 export const CHALLENGE_TTL_MS = 120_000;
-export const CHALLENGE_MAX_LIVE = 8;
+// Shared by every machine, Tool and Room runner in an account. Eight slots
+// evicted valid in-flight handshakes under ordinary multi-agent concurrency.
+// Keep a finite per-key bound; TTL and one-use consumption are unchanged.
+export const CHALLENGE_MAX_LIVE = 64;
 export const RSA_MODULUS = 2048;
 export const PSS_SALT_LEN = 32;
 
@@ -23,7 +26,7 @@ export const HIGH_SEC_KEY_MISMATCH =
   "HIGH_SEC: hub key does not match this token. Issue a new hub token in Settings and paste it. This computer will refuse to connect until the keys match.";
 
 export const HIGH_SEC_HANDSHAKE =
-  "HIGH_SEC: hub did not complete the high-security handshake. Update the Fleet agent and MCP client, then issue a new hub token in Settings.";
+  "HIGH_SEC: handshake challenge expired, was already used, or was displaced by concurrent handshakes. Obtain a fresh challenge; do not reset a valid token or replay an uncertain command.";
 
 export function audMismatch(aud, origin) {
   return `HIGH_SEC: this token is bound to ${aud}, not ${origin}. Use the matching hub URL or issue a new token.`;

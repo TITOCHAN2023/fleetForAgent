@@ -13,6 +13,9 @@ export type McpOperatorState = {
   lastUsed?: string | null;
   lastCwd?: string | null;
   envDefault?: string | null;
+  corrByDevice?: Record<string, string>;
+  cwdByDevice?: Record<string, string>;
+  requestByDevice?: Record<string, string>;
 };
 
 export type JsonRpcResponse = {

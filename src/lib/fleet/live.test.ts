@@ -16,7 +16,22 @@ import {
   waitDesktop,
   noteDesktop,
   cancelDesktopWait,
+  getScreen,
+  putScreen,
 } from "./live";
+
+test("explicit recovery screen never falls back to another task or machine", () => {
+  resetLive();
+  const first = { text: "operator A" };
+  const latest = { text: "operator B" };
+  putScreen("device-1", first, "corr-a");
+  putScreen("device-1", latest, "corr-b");
+  putScreen("device-2", { text: "other machine" }, "corr-missing");
+  assert.deepEqual(getScreen("device-1", "corr-a"), first);
+  assert.deepEqual(getScreen("device-1", "corr-b"), latest);
+  assert.equal(getScreen("device-1", "corr-missing"), null);
+  assert.deepEqual(getScreen("device-1"), latest); // legacy latest-screen lookup
+});
 
 function fakeWs() {
   const sent: string[] = [];

@@ -269,6 +269,12 @@ curl -X POST $HUB/v1/get_result \
 
 任务活在**设备本地的 pane**里，不活在中枢请求上。
 
+Agent 按完成顺序，在全局保留最近 **256 个已完成 pane**。运行中和排队中的任务
+不受该上限影响。回收只释放内存中的输出，不删除磁盘防重放收据。对于带恢复收据的
+请求，后续查询仍可返回原退出码和 `output_unavailable`；输出不在了不代表可以重跑。
+没有收据的旧协议请求无法恢复已回收输出。这是数量上限，不是严格的字节上限，
+也不会关闭显式命名的持久终端。
+
 | 不要 | 要 |
 |---|---|
 | 把 stdout 字节流接到中枢 | 本机 ring buffer，像 tmux 的 pane 历史 |
@@ -340,8 +346,8 @@ npm run build
 **list_computers 是空的**  
 Agent 要先显示已连接。等几秒再 POST。
 
-**Windows 任务 vs Mac/Linux live shell**
-Mac/Linux 共用一个登录 PTY（工作目录和环境会留到下一条命令）。Windows 用 `cmd /C` 一次性任务，不靠 ConPTY 也能编译、能跑。中枢协议两边一样。
+**一次性命令与持久终端**
+普通 `run` 是独立任务，工作目录和环境不会留到下一条命令，也不会在操作者之间共享。Mac/Linux 需要持久终端时，显式运行 `fleet session NAME`，再使用 `type` / `read_screen`；同名会话按操作者身份隔离。Windows 使用 `cmd /C` 一次性任务。中枢协议保持一致。
 
 **托盘显示已连接，列表却是 offline**  
 中枢会下发 `heartbeat_s`，但旧版 Agent 从不发心跳。Windows 休眠或 NAT 空闲后容易半开：本机还显示在线，中枢已经判定掉线。新版每 25 秒 ping 一次，失败就重连。装上新 Agent 后重启一次即可。

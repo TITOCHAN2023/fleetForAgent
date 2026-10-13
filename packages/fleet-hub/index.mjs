@@ -24,6 +24,7 @@ import {
   unsupportedCapBody,
 } from "../fleet-worker/src/presence.mjs";
 import { createSessionBook, fingerprintFromHeaders } from "../fleet-worker/src/session.mjs";
+import { officialPlugin, operationCorr } from "../fleet-tool/operator.mjs";
 import {
   isSourcePath,
   isTrustPath,
@@ -31,7 +32,6 @@ import {
   sourceHeaders,
   trustPage,
 } from "../fleet-worker/src/source.mjs";
-import { officialPlugin } from "../fleet-tool/operator.mjs";
 import { RoomRelay, relayRegistration, ROOM_FRAME_LIMIT } from "../fleet-room/relay.mjs";
 
 const CORS = {
@@ -52,8 +52,8 @@ function clampHubWaitMs(value) {
 
 function isHubResultDone(row) {
   if (!row || typeof row !== "object") return false;
-  if (row.status === "pending" || row.status === "running") return false;
-  return row.ok !== undefined || row.exit_code !== undefined || row.status === "done";
+  if (row.status === "pending" || row.status === "running" || row.status === "conflict") return false;
+  return row.ok !== undefined || row.exit_code !== undefined || row.status === "done" || row.status === "unknown";
 }
 
 export function createHub({
@@ -204,6 +204,7 @@ export function createHub({
       return;
     }
     if (parsed.type === "accepted" && parsed.corr) {
+      if (isHubResultDone(deviceResults(id).get(parsed.corr))) return;
       deviceResults(id).set(parsed.corr, {
         status: "running",
         pane_id: parsed.body?.pane_id,
@@ -227,10 +228,7 @@ export function createHub({
     }
     if (parsed.type === "result" && parsed.corr) {
       deviceResults(id).set(parsed.corr, {
-        ok: parsed.body?.ok ?? false,
-        exit_code: parsed.body?.exit_code ?? 1,
-        error: parsed.body?.error ?? "",
-        stdout: parsed.body?.stdout ?? "",
+        ...parsed.body,
         t: parsed.t,
       });
       deviceSessions(id).finish(parsed.corr);
@@ -559,11 +557,17 @@ export function createHub({
         return;
       }
       const fp = fingerprintFromHeaders(req.headers);
-      const corr = randomUUID();
+      if (body.request_id != null && !normalizeCaps(fleet.get(body.device_id)?.caps).includes("operation_recovery_v1")) {
+        write(res, 409, { error: "operation recovery unsupported" });
+        return;
+      }
+      let corr;
+      try { corr = body.request_id == null ? randomUUID() : await operationCorr(fp, body.request_id); }
+      catch { write(res, 400, { error: "request_id must be a UUID" }); return; }
       deviceSessions(body.device_id).claim(fp, corr);
       const ok = sendTo(
         body.device_id,
-        envelope("run", withFingerprint({ command: body.command, mode: "pane" }, fp), corr),
+        envelope("run", withFingerprint({ command: body.command, mode: "pane", ...(body.request_id != null ? { request_id: body.request_id } : {}) }, fp), corr),
       );
       if (!ok) {
         write(res, 409, { error: "offline" });
@@ -703,10 +707,20 @@ export function createHub({
         return;
       }
       const fp = fingerprintFromHeaders(req.headers);
+      if (body.request_id != null) {
+        let expected;
+        try { expected = await operationCorr(fp, body.request_id); }
+        catch { write(res, 400, { error: "request_id must be a UUID" }); return; }
+        if (expected !== body.corr) { write(res, 400, { error: "operation does not belong to this operator" }); return; }
+        if (deviceSessions(body.device_id).ownerOf(expected) === undefined) deviceSessions(body.device_id).claim(fp, expected);
+      }
       const resolved = deviceSessions(body.device_id).resolve(fp, body.corr);
       if (resolved.drop || !resolved.corr) {
         write(res, 200, { status: "pending" });
         return;
+      }
+      if (!isHubResultDone(deviceResults(body.device_id).get(resolved.corr))) {
+        sendTo(body.device_id, envelope("get_result", withFingerprint({ corr: resolved.corr }, fp), resolved.corr));
       }
       const waitMs = clampHubWaitMs(body.wait_ms);
       const row = waitMs > 0

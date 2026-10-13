@@ -2,6 +2,32 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { WebSocket } from "ws";
 import { assertHubBind, createHub, isLoopbackHost, selfHostToken } from "./index.mjs";
+import { operationCorr } from "../fleet-tool/operator.mjs";
+
+test("lost Hub cache can re-query a scoped operation without sending run", async (t) => {
+  const hub = createHub();
+  t.after(() => hub.close());
+  const { http, ws: wsUrl } = await listen(hub);
+  const dev = connectDevice(wsUrl);
+  t.after(() => dev.ws.close());
+  await dev.opened;
+  await waitType(dev.inbox, "hello_ok");
+  const request_id = "d7f6e516-faad-4768-9c6b-47e1f7dc649b";
+  const corr = await operationCorr("operator-a", request_id);
+  const pending = post(http, "/v1/get_result", { device_id:"dev-1", corr, request_id, wait_ms:1000 }, undefined, {"X-Fleet-Operator":"operator-a"});
+  const query = await waitType(dev.inbox, "get_result");
+  assert.equal(query.corr, corr);
+  assert.equal(query.body.fingerprint, "operator-a");
+  assert.equal(dev.inbox.some((message) => message.type === "run"), false);
+  dev.ws.send(JSON.stringify({v:1, type:"result", corr, t:Date.now(), body:{ok:true, exit_code:0, stdout:"recovered without replay"}}));
+  assert.equal((await pending).json.stdout, "recovered without replay");
+  const foreign = await post(http, "/v1/get_result", {device_id:"dev-1", corr, request_id}, undefined, {"X-Fleet-Operator":"operator-b"});
+  assert.equal(foreign.status, 400);
+  dev.ws.send(JSON.stringify({v:1, type:"accepted", corr, body:{pane_id:"pane-stale"}}));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const final = await post(http, "/v1/get_result", {device_id:"dev-1", corr}, undefined, {"X-Fleet-Operator":"operator-a"});
+  assert.equal(final.json.stdout, "recovered without replay");
+});
 
 async function listen(hub) {
   await new Promise((resolve) => hub.server.listen(0, "127.0.0.1", resolve));

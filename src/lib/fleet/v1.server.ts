@@ -2,11 +2,13 @@
  * Hub wire on the website origin. App assembles /v1/*.
  * Operators present Fleet-OAEP wraps of flt_1 tokens, not plaintext Bearer.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import { getSql } from "@/lib/db";
+import { officialPlugin, operationCorr } from "../../../packages/fleet-tool/operator.mjs";
+import { fingerprintFromHeaders } from "../../../packages/fleet-worker/src/session.mjs";
 import { getSessionUserFromRequest } from "../auth/verify.server";
 import {
   assertRoomCookieOrigin,
@@ -19,7 +21,6 @@ import {
   type RoomCredential,
   type RoomHttpActor,
 } from "./room.server";
-import { officialPlugin } from "../../../packages/fleet-tool/operator.mjs";
 import { makeDeviceSlug } from "./cap";
 import {
   DeviceAliasError,
@@ -73,6 +74,12 @@ import {
 const HUB_WAIT_MAX_MS = 30_000;
 const HUB_WAIT_POLL_MS = 25;
 
+// Wire correlations are device-scoped; SQL history has one global primary key.
+// Keep that storage identity separate without changing the public run handle.
+function commandHistoryId(userId: string, deviceId: string, corr: string): string {
+  return "op:" + createHash("sha256").update(JSON.stringify([userId, deviceId, corr])).digest("hex");
+}
+
 function clampHubWaitMs(value: unknown): number {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return 0;
@@ -81,8 +88,8 @@ function clampHubWaitMs(value: unknown): number {
 
 function isHubResultDone(row: Record<string, unknown> | undefined | null): boolean {
   if (!row) return false;
-  if (row.status === "pending" || row.status === "running") return false;
-  return row.ok !== undefined || row.exit_code !== undefined || row.status === "done";
+  if (row.status === "pending" || row.status === "running" || row.status === "conflict") return false;
+  return row.ok !== undefined || row.exit_code !== undefined || row.status === "done" || row.status === "unknown";
 }
 
 function sleep(ms: number) {
@@ -436,13 +443,17 @@ export async function handleHubHttp(request: Request): Promise<Response> {
     if (!reference || !command) return json({ error: "device_id and command required" }, 400);
     const deviceId = await resolveDeviceId(userId, reference);
     if (!deviceId) return json({ error: "not found" }, 404);
-    const corr = randomUUID();
-    const ok = sendToDevice(userId, deviceId, envelope("run", { command, mode: "pane" }, corr));
+    const fp = fingerprintFromHeaders(request.headers);
+    let corr: string;
+    try { corr = body.request_id == null ? randomUUID() : await operationCorr(fp, body.request_id); }
+    catch { return json({ error: "request_id must be a UUID" }, 400); }
+    const ok = sendToDevice(userId, deviceId, envelope("run", { command, mode: "pane", fingerprint: fp, ...(body.request_id != null ? { request_id: body.request_id } : {}) }, corr));
     if (!ok) return json({ error: "offline" }, 409);
     const sql = await getSql();
     await sql`
       insert into commands (id, user_id, device_id, command, status)
-      values (${corr}, ${userId}, ${deviceId}, ${command}, ${"running"})
+      values (${body.request_id == null ? corr : commandHistoryId(userId, deviceId, corr)}, ${userId}, ${deviceId}, ${command}, ${"running"})
+      on conflict (id) do nothing
     `;
     const waitMs = clampHubWaitMs(body.wait_ms);
     if (waitMs <= 0) return json({ corr, status: "running" });
@@ -458,7 +469,7 @@ export async function handleHubHttp(request: Request): Promise<Response> {
     const ok = sendToDevice(
       userId,
       deviceId,
-      envelope("type", { keys: body.keys, key: body.key, corr: body.corr }),
+      envelope("type", { keys: body.keys, key: body.key, corr: body.corr, fingerprint: fingerprintFromHeaders(request.headers) }),
     );
     if (!ok) return json({ error: "offline" }, 409);
     return json({ ok: true, status: "typed" });
@@ -470,7 +481,7 @@ export async function handleHubHttp(request: Request): Promise<Response> {
     const deviceId = await resolveDeviceId(userId, reference);
     if (!deviceId) return json({ error: "not found" }, 404);
     const corr = body.corr != null ? String(body.corr) : "";
-    sendToDevice(userId, deviceId, envelope("read_screen", { corr }, corr || undefined));
+    sendToDevice(userId, deviceId, envelope("read_screen", { corr, fingerprint: fingerprintFromHeaders(request.headers) }, corr || undefined));
     const row = getScreen(deviceId, corr || undefined);
     return json({ status: row ? "ok" : "empty", screen: row });
   }
@@ -493,6 +504,9 @@ export async function handleHubHttp(request: Request): Promise<Response> {
     const deviceId = await resolveDeviceId(userId, reference);
     if (!deviceId) return json({ error: "not found" }, 404);
     const waitMs = clampHubWaitMs(body.wait_ms);
+    if (!isHubResultDone(getResult(deviceId, corr))) {
+      sendToDevice(userId, deviceId, envelope("get_result", { corr, fingerprint: fingerprintFromHeaders(request.headers) }, corr));
+    }
     const row = waitMs > 0 ? await waitHubResult(deviceId, corr, waitMs) : getResult(deviceId, corr);
     return json(hubResultPayload(corr, row));
   }
@@ -614,6 +628,7 @@ async function onDeviceMessage(userId: string, deviceId: string, ws: WebSocket, 
     return;
   }
   if (parsed.type === "accepted" && parsed.corr) {
+    if (isHubResultDone(getResult(deviceId, parsed.corr))) return;
     putResult(deviceId, parsed.corr, { status: "running", pane_id: parsed.body.pane_id });
     return;
   }
@@ -632,14 +647,12 @@ async function onDeviceMessage(userId: string, deviceId: string, ws: WebSocket, 
     return;
   }
   if (parsed.type === "result" && parsed.corr) {
-    const row = {
-      ok: parsed.body.ok ?? false,
-      exit_code: parsed.body.exit_code ?? 1,
-      error: parsed.body.error ?? "",
-      stdout: parsed.body.stdout ?? "",
+    const row: Record<string, unknown> = {
+      ...parsed.body,
       t: parsed.t,
     };
     putResult(deviceId, parsed.corr, row);
+    if (row.status === "unknown" || row.status === "conflict") return;
     const sql = await getSql();
     await sql`
       update commands
@@ -647,7 +660,8 @@ async function onDeviceMessage(userId: string, deviceId: string, ws: WebSocket, 
           exit_code = ${Number(row.exit_code)},
           stdout = ${String(row.stdout)},
           stderr = ${String(row.error)}
-      where id = ${parsed.corr} and user_id = ${userId}
+      where id in (${parsed.corr}, ${commandHistoryId(userId, deviceId, parsed.corr)})
+        and user_id = ${userId} and device_id = ${deviceId}
     `;
   }
 }

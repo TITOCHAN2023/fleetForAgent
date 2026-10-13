@@ -89,3 +89,10 @@ jobs:
       - name: Vet
         working-directory: packages/fleet-agent
         run: go vet ./...
+
+      - name: Race-check recovery and retention in the disposable runner
+        working-directory: packages/fleet-agent
+        env:
+          CGO_ENABLED: "1"
+          FLEET_OPERATION_LAB: "1"
+        run: go test -race -count=3 -run 'Test(Operation|ReadOperation|RunAdmission|DispatchAdmits|PluginReply|RTCFallback|Retention|CompletedRetention)' . ./internal/pane

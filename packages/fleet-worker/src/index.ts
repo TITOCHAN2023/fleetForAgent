@@ -59,6 +59,7 @@ import {
 import {
   isDeviceTransportPath,
   officialPlugin,
+  operationCorr,
   wrapTransportRpc,
 } from "../../fleet-tool/operator.mjs";
 import {
@@ -399,8 +400,8 @@ function clampHubWaitMs(value: unknown): number {
 
 function isHubResultDone(row: Record<string, unknown> | undefined | null): boolean {
   if (!row) return false;
-  if (row.status === "pending" || row.status === "running") return false;
-  return row.ok !== undefined || row.exit_code !== undefined || row.status === "done";
+  if (row.status === "pending" || row.status === "running" || row.status === "conflict") return false;
+  return row.ok !== undefined || row.exit_code !== undefined || row.status === "done" || row.status === "unknown";
 }
 
 function hubResultPayload(corr: string, row: Record<string, unknown> | undefined) {
@@ -1055,6 +1056,7 @@ async function handleAuthorizedOperatorRequest(
       device_id?: string;
       command?: string;
       wait_ms?: number;
+      request_id?: string;
     };
     if (!body.device_id || !body.command)
       return json({ error: "device_id and command required" }, 400);
@@ -1066,7 +1068,7 @@ async function handleAuthorizedOperatorRequest(
       new Request("https://device/run", {
         method: "POST",
         headers: operatorHeaders(request),
-        body: JSON.stringify({ command: body.command, wait_ms: body.wait_ms, fingerprint: fp }),
+        body: JSON.stringify({ command: body.command, wait_ms: body.wait_ms, request_id: body.request_id, fingerprint: fp }),
       }),
     );
   }
@@ -1116,13 +1118,14 @@ async function handleAuthorizedOperatorRequest(
   }
 
   if (url.pathname === "/v1/get_result" && request.method === "POST") {
-    const body = (await request.json()) as { device_id?: string; corr?: string; wait_ms?: number };
+    const body = (await request.json()) as { device_id?: string; corr?: string; wait_ms?: number; request_id?: string };
     if (!body.device_id) return json({ error: "device_id required" }, 400);
     const device = await resolveOwnedDevice(fleet, actor, body.device_id);
     if (!device) return json({ error: "not found" }, 404);
     const stub = env.DEVICE.get(env.DEVICE.idFromName(device.id));
     const q = new URLSearchParams();
     if (body.corr) q.set("corr", body.corr);
+    if (body.request_id) q.set("request_id", body.request_id);
     const waitMs = clampHubWaitMs(body.wait_ms);
     if (waitMs > 0) q.set("wait_ms", String(waitMs));
     const suffix = q.toString() ? `?${q}` : "";
@@ -2842,13 +2845,18 @@ export class DeviceDO implements DurableObject {
         command: string;
         wait_ms?: number;
         fingerprint?: string;
+        request_id?: string;
       };
       const fp = deviceFingerprint(request, body.fingerprint);
-      const corr = crypto.randomUUID();
+      const att = (sockets[0]!.deserializeAttachment() ?? {}) as WsAttachment;
+      if (body.request_id != null && !att.caps?.includes("operation_recovery_v1")) return json({ error: "operation recovery unsupported" }, 409);
+      let corr: string;
+      try { corr = body.request_id == null ? crypto.randomUUID() : await operationCorr(fp, body.request_id); }
+      catch { return json({ error: "request_id must be a UUID" }, 400); }
       await this.claimSession(fp, corr);
       sockets[0]!.send(
         JSON.stringify(
-          envelope("run", withFingerprint({ command: body.command, mode: "pane" }, fp), corr),
+          envelope("run", withFingerprint({ command: body.command, mode: "pane", ...(body.request_id != null ? { request_id: body.request_id } : {}) }, fp), corr),
         ),
       );
       const waitMs = clampHubWaitMs(body.wait_ms);
@@ -2939,9 +2947,30 @@ export class DeviceDO implements DurableObject {
     if (url.pathname === "/result") {
       const ticket = url.searchParams.get("corr") ?? "";
       const fp = deviceFingerprint(request);
+      const requestId = url.searchParams.get("request_id");
+      if (requestId != null) {
+        let expected: string;
+        try { expected = await operationCorr(fp, requestId); }
+        catch { return json({ error: "request_id must be a UUID" }, 400); }
+        if (expected !== ticket) return json({ error: "operation does not belong to this operator" }, 400);
+        // Proof is deterministic and operator-scoped. Rebuild ONLY routing
+        // metadata after cache expiry; this never sends a run envelope.
+        const known = await this.resolveSession(fp, ticket);
+        if (known.drop) {
+          const owner = await this.getDeviceExpiry<string>(`own:${ticket}`, (_value, now) => now + DEVICE_ACTIVE_SESSION_TTL_MS);
+          const previous = await this.readStoredResult(ticket);
+          if (owner !== undefined || previous) return json({ status: "pending" });
+          await this.claimSession(fp, ticket);
+        }
+      }
       const resolved = await this.resolveSession(fp, ticket);
       if (resolved.drop || !resolved.corr) return json({ status: "pending" });
       const corr = resolved.corr;
+      if (!isHubResultDone(await this.readStoredResult(corr))) {
+        for (const ws of this.ctx.getWebSockets()) {
+          ws.send(JSON.stringify(envelope("get_result", withFingerprint({ corr }, fp), corr)));
+        }
+      }
       const waitMs = clampHubWaitMs(url.searchParams.get("wait_ms"));
       const row =
         waitMs > 0
@@ -3192,6 +3221,7 @@ export class DeviceDO implements DurableObject {
     }
 
     if (parsed.type === "accepted" && parsed.corr) {
+      if (isHubResultDone(await this.readStoredResult(parsed.corr))) return;
       await this.putDeviceExpiry(
         `res:${parsed.corr}`,
         { status: "running", pane_id: parsed.body.pane_id },
@@ -3201,6 +3231,7 @@ export class DeviceDO implements DurableObject {
     }
 
     if (parsed.type === "plugin_accepted" && parsed.corr) {
+      if (isHubResultDone(await this.readStoredResult(parsed.corr))) return;
       await this.putDeviceExpiry(
         `res:${parsed.corr}`,
         { status: parsed.body.status ?? "running" },
@@ -3210,6 +3241,7 @@ export class DeviceDO implements DurableObject {
     }
 
     if (parsed.type === "plugin_result" && parsed.corr) {
+      const previous = await this.readStoredResult(parsed.corr);
       const stored = boundedStoredPayload("plugin_result", {
         status: "done",
         ok: parsed.body.ok ?? false,
@@ -3217,17 +3249,19 @@ export class DeviceDO implements DurableObject {
         error: parsed.body.error ?? "",
         t: parsed.t,
       });
+      if (previous && Object.hasOwn(previous, STORED_RESULT_OWNER)) {
+        stored[STORED_RESULT_OWNER] = previous[STORED_RESULT_OWNER];
+      }
       await this.putDeviceExpiry(`res:${parsed.corr}`, stored, Date.now() + DEVICE_RESULT_TTL_MS);
       await this.finishSession(parsed.corr);
       return;
     }
 
     if (parsed.type === "result" && parsed.corr) {
+      const previous = await this.readStoredResult(parsed.corr);
       const stored = boundedStoredPayload("result", {
-        ok: parsed.body.ok ?? false,
-        exit_code: parsed.body.exit_code ?? 1,
-        error: parsed.body.error ?? "",
-        stdout: parsed.body.stdout ?? "",
+        ...parsed.body,
+        ...(previous && Object.hasOwn(previous, STORED_RESULT_OWNER) ? { [STORED_RESULT_OWNER]: previous[STORED_RESULT_OWNER] } : {}),
         t: parsed.t,
       });
       await this.putDeviceExpiry(`res:${parsed.corr}`, stored, Date.now() + DEVICE_RESULT_TTL_MS);

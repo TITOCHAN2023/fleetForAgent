@@ -583,11 +583,7 @@ func (s *Supervisor) enqueueLiveFor(fingerprint, corr, command string) (*Pane, e
 		stderr:      newStreamBuf(),
 	}
 	s.mu.Lock()
-	s.panes[p.id] = p
-	if corr != "" {
-		s.panes[corr] = p
-	}
-	s.order = append(s.order, p.id)
+	s.registerLocked(p)
 	sl := s.slotLocked(fingerprint)
 	sl.queue = append(sl.queue, &liveJob{pane: p, command: command, fingerprint: fingerprint})
 	s.mu.Unlock()
@@ -913,7 +909,6 @@ func (p *Pane) StillRunning() bool {
 
 func (p *Pane) finishCommand(stdout string, code int) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	stdout = stripRunOutput(stdout)
 	p.stdout = newStreamBuf()
 	if stdout != "" {
@@ -933,4 +928,6 @@ func (p *Pane) finishCommand(stdout string, code int) {
 	p.running = false
 	p.exitCode = code
 	p.dirty = true
+	p.mu.Unlock()
+	p.retainCompletion()
 }

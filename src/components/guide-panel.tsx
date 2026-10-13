@@ -14,6 +14,7 @@ const MCP_TOOLS: { name: string; key: MessageKey }[] = [
   { name: "get_computer", key: "guide.tool.get_computer" },
   { name: "heartbeat", key: "guide.tool.heartbeat" },
   { name: "run", key: "guide.tool.run" },
+  { name: "recover_session", key: "guide.tool.recover_session" },
   { name: "get_result", key: "guide.tool.get_result" },
   { name: "wait", key: "guide.tool.wait" },
   { name: "read_screen", key: "guide.tool.read_screen" },

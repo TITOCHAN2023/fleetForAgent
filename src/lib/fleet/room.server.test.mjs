@@ -164,6 +164,17 @@ test('App Room HTTP and native/Nitro WS use real sessions, OAEP and account-scop
       assert.equal((await sql`SELECT stdout FROM commands WHERE id=${legacy}`)[0].stdout, 'legacy-result');
       const original = await sql`SELECT stdout FROM commands WHERE device_id='account-a-device' AND command='echo account-a-device'`;
       assert.equal(original[0].stdout, 'account-a-device');
+      devices[0].ws.send(JSON.stringify({ v: 1, type: 'screen', id: crypto.randomUUID(), corr: 'other-job', t: Date.now(), body: { text: 'other operator screen' } }));
+      const screen = async corr => {
+        const response = await http('/v1/read_screen', { headers: {
+          authorization: await highSecAuthorization(tokens['account-a'].raw, url), 'x-fleet-operator': 'same-operator',
+        }, body: { device_id: 'account-a-device', corr } });
+        assert.equal(response.status, 200);
+        return (await response.json()).screen;
+      };
+      for (let i = 0; i < 100 && !(await screen('other-job')); i++) await new Promise(r => setTimeout(r, 20));
+      assert.equal((await screen('other-job')).text, 'other operator screen');
+      assert.equal(await screen('missing-job'), null);
     } finally {
       await Promise.all(devices.map(async ({ ws }) => { const closed = once(ws, 'close'); ws.close(); await closed; }));
     }

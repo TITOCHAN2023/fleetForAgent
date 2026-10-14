@@ -10,6 +10,7 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { Miniflare, convertV4MiniflareOptions } from "../../packages/fleet-worker/node_modules/miniflare/dist/src/index.js";
 import { build } from "../../packages/fleet-worker/node_modules/esbuild/lib/main.js";
+import { unstable_readConfig } from "../../packages/fleet-worker/node_modules/wrangler/wrangler-dist/cli.js";
 import { inspectTokenV1 } from "../../packages/fleet-worker/src/tokenv1.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "fleet-runtime-worker-"));
@@ -48,8 +49,10 @@ const sseBundle = await build({
   bundle: true, format: "esm", platform: "browser", write: false,
 });
 const names = { FLEET: "FleetDO", DEVICE: "DeviceDO", MCP: "McpDO", PEER_SESSION: "PeerSessionDO", REVOCATION: "RevocationDO", ROOM_RELAY: "RoomRelayDO" };
+const candidate = unstable_readConfig({ config: resolve("packages/fleet-worker/wrangler.toml") });
 const mf = new Miniflare(convertV4MiniflareOptions({ host: "127.0.0.1", port, durableObjectsPersist: join(root, "do"), workers: [
   { name: "fleet-runtime-test", modules: true, modulesRoot: dirname(scriptPath), scriptPath, compatibilityDate: "2026-04-07",
+    ratelimits: Object.fromEntries(candidate.ratelimits.map(({ name, ...limit }) => [name, limit])),
     bindings: { HUB_ORIGIN: url }, durableObjects: Object.fromEntries(Object.entries(names).map(([key, className]) => [key, { className, useSQLite: true }])) },
   { name: "sse-runtime-test", modules: true, script: sseBundle.outputFiles[0].text, compatibilityDate: "2026-04-07" },
 ] }));
@@ -119,15 +122,16 @@ try {
   console.log(JSON.stringify({ runtime: "workerd", storage: "SQLite Durable Objects", waiters: results.length, runEnvelopes: 1, isolation: "pass", aliasTransactions: "pass" }));
   const mcpNamespace = await mf.getDurableObjectNamespace("MCP");
   const mcp = mcpNamespace.get(mcpNamespace.idFromName("bounds-sse"));
-  const opened = await mcp.fetch("https://mcp/open?sessionId=bounds-sse", { headers: {
-    "x-fleet-actor": owner.id, "x-fleet-kid": kid,
-  } });
+  // Direct DO fixture requests must carry the identity that the public Worker
+  // rebuilds after Bearer authentication; a session ID alone never authorizes.
+  const mcpHeaders = { "x-fleet-actor": owner.id, "x-fleet-kid": kid };
+  const opened = await mcp.fetch("https://mcp/open?sessionId=bounds-sse", { headers: mcpHeaders });
   assert.equal(opened.status, 200);
   const mcpReader = opened.body.getReader();
   try {
     const endpoint = new TextDecoder().decode((await mcpReader.read()).value);
     assert.match(endpoint, /event: endpoint/);
-    const initialize = await mcp.fetch("https://mcp/message", { method: "POST", body: JSON.stringify({
+    const initialize = await mcp.fetch("https://mcp/message", { method: "POST", headers: mcpHeaders, body: JSON.stringify({
       jsonrpc: "2.0", id: 1, method: "initialize", params: {
         protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "isolated-workerd-test", version: "1" },
       },
@@ -138,7 +142,14 @@ try {
     const response = JSON.parse(frame.match(/^data: (.+)$/m)[1]);
     assert.equal(response.id, 1);
     assert.ok(response.result.serverInfo);
-    const ping = await mcp.fetch("https://mcp/message", { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping" }) });
+    const pingBody = JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping" });
+    const anonymousPing = await mcp.fetch("https://mcp/message", { method: "POST", body: pingBody });
+    assert.equal(anonymousPing.status, 404);
+    const foreignPing = await mcp.fetch("https://mcp/message", { method: "POST", headers: {
+      "x-fleet-actor": other.id, "x-fleet-kid": inspectTokenV1(other.token).kid,
+    }, body: pingBody });
+    assert.equal(foreignPing.status, 404);
+    const ping = await mcp.fetch("https://mcp/message", { method: "POST", headers: mcpHeaders, body: pingBody });
     assert.equal(ping.status, 202);
     const pong = JSON.parse(new TextDecoder().decode((await mcpReader.read()).value).match(/^data: (.+)$/m)[1]);
     assert.deepEqual(pong, { jsonrpc: "2.0", id: 2, result: {} });

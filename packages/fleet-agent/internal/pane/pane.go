@@ -418,12 +418,28 @@ func (s *Supervisor) spawnOneshotFor(fingerprint, corr, command string) (*Pane, 
 func drain(p *Pane, r io.Reader, which string) {
 	br := bufio.NewReader(r)
 	buf := make([]byte, 4096)
+	pending := 0
 	for {
-		n, err := br.Read(buf)
-		if n > 0 {
-			p.append(which, string(buf[:n]))
+		n, err := br.Read(buf[pending:])
+		n += pending
+		end := n
+		if err == nil {
+			// A pipe read can end inside a rune. Retain at most three bytes
+			// in this reader, never in the shared stdout/stderr display.
+			for start := max(0, n-utf8.UTFMax+1); start < n; start++ {
+				if !utf8.FullRune(buf[start:n]) {
+					end = start
+					break
+				}
+			}
 		}
+		if end > 0 {
+			p.append(which, string(buf[:end]))
+		}
+		pending = copy(buf, buf[end:n])
 		if err != nil {
+			// Flush any incomplete suffix through the existing invalid UTF-8
+			// replacement policy rather than silently losing final bytes.
 			return
 		}
 	}

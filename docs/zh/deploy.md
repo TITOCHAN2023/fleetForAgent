@@ -1,11 +1,14 @@
 # 部署 FleetForAgent
 
-先用线上版体验：**[https://fleet.ginfo.cc](https://fleet.ginfo.cc)**  
-本地 `npm run dev` 只是环回地址上的命令行，管不了别的电脑。要真正用起来，得把中枢放到云上。
+可以使用[公共 Hub](https://fleet.ginfo.cc)，也可以把个人中枢部署在设备能够访问的服务器或内网。开发网站监听 `0.0.0.0:8080`，环回地址只指向当前机器。自托管无需依赖公共云。
+
+机器侧产品叫 **Fleet Sandbox 插件**，**Fleet Agent** 指 Room 中的 AI 参与者。下文保留的 `FleetAgent`、`fleet-agent`、`Fleet Agent.app` 和 `~/.fleet-agent` 都是兼容名称。[当前概览](README.md) · [留存与权限](privacy.md) · [Rooms 与 Linux 成员要求](../../packages/fleet-room/README.md)
+
+远程 MCP 每次请求都必须携带 Authorization，包括继续和删除会话。Session ID 不能代替凭据。只在初始化时认证的客户端需要升级或调整配置。
 
 ```
 新用户 → https://fleet.ginfo.cc → 生成 Hub token
-每台电脑装 Agent → 填 https://fleet.ginfo.cc + token
+每台电脑装 Fleet Sandbox → 填 https://fleet.ginfo.cc + token
 导入 Tool → FLEET_URL + FLEET_TOKEN
 ```
 

@@ -791,7 +791,7 @@ test("Streamable HTTP MCP preserves the Hub key when creating a device peer sess
   const called = await control.fetch(
     new Request("https://mcp/http-message", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-fleet-actor": "account-a", "x-fleet-kid": "kid-a" },
       body: JSON.stringify(startTransferMessage(2)),
     }),
   );
@@ -866,7 +866,7 @@ test("Streamable HTTP MCP coalesces meaningful touches and never persists ping n
       await control.fetch(
         new Request("https://mcp/http-message", {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", "x-fleet-actor": "account-a", "x-fleet-kid": "kid-a" },
           body: JSON.stringify(message),
         }),
       );
@@ -877,7 +877,7 @@ test("Streamable HTTP MCP coalesces meaningful touches and never persists ping n
     await control.fetch(
       new Request("https://mcp/http-message", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-fleet-actor": "account-a", "x-fleet-kid": "kid-a" },
         body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" }),
       }),
     );
@@ -887,7 +887,7 @@ test("Streamable HTTP MCP coalesces meaningful touches and never persists ping n
     await control.fetch(
       new Request("https://mcp/http-message", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-fleet-actor": "account-a", "x-fleet-kid": "kid-a" },
         body: JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/list" }),
       }),
     );
@@ -943,7 +943,7 @@ test("Streamable HTTP MCP idle alarm defers while meaningful dispatch is in flig
     const pending = secondControl.fetch(
       new Request("https://mcp/http-message", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-fleet-actor": "account-a", "x-fleet-kid": "kid-a" },
         body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
       }),
     );
@@ -1006,7 +1006,7 @@ test("Streamable HTTP MCP absolute max-age hard-cuts an in-flight dispatch", asy
     const pending = secondControl.fetch(
       new Request("https://mcp/http-message", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-fleet-actor": "account-a", "x-fleet-kid": "kid-a" },
         body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
       }),
     );
@@ -1056,7 +1056,7 @@ test("MCP reservation failure blocks create and lookup before touching PeerSessi
     const called = await control.fetch(
       new Request("https://mcp/http-message", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-fleet-actor": "account-a", "x-fleet-kid": "kid-a" },
         body: JSON.stringify(message),
       }),
     );
@@ -1085,7 +1085,7 @@ test("classic SSE MCP preserves the Hub key when creating a device peer session"
     const accepted = await control.fetch(
       new Request("https://mcp/message", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-fleet-actor": "account-a", "x-fleet-kid": "kid-a" },
         body: JSON.stringify(startTransferMessage(2)),
       }),
     );
@@ -3148,6 +3148,263 @@ function initializeMessage(id: number) {
     params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: {} },
   };
 }
+
+test("remote MCP authenticates every request before session lookup or body parsing", async () => {
+  let lookups = 0;
+  const env = {
+    MCP: { idFromName: () => { lookups += 1; throw new Error("must not resolve session"); } },
+  } as unknown as Parameters<typeof fleetWorker.fetch>[1];
+  for (const [path, method] of [
+    ["/mcp", "POST"], ["/mcp", "DELETE"], ["/mcp/sse", "GET"],
+    [`/mcp/sse?sessionId=${numberedSession(1)}`, "POST"],
+  ]) {
+    const response = await fleetWorker.fetch(new Request(`https://fleet.test${path}`, {
+      method,
+      headers: {
+        "mcp-session-id": numberedSession(1),
+        "x-fleet-actor": "account-a", "x-fleet-kid": "kid-a",
+      },
+      ...(method === "POST" ? { body: "not even JSON" } : {}),
+    }), env);
+    assert.equal(response.status, 401, `${method} ${path}`);
+  }
+  assert.equal(lookups, 0);
+});
+
+test("public control and MCP body limits return 413 before dispatch, not a swallowed JSON error", async () => {
+  let downstream = 0;
+  const env = {
+    FLEET: { idFromName: () => "fleet", get: () => ({ fetch: async (request: Request) => {
+      const path = new URL(request.url).pathname;
+      if (path === "/resolve-bearer" || path === "/resolve-wrap") return Response.json({ id: "account-a", kid: "kid-a" });
+      downstream += 1;
+      throw new Error("oversized bodies must not dispatch or revalidate");
+    } }) },
+    MCP: { idFromName: () => { downstream += 1; throw new Error("must not create MCP state"); } },
+  } as unknown as Parameters<typeof fleetWorker.fetch>[1];
+  for (const path of ["/mcp", `/mcp/sse?sessionId=${numberedSession(1)}`, "/v1/run", "/v1/plugin_call"]) {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array(1)); },
+      cancel() { cancelled = true; },
+    });
+    const response = await fleetWorker.fetch(new Request(`https://fleet.test${path}`, {
+      method: "POST", headers: { authorization: path.startsWith("/v1/") ? "Fleet-OAEP kid-a.wrap-a" : "Bearer owner", "content-length": String((16 << 20) + 1) },
+      body, duplex: "half",
+    } as RequestInit & { duplex: "half" }), env);
+    assert.equal(response.status, 413, path);
+    assert.equal(cancelled, true, path);
+  }
+  assert.equal(downstream, 0);
+});
+
+test("MCP session ID cannot authorize another account or a different token generation", async () => {
+  const state = fakeMcpState();
+  const peerCalls: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
+  const control = new McpDO(state as unknown as DurableObjectState,
+    mcpPeerEnv(peerCalls) as unknown as ConstructorParameters<typeof McpDO>[1]);
+  const owner = { "x-fleet-actor": "account-a", "x-fleet-kid": "kid-a" };
+  const request = (path: string, method: string, headers: Record<string, string>, body?: unknown) =>
+    new Request(`https://mcp${path}`, { method, headers,
+      ...(body ? { body: JSON.stringify(body) } : {}) });
+  assert.equal((await control.fetch(request("/http-open", "POST", owner, initializeMessage(1)))).status, 200);
+  const before = structuredClone(state.value("http:session"));
+  for (const caller of [{}, { ...owner, "x-fleet-actor": "account-b" }, { ...owner, "x-fleet-kid": "kid-b" }]) {
+    assert.equal((await control.fetch(request("/http-message", "POST", caller, startTransferMessage(2)))).status, 404);
+    assert.equal((await control.fetch(request("/http-close", "DELETE", caller))).status, 404);
+    assert.deepEqual(state.value("http:session"), before, "unauthorized calls cannot touch session state");
+  }
+  assert.equal(peerCalls.length, 0);
+  assert.equal((await control.fetch(request("/http-message", "POST", owner, startTransferMessage(3)))).status, 200);
+  assert.equal(peerCalls.length, 1);
+  assert.equal((await control.fetch(request("/http-close", "DELETE", owner))).status, 204);
+  assert.equal(state.value("http:session"), undefined);
+});
+
+test("public MCP replaces spoofed identity headers and revalidates Bearer on POST and DELETE", async () => {
+  const states = new Map<string, ReturnType<typeof fakeMcpState>>();
+  const objects = new Map<string, McpDO>();
+  const peerCalls: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
+  const base = mcpPeerEnv(peerCalls);
+  let bearerChecks = 0;
+  let revoked = false;
+  const env = {
+    ...base,
+    FLEET: {
+      idFromName: (id: string) => id,
+      get: () => ({ fetch: async (request: Request) => {
+        if (new URL(request.url).pathname === "/resolve-bearer") {
+          bearerChecks += 1;
+          const { token } = await request.json() as { token: string };
+          if (revoked || !["owner", "foreign", "rotated"].includes(token)) return Response.json({ error: "unauthorized" }, { status: 401 });
+          return Response.json({ id: token === "foreign" ? "account-b" : "account-a", kid: token === "rotated" ? "kid-b" : "kid-a" });
+        }
+        return base.FLEET.get().fetch(request);
+      } }),
+    },
+    MCP: { idFromName: (id: string) => id, get: (id: string) => {
+      if (!objects.has(id)) {
+        const state = fakeMcpState();
+        states.set(id, state);
+        objects.set(id, new McpDO(state as unknown as DurableObjectState,
+          env as unknown as ConstructorParameters<typeof McpDO>[1]));
+      }
+      return objects.get(id)!;
+    } },
+  };
+  const request = (method: string, token: string, id?: string, message?: unknown) =>
+    fleetWorker.fetch(new Request("https://fleet.test/mcp", {
+      method, headers: {
+        authorization: `Bearer ${token}`,
+        "x-fleet-actor": "account-a", "x-fleet-kid": "kid-a",
+        ...(id ? { "mcp-session-id": id } : {}),
+      }, ...(message ? { body: JSON.stringify(message) } : {}),
+    }), env as unknown as Parameters<typeof fleetWorker.fetch>[1]);
+  const opened = await request("POST", "owner", undefined, initializeMessage(1));
+  assert.equal(opened.status, 200);
+  const id = opened.headers.get("mcp-session-id")!;
+  for (const token of ["foreign", "rotated"]) {
+    assert.equal((await request("POST", token, id, startTransferMessage(2))).status, 404);
+    assert.equal((await request("DELETE", token, id)).status, 404);
+  }
+  assert.equal(peerCalls.length, 0);
+  assert.equal((await request("POST", "owner", id, startTransferMessage(3))).status, 200);
+  assert.equal(peerCalls.length, 1);
+  revoked = true;
+  assert.equal((await request("POST", "owner", id, startTransferMessage(4))).status, 401);
+  assert.equal((await request("DELETE", "owner", id)).status, 401);
+  assert.ok(states.get(id)!.value("http:session"), "invalid caller cannot delete stored session");
+  revoked = false;
+  assert.equal((await request("DELETE", "owner", id)).status, 204);
+  assert.equal(bearerChecks, 9);
+});
+
+test("classic SSE checks caller identity without closing the legitimate stream", async () => {
+  const state = fakeMcpState();
+  const peerCalls: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
+  const control = new McpDO(state as unknown as DurableObjectState,
+    mcpPeerEnv(peerCalls) as unknown as ConstructorParameters<typeof McpDO>[1]);
+  const owner = { "x-fleet-actor": "account-a", "x-fleet-kid": "kid-a" };
+  const stream = await control.fetch(new Request(`https://mcp/open?sessionId=${numberedSession(5)}`, { headers: owner }));
+  try {
+    for (const caller of [{}, { ...owner, "x-fleet-actor": "account-b" }, { ...owner, "x-fleet-kid": "kid-b" }]) {
+      assert.equal((await control.fetch(new Request("https://mcp/message", {
+        method: "POST", headers: caller, body: JSON.stringify(startTransferMessage(2)),
+      }))).status, 404);
+    }
+    await state.drain();
+    assert.equal(peerCalls.length, 0);
+    assert.equal((await control.fetch(new Request("https://mcp/message", {
+      method: "POST", headers: owner, body: JSON.stringify(startTransferMessage(3)),
+    }))).status, 202);
+    await state.drain();
+    assert.equal(peerCalls.length, 1);
+  } finally { await stream.body?.cancel(); }
+});
+
+test("MCP slow HTTP and SSE bodies cannot retain authority across a token reset", async () => {
+  for (const transport of ["http", "sse"]) {
+    const state = fakeMcpState();
+    const peerCalls: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
+    const base = mcpPeerEnv(peerCalls);
+    let revoked = false;
+    let markAuthenticated!: () => void;
+    const authenticated = new Promise<void>(resolve => { markAuthenticated = resolve; });
+    const env = {
+      ...base,
+      FLEET: { idFromName: (id: string) => id, get: () => ({ fetch: async (request: Request) => {
+        const path = new URL(request.url).pathname;
+        if (path === "/resolve-bearer") {
+          markAuthenticated();
+          return revoked ? Response.json({ error: "Hub token was reset" }, { status: 401 }) : Response.json({ id: "account-a", kid: "kid-a" });
+        }
+        if (path === "/validate-mcp" && revoked) return Response.json({ error: "Hub token was reset" }, { status: 401 });
+        return base.FLEET.get().fetch(request);
+      } }) },
+      MCP: { idFromName: (id: string) => id, get: () => control },
+    };
+    const control = new McpDO(state as unknown as DurableObjectState, env as unknown as ConstructorParameters<typeof McpDO>[1]);
+    const headers = { "x-fleet-actor": "account-a", "x-fleet-kid": "kid-a" };
+    const opened = await control.fetch(new Request(transport === "http" ? "https://mcp/http-open" : `https://mcp/open?sessionId=${numberedSession(7)}`, {
+      headers, ...(transport === "http" ? { method: "POST", body: JSON.stringify(initializeMessage(1)) } : {}),
+    }));
+    assert.equal(opened.status, 200);
+    let releaseBody!: () => void;
+    const body = new ReadableStream<Uint8Array>({ start(controller) {
+      releaseBody = () => { controller.enqueue(new TextEncoder().encode(JSON.stringify(startTransferMessage(2)))); controller.close(); };
+    } });
+    const url = `https://fleet.test${transport === "http" ? "/mcp" : `/mcp/sse?sessionId=${numberedSession(7)}`}`;
+    const pending = fleetWorker.fetch(new Request(url, {
+      method: "POST", headers: { authorization: "Bearer old", "mcp-session-id": numberedSession(7) },
+      body, duplex: "half",
+    } as RequestInit & { duplex: "half" }), env as unknown as Parameters<typeof fleetWorker.fetch>[1]);
+    try {
+      await authenticated;
+      revoked = true;
+      releaseBody();
+      const response = await pending;
+      if (transport === "http") {
+        assert.equal(response.status, 200);
+        assert.match(((await response.json()) as {error:{message:string}}).error.message, /reset/);
+      } else {
+        assert.equal(response.status, 202);
+        await state.drain();
+      }
+      assert.equal(peerCalls.length, 0, `${transport} must not dispatch old-token work`);
+      const retry = await fleetWorker.fetch(new Request(url, { method: "POST", headers: { authorization: "Bearer old", "mcp-session-id": numberedSession(7) }, body: JSON.stringify(startTransferMessage(3)) }), env as unknown as Parameters<typeof fleetWorker.fetch>[1]);
+      assert.equal(retry.status, 401);
+      assert.equal(peerCalls.length, 0);
+    } finally { if (transport === "sse") await opened.body?.cancel(); }
+  }
+});
+
+test("MCP DELETE preserves accepted device work and cannot resurrect or replay its closed session", async () => {
+  const state = fakeMcpState();
+  const base = mcpPeerEnv([]);
+  const sent: Array<{type:string; corr:string; body:Record<string,unknown>}> = [];
+  const ws = { deserializeAttachment: () => ({}), send: (raw: string) => sent.push(JSON.parse(raw)) } as unknown as WebSocket;
+  const { device } = fakeDeviceHarness([ws]);
+  let accepted!: () => void;
+  let releaseResponse!: () => void;
+  const didAccept = new Promise<void>(resolve => { accepted = resolve; });
+  const responseGate = new Promise<void>(resolve => { releaseResponse = resolve; });
+  let fingerprint = "";
+  const env = { ...base, DEVICE: { idFromName: (id: string) => id, get: () => ({ fetch: async (request: Request) => {
+    assert.equal(new URL(request.url).pathname, "/run");
+    fingerprint = request.headers.get("x-fleet-operator")!;
+    const response = await device.fetch(request);
+    assert.equal(response.status, 200);
+    accepted();
+    await responseGate;
+    return response;
+  } }) } };
+  const control = new McpDO(state as unknown as DurableObjectState, env as unknown as ConstructorParameters<typeof McpDO>[1]);
+  const headers = { "x-fleet-actor": "account-a", "x-fleet-kid": "kid-a" };
+  const opened = await control.fetch(new Request("https://mcp/http-open", { method: "POST", headers, body: JSON.stringify(initializeMessage(1)) }));
+  assert.equal(opened.status, 200);
+  const message = {jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"run",arguments:{device_id:"device-a",command:"printf safe",wait_ms:0}}};
+  const pending = control.fetch(new Request("https://mcp/http-message", { method: "POST", headers, body: JSON.stringify(message) }));
+  await didAccept;
+  assert.equal(sent.filter(frame => frame.type === "run").length, 1);
+  assert.equal((await control.fetch(new Request("https://mcp/http-close", { method: "DELETE", headers }))).status, 204);
+  assert.equal(state.value("http:session"), undefined);
+  assert.equal(state.alarm(), null);
+  releaseResponse();
+  const completedCall = await pending;
+  assert.equal(completedCall.status, 200);
+  assert.equal(((await completedCall.json()) as {result:{content:Array<{text:string}>}}).result.content[0]!.text, "still running");
+  const corr = sent.find(frame => frame.type === "run")!.corr;
+  await device.webSocketMessage(ws, JSON.stringify({v:1,type:"result",corr,body:{ok:true,exit_code:0,stdout:"accepted work completed"}}));
+  const result = await device.fetch(new Request(`https://device/result?corr=${corr}`, {headers:{"x-fleet-operator":fingerprint}}));
+  assert.equal(((await result.json()) as {stdout:string}).stdout, "accepted work completed");
+  const foreign = await device.fetch(new Request(`https://device/result?corr=${corr}`, {headers:{"x-fleet-operator":"foreign"}}));
+  assert.deepEqual(await foreign.json(), {status:"pending"});
+  const retry = await control.fetch(new Request("https://mcp/http-message", {method:"POST",headers,body:JSON.stringify(message)}));
+  assert.equal(retry.status, 404);
+  assert.equal(sent.filter(frame => frame.type === "run").length, 1);
+  assert.equal(state.value("http:session"), undefined);
+  assert.equal(state.alarm(), null);
+});
 
 function startTransferMessage(id: number) {
   return {

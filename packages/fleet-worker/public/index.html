@@ -224,25 +224,25 @@
           help: "帮助", docs: "文档", plugins: "插件", source: "源码", downloads: "下载", signOut: "退出", settings: "设置", fleet: "机器", ops: "管理",
           kicker: "fleet.ginfo.cc",
           hero: "一个工具连接所有电脑随时随地。",
-          body: "用本站地址和 token 导入工具。Windows、Linux、macOS 上的 Agent 会通过 WebSocket 主动连出来。",
+          body: "让 AI 使用你已有的电脑。机器上安装 Fleet Sandbox 插件，AI 端接入 Fleet Tool；设备通过 WebSocket 主动连接中枢。",
           cta: "登录后生成 Hub token",
           continueG: "使用 Google 继续", continueX: "使用 X 继续",
           archTitle: "命令怎么走",
-          archHint: "设备只往外连，不用开端口。能跑 Agent 的架构，就能加入同一支舰队。",
+          archHint: "设备主动连接中枢，无需公网入站端口。常规命令可尝试 RTC 直连，失败后回到 WebSocket。",
           tool: "工具", toolTitle: "Cursor / Claude", toolSub: "MCP · HTTPS + token",
           server: "服务器", serverSub: "云端中枢 · WSS /v1/device",
           keysTitle: "四样东西，每台电脑都连得上。",
           k1t: "网站地址", k1s: "https://fleet.ginfo.cc",
           k2t: "Hub token", k2s: "在设置页生成，flt_ 开头",
-          k3t: "每台电脑装 Agent", k3s: "Windows / Linux / macOS",
+          k3t: "每台电脑装 Sandbox 插件", k3s: "Windows / Linux / macOS",
           k4t: "导入工具", k4s: "Cursor · Claude · MCP",
-          localTitle: "本地只是命令行",
-          localBody: "npm run dev 跑在 127.0.0.1，别的系统加不进来，成不了舰队。",
-          cloudTitle: "云端才是产品",
-          cloudBody: "把中枢部署上云，或直接用本站。一个账号，所有电脑。",
+          localTitle: "个人自托管",
+          localBody: "中枢可以部署在自己管理的服务器或内网。所有设备都能访问同一个中枢地址即可；环回地址只适合本机。",
+          cloudTitle: "使用公共 Hub",
+          cloudBody: "本站提供 Google / X 登录和按账号隔离的设备目录。使用前了解权限与数据留存。",
           helpTitle: "怎么用",
-          helpLead: "这个网站就是中枢。登录、给每台电脑装 Agent、导入工具。之后任何 MCP 客户端都能操作你所有机器。",
-          sourceHint: "这个中枢会公开它部署时的 git commit。curl /source 就能对 GitHub。",
+          helpLead: "这个网站就是中枢。登录、给每台电脑装 Sandbox 插件、导入工具。之后任何 MCP 客户端都能操作你所有机器。",
+          sourceHint: "/source 提供中枢自报的构建信息，可对照源码；它不能独立证明线上运行代码。",
           docsTitle: "文档",
           docsLead: "做 Fleet 时记下的东西。docs/blog/ 里的 markdown 会变成一篇。Help 是怎么用，这里是怎么做成的。",
           docsEmpty: "还没有文章。",
@@ -250,23 +250,23 @@
           docsTryLead: "准备把 Fleet 用起来？", docsTryAction: "立即体验",
           s1: "1. 登录并生成 Hub token",
           s1b: "设置页生成 token，明文只显示一次。中枢地址就是本站 origin：https://fleet.ginfo.cc。",
-          s2: "2. 每台电脑装 Agent",
-          s2b: "Windows / macOS / Linux（含 arm64）从 GitHub Releases 下载。Agent 只向外连。Mac/Windows 设置页在 127.0.0.1:17890。",
+          s2: "2. 每台电脑装 Sandbox 插件",
+          s2b: "在设置页复制安装命令，或从 GitHub Releases 下载。原有 FleetAgent 和 fleet-agent 文件名保持兼容。Mac/Windows 设置页在 127.0.0.1:17890。",
           s3: "3. 导入 Tool",
           s3b: "把 FLEET_URL 和 FLEET_TOKEN 交给 Cursor / Claude / 任意 MCP 客户端。",
           s4: "4. 列机器、选一台、执行",
-          hubTitle: "中枢钥匙", hubBody: "把本站地址和 Hub token 填进每台电脑的 Agent，还有操作端的工具。",
+          hubTitle: "中枢钥匙", hubBody: "机器侧 Sandbox 插件和 AI 侧 Fleet Tool 使用同一个中枢地址与 Hub token。",
           url: "中枢地址（本站）", token: "Hub token", none: "还没有 token",
           generate: "生成 token", reset: "重置 token",
-          resetHint: "旧钥匙立刻作废。每个 Agent、每个工具都要重新填。",
+          resetHint: "旧钥匙立刻作废。每个 Sandbox 插件和工具都要重新填。",
           copy: "复制", secretOnce: "只显示一次，现在就复制走。",
           resetConfirm: "重置这把 token？",
-          resetConfirmBody: "旧的 RSA 钥匙立刻作废。每台 Agent、每个 MCP 客户端都要重新填新 token。在线设备连接会断开（1008 token reset）。",
+          resetConfirmBody: "旧的 RSA 钥匙立刻作废。每台 Sandbox 插件、每个 MCP 客户端都要重新填新 token。在线设备连接会断开（1008 token reset）。",
           minting: "正在生成 RSA-2048 钥匙…",
           anatomy: "这把钥匙怎么组成",
           anatomyPrefix: "前缀", anatomyAud: "受众（HUB_ORIGIN）", anatomyKid: "钥匙 id",
           anatomyIat: "签发时间", anatomySig: "签名",
-          anatomyRsa: "RSA-2048 PSS。Agent 发送 Fleet-OAEP，不是 Bearer。",
+          anatomyRsa: "RSA-2048 PSS。机器侧 Sandbox 发送 Fleet-OAEP；远程 MCP 配置使用 Bearer。",
           promptCancel: "取消", promptContinue: "重置", promptClose: "完成",
           toolHint: "FLEET_URL 用本站，FLEET_TOKEN 用这把钥匙。",
           mcpTitle: "把 Fleet 接入 AI 客户端",
@@ -274,20 +274,20 @@
           mcpStdioConfig: "本地 stdio · npx（Cursor / Claude Desktop）",
           mcpHttpConfig: "远程 Streamable HTTP MCP（推荐 / Grok）",
           mcpSseConfig: "远程经典 SSE MCP（兼容）",
-          setupNeedsToken: "当前页面拿不到 Token 明文，所以配置和安装命令仍会显示，但会省略 Token。生成或重置后会自动补全；无 Token 的安装命令只安装，不启动 Fleet。",
-          quickTitle: "安装 Fleet 命令行 Agent",
+          setupNeedsToken: "当前页面拿不到 Token 明文，所以配置和安装命令仍会显示，但会省略 Token。可把已保存的 Token 补进复制后的配置，无需为此重置；无 Token 的安装命令只安装，不启动 Fleet。",
+          quickTitle: "安装 Fleet Sandbox 插件",
           quickBody: "一条命令会自动选择当前系统和 CPU 的正式 Release，校验 SHA-256，并安装到用户目录。有 Token 时会以“需确认”权限立即启动；没有 Token 时安装后停止。",
           posixInstall: "macOS / Linux / WSL",
           windowsInstall: "Windows PowerShell",
           desktopHint: "需要完整安装包、托盘和本机设置界面？",
           desktopLink: "下载图形客户端",
           shellHistory: "这些命令包含 Hub token。只在可信终端运行；必要时清理或保护 shell 历史记录。",
-          empty: "还没有机器。装 Agent，填本站地址和 token，连上后会出现在这里。",
-          online: "在线", offline: "离线", agentVersion: "Agent",
+          empty: "还没有机器。安装 Fleet Sandbox 插件，填中枢地址和 token，连接后会显示在这里。",
+          online: "在线", offline: "离线", agentVersion: "Sandbox",
           setAlias: "设置别名", editAlias: "修改别名", aliasTitle: "机器别名", aliasLabel: "别名",
           aliasPlaceholder: "例如：新加坡 128GB", aliasHint: "同一账号内需要唯一。支持中文和空格；留空保存等同于清除。",
           originalName: "原机器名", deviceId: "设备 ID", saveAlias: "保存", clearAlias: "清除", savingAlias: "正在保存…", aliasFailed: "保存别名失败",
-          relTitle: "安装本机 Agent",
+          relTitle: "安装本机 Sandbox 插件",
           relBody: "每台想加入舰队的电脑都要装。装好后只向这个网站出站连接。",
           win: "Windows", winArm: "Windows ARM64", macArm: "macOS Apple 芯片", macArmZip: "macOS Apple 芯片 zip", macIntel: "macOS Intel", macIntelZip: "macOS Intel zip", linux: "Linux amd64", linuxArm: "Linux ARM64", checksums: "Checksums",
           themeL: "浅色", themeD: "深色", themeS: "系统",
@@ -296,25 +296,25 @@
           help: "Help", docs: "Docs", plugins: "Plugins", source: "Source", downloads: "Downloads", signOut: "Sign out", settings: "Settings", fleet: "Machines", ops: "Ops",
           kicker: "fleet.ginfo.cc",
           hero: "One tool for every computer anywhere.",
-          body: "Import the MCP tool with this URL and a token. Agents on Windows, Linux, and macOS dial out over WebSocket.",
+          body: "Let AI use the computers you already own. Install the Fleet Sandbox plugin on each machine and connect Fleet Tool to your AI client. Devices dial out over WebSocket.",
           cta: "Sign in to mint a Hub token",
           continueG: "Continue with Google", continueX: "Continue with X",
           archTitle: "How a command travels",
-          archHint: "Devices only dial out. No inbound ports. Any arch that can run the Agent joins the same fleet.",
+          archHint: "Devices dial out without public inbound ports. Regular commands may use direct RTC, with WebSocket fallback.",
           tool: "Tool", toolTitle: "Cursor / Claude", toolSub: "MCP · HTTPS + token",
           server: "Server", serverSub: "Cloud hub · WSS /v1/device",
           keysTitle: "Four values. Then every machine is reachable.",
           k1t: "Domain URL", k1s: "https://fleet.ginfo.cc",
           k2t: "Hub token", k2s: "flt_… from Settings",
-          k3t: "Agent on each PC", k3s: "Windows / Linux / macOS",
+          k3t: "Sandbox plugin on each PC", k3s: "Windows / Linux / macOS",
           k4t: "Import the tool", k4s: "Cursor · Claude · MCP",
-          localTitle: "Local is a CLI",
-          localBody: "npm run dev on 127.0.0.1 cannot join other OS. It never becomes a fleet.",
-          cloudTitle: "Cloud is the product",
-          cloudBody: "Deploy the hub, or just use this site. One account, every PC.",
+          localTitle: "Self-host for personal use",
+          localBody: "Run the hub on your own server or LAN. Every endpoint needs access to the same hub URL; loopback is for one computer.",
+          cloudTitle: "Use the hosted Hub",
+          cloudBody: "This site offers Google / X sign-in and an account-scoped device directory. Review permissions and retention before connecting.",
           helpTitle: "How to use Fleet",
-          helpLead: "This website is the hub. Sign in, install an Agent on each computer, import the tool. Then any MCP client can reach every machine.",
-          sourceHint: "This hub publishes the git commit it was built from. curl /source and compare it to GitHub.",
+          helpLead: "Connect your machines, then your AI client. Fleet Sandbox is the machine-side plugin; Fleet Agent means an AI participant in Rooms. The machine controls execution permission.",
+          sourceHint: "/source publishes self-reported build information for comparison with source. It is not independent proof of running code.",
           docsTitle: "Docs",
           docsLead: "Notes from building Fleet. Markdown in docs/blog/ becomes a post. Help is how to use it; this is how it is built.",
           docsEmpty: "Nothing here yet.",
@@ -322,23 +322,23 @@
           docsTryLead: "Ready to put Fleet to work?", docsTryAction: "Try Fleet",
           s1: "1. Sign in and mint a Hub token",
           s1b: "Generate a token under Settings. Plaintext is shown once. Hub address is this origin: https://fleet.ginfo.cc.",
-          s2: "2. Install Agent on each computer",
-          s2b: "Windows / macOS / Linux (including arm64) from GitHub Releases. Agents only dial out. Mac/Windows settings: 127.0.0.1:17890.",
+          s2: "2. Install the Sandbox plugin on each computer",
+          s2b: "Copy an installer from Settings or download a GitHub Release. Existing FleetAgent and fleet-agent filenames remain compatible. Mac/Windows settings are at 127.0.0.1:17890.",
           s3: "3. Import the tool",
           s3b: "Give Cursor / Claude / any MCP client FLEET_URL and FLEET_TOKEN.",
           s4: "4. List, pick one, run",
-          hubTitle: "Hub access", hubBody: "Paste this origin and Hub token into every agent, and into the operator tool.",
+          hubTitle: "Hub access", hubBody: "Use the same hub origin and Hub token in each machine-side Sandbox plugin and the AI-side Fleet Tool.",
           url: "Hub address (this site)", token: "Hub token", none: "No token yet",
           generate: "Generate token", reset: "Reset token",
-          resetHint: "Old tokens die immediately. Re-paste on every agent and tool.",
+          resetHint: "Old tokens die immediately. Re-paste on every Sandbox plugin and tool.",
           copy: "Copy", secretOnce: "Shown once. Copy it now.",
           resetConfirm: "Reset this token?",
-          resetConfirmBody: "The old RSA key dies immediately. Every agent and MCP client must be given the new token. Live device sockets close (1008 token reset).",
+          resetConfirmBody: "The old RSA key dies immediately. Every Sandbox plugin and MCP client must be given the new token. Live device sockets close (1008 token reset).",
           minting: "Minting RSA-2048 key…",
           anatomy: "How this token is composed",
           anatomyPrefix: "Prefix", anatomyAud: "Audience (HUB_ORIGIN)", anatomyKid: "Key id",
           anatomyIat: "Issued", anatomySig: "Signature",
-          anatomyRsa: "RSA-2048 PSS. Agents send Fleet-OAEP, not Bearer.",
+          anatomyRsa: "RSA-2048 PSS. Machine-side Sandbox uses Fleet-OAEP; remote MCP configuration uses Bearer.",
           promptCancel: "Cancel", promptContinue: "Reset", promptClose: "Done",
           toolHint: "FLEET_URL is this origin. FLEET_TOKEN is this key.",
           mcpTitle: "Connect Fleet to your AI client",
@@ -346,20 +346,20 @@
           mcpStdioConfig: "Local stdio · npx (Cursor / Claude Desktop)",
           mcpHttpConfig: "Remote Streamable HTTP MCP (recommended / Grok)",
           mcpSseConfig: "Remote classic SSE MCP (compatibility)",
-          setupNeedsToken: "The token plaintext is not available in this page load, so these configurations and commands stay visible but omit it. Generate or reset to fill it in automatically; a tokenless install command installs without starting Fleet.",
-          quickTitle: "Install the Fleet CLI Agent",
+          setupNeedsToken: "The token plaintext is not available in this page load, so these configurations and commands stay visible but omit it. Paste your saved token into the copied config; generate one only if needed; a tokenless install command installs without starting Fleet.",
+          quickTitle: "Install the Fleet Sandbox plugin",
           quickBody: "One command downloads the published GitHub Release for this OS and CPU, verifies SHA-256, and installs it in your user directory. With a token it starts immediately with Ask permission; without one it stops after installation.",
           posixInstall: "macOS / Linux / WSL",
           windowsInstall: "Windows PowerShell",
           desktopHint: "Need the packaged desktop app, tray, and local settings UI?",
           desktopLink: "Download the desktop client",
           shellHistory: "These commands contain the Hub token. Run them only in a trusted terminal, then clear or protect shell history if needed.",
-          empty: "No machines yet. Install an agent, paste this origin and token, then it shows up here.",
-          online: "online", offline: "offline", agentVersion: "Agent",
+          empty: "No machines yet. Install the Fleet Sandbox plugin, set this origin and token, and connect.",
+          online: "online", offline: "offline", agentVersion: "Sandbox",
           setAlias: "Set alias", editAlias: "Edit alias", aliasTitle: "Machine alias", aliasLabel: "Alias",
           aliasPlaceholder: "For example: Singapore 128GB", aliasHint: "Must be unique in this account. Spaces are allowed; saving an empty value clears it.",
           originalName: "Original name", deviceId: "Device ID", saveAlias: "Save", clearAlias: "Clear", savingAlias: "Saving…", aliasFailed: "Could not save alias",
-          relTitle: "Install the local agent",
+          relTitle: "Install the machine-side Sandbox plugin",
           relBody: "Install on every machine you want in the fleet. It only dials out to this site.",
           win: "Windows", winArm: "Windows ARM64", macArm: "macOS Apple silicon", macArmZip: "macOS Apple silicon zip", macIntel: "macOS Intel", macIntelZip: "macOS Intel zip", linux: "Linux amd64", linuxArm: "Linux ARM64", checksums: "Checksums",
           themeL: "Light", themeD: "Dark", themeS: "System",
@@ -700,7 +700,7 @@
           <div class="fleet-tools">
             <details class="fleet-menu fleet-menu-resources"><summary>${label("资源", "Resources")} ▾</summary><div class="fleet-menu-pop">
               <a href="/help" data-go="/help">${t("help")}</a><a href="/docs" data-go="/docs">${t("docs")}</a>
-              <a href="/trust">${t("source")}</a><a href="https://github.com/TITOCHAN2023/fleetForAgent" target="_blank" rel="noreferrer">GitHub ↗</a>
+              <a href="/demo/">${label("只读演示", "Read-only demo")}</a><a href="/privacy/">${label("隐私与权限", "Privacy & permissions")}</a><a href="/trust">${t("source")}</a><a href="https://github.com/TITOCHAN2023/fleetForAgent" target="_blank" rel="noreferrer">GitHub ↗</a>
             </div></details>
             ${signedIn() ? `<details class="fleet-menu"><summary aria-label="${label("账号", "Account")}"><span class="fleet-avatar">${esc(String(state.user.email || "F").slice(0, 1).toUpperCase())}</span></summary><div class="fleet-menu-pop">
               <span class="fleet-account-email">${esc(state.user.email || "")}</span>
@@ -839,6 +839,7 @@
                 </div>
               </div>
             </div>
+            <p class="muted" style="text-align:center"><a class="nav-link" href="/demo/">${label("先看只读演示，无需登录", "Explore the read-only demo, no sign-in")}</a> · <a class="nav-link" href="/privacy/">${label("隐私与权限", "Privacy & permissions")}</a></p>
             <h2 style="margin-top:72px">${t("archTitle")}</h2>
             <p class="muted hand-copy" style="margin:8px 0 20px;max-width:40em;font-size:16px">${t("archHint")}</p>
             ${fan()}
@@ -916,6 +917,11 @@
             <pre>FLEET_URL=${origin}
 FLEET_TOKEN=flt_1.…
 npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
+            <p class="muted">${label("远程 MCP 每次请求都必须携带 Authorization，包括后续会话请求。Session ID 不能代替凭据；只在初始化时认证的旧客户端需要升级或调整配置。", "Remote MCP requires Authorization on every request, including session continuation. A Session ID is not a credential; clients authenticating only initialization need an update or configuration change.")}</p>
+            <h2>${label("权限与任务恢复", "Permissions and task recovery")}</h2>
+            <p class="muted">${label("默认使用 ask，需在机器上确认。allow 会允许命令和插件自动执行，具备当前系统用户的权限；Sandbox 名称不代表操作系统隔离。拿到任务 ID 后用 wait 或 get_result 查询，断线后先 recover_session，不要重复执行结果未知的任务。", "Start with ask for local confirmation. allow authorizes commands and plugins with the OS user's privileges; the Sandbox name does not promise OS isolation. Continue an existing task with wait or get_result. After a disconnect use recover_session before retrying an unknown outcome.")}</p>
+            <p class="muted">${label("普通命令的 RTC 连接失败后可以回退到 WebSocket。文件传输等 direct-only 插件没有中继回退，打洞失败就会失败。Room 成员运行器目前要求 Linux tmpfs，不能承诺 Windows/macOS 的同等支持。", "Regular commands can fall back from RTC to WebSocket. Direct-only plugins such as file transfer fail if a direct connection cannot be established. Room member runners currently require Linux tmpfs; equivalent Windows/macOS support is not promised.")}</p>
+            <p class="muted"><a href="/privacy/">${label("查看 Hub 可见内容、留存时间与信任边界", "Read Hub visibility, retention and trust limits")}</a></p>
             <h2>${t("s4")}</h2>
             <p class="muted">${t("keysTitle")}</p>
             <div style="margin-top:16px">${keys()}</div>
@@ -938,7 +944,7 @@ npx -y https://fleet.ginfo.cc/fleet-tool.tgz</pre>
           </section>`;
       }
       function settingsView() {
-        const items = [["mcp", label("AI 客户端", "AI clients")], ["install", label("安装 Agent", "Install Agent")], ["credentials", label("连接凭证", "Credentials")], ["desktop", label("图形客户端", "Desktop apps")]];
+        const items = [["mcp", label("AI 客户端", "AI clients")], ["install", label("安装 Sandbox", "Install Sandbox")], ["credentials", label("连接凭证", "Credentials")], ["desktop", label("图形客户端", "Desktop apps")]];
         return `<div class="fleet-heading"><div><div class="fleet-eyebrow">FLEET / ${label("连接", "CONNECT")}</div><h1>${label("接入与设置", "Setup & settings")}</h1></div></div>
           <div class="fleet-settings"><nav class="fleet-settings-nav" aria-label="${t("settings")}">${items.map(([id, name]) => `<a href="/#settings/${id}" data-go="/#settings/${id}" ${state.setupPanel === id ? 'aria-current="page"' : ""}>${name}</a>`).join("")}</nav>
           <div class="fleet-settings-content">${state.setupPanel === "credentials" ? credentialsView() : state.setupPanel === "desktop" ? downloadsView() : readySetup(location.origin, state.secret, state.setupPanel)}</div></div>`;

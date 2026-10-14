@@ -318,7 +318,7 @@ export function RoomConsole({ accountId }: { accountId: string }) {
         {" "}
         <section className={panelClass} aria-labelledby="agents-heading">
           <h2 id="agents-heading" className="font-medium">
-            Fleet Agent
+            {zh ? "Fleet Agent · AI 参与者" : "Fleet Agent · AI participants"}
           </h2>
           <p className="mt-1 text-sm text-muted">
             {zh

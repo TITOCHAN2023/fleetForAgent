@@ -20,6 +20,7 @@ import {
   normalizePermit,
   parseChecksums,
   unsupportedCapBody,
+  versionedUpdateBase,
 } from "./src/presence.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -32,9 +33,20 @@ test("advertisedUpdate is empty without a version", () => {
 test("advertisedUpdate includes version, channel URL, and checksums URL", () => {
   const got = advertisedUpdate({ latestAgentVer: "0.3.2" });
   assert.equal(got.latest_agent_ver, "0.3.2");
-  assert.equal(got.update_base, DEFAULT_UPDATE_BASE);
-  assert.equal(got.update_checksums, checksumsURL(DEFAULT_UPDATE_BASE, "0.3.2"));
+  assert.equal(got.update_base, DEFAULT_UPDATE_BASE.replace("latest/download", "download/v0.3.2"));
+  assert.equal(got.update_checksums, checksumsURL(got.update_base, "0.3.2"));
   assert.equal(got.update_checksums.endsWith("/checksums-0.3.2.txt"), true);
+});
+
+test("held rollouts never mix latest binaries with an older checksum manifest", () => {
+  const base = "https://github.com/TITOCHAN2023/fleetForAgent/releases/download/v0.6.6";
+  for (const updateBase of [undefined, DEFAULT_UPDATE_BASE, `${DEFAULT_UPDATE_BASE}/`]) {
+    const got = advertisedUpdate({ latestAgentVer: "0.6.6", updateBase });
+    assert.equal(got.update_base, base);
+    assert.equal(got.update_checksums, `${base}/checksums-0.6.6.txt`);
+  }
+  assert.equal(versionedUpdateBase(DEFAULT_UPDATE_BASE, "v0.6.7"), base.replace("0.6.6", "0.6.7"));
+  assert.deepEqual(advertisedUpdate({ latestAgentVer: "../../latest" }), {});
 });
 
 test("advertisedUpdate can inline checksums.txt so the client does not guess", () => {

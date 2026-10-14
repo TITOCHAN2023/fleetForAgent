@@ -88,3 +88,34 @@ test("transaction handle cannot escape commit; close waits accepted work and rej
   await assert.rejects(s.transaction((tx) => tx.put("late", 4)), /closed/);
   release(); await pending; await closing; await s.close();
 });
+
+test("prefix range preserves SQLite literal matching at Unicode boundaries", async (t) => {
+  const s = ledger(t).open();
+  const prefixes = ["", "%_", "a", "a\0", "\ud7ff", "\ue000", "😀", "\u{10ffff}", "a\u{10ffff}", "\ud800"];
+  await s.transaction(async (tx) => {
+    for (const prefix of prefixes) {
+      await tx.put(prefix, { prefix });
+      await tx.put(`${prefix}tail`, { prefix });
+    }
+    for (const prefix of prefixes) {
+      const old = s.db.prepare("SELECT key,value FROM room_kv WHERE substr(key,1,?)=? ORDER BY key").all([...prefix].length, prefix);
+      assert.deepEqual(await tx.list({ prefix }), new Map(old.map((row) => [row.key, JSON.parse(row.value)])), JSON.stringify(prefix));
+    }
+  });
+});
+
+test("normal prefix list uses an index search rather than scanning the ledger", async (t) => {
+  const s = ledger(t).open();
+  const prepare = s.db.prepare.bind(s.db);
+  const plans = [];
+  s.db.prepare = (sql) => {
+    const statement = prepare(sql);
+    if (!sql.startsWith("SELECT key,value")) return statement;
+    return { all: (...args) => {
+      plans.push(...prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args));
+      return statement.all(...args);
+    } };
+  };
+  await s.transaction((tx) => tx.list({ prefix: "task:one:" }));
+  assert.match(plans.map((row) => row.detail).join("\n"), /SEARCH room_kv .*key>\? AND key<\?/);
+});

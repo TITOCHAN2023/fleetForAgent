@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { Miniflare, convertV4MiniflareOptions } from "../../packages/fleet-worker/node_modules/miniflare/dist/src/index.js";
+import { unstable_readConfig } from "../../packages/fleet-worker/node_modules/wrangler/wrangler-dist/cli.js";
 import { RoomRunner } from "../../packages/fleet-room/runner.mjs";
 import { highSecAuthorization } from "../../packages/fleet-worker/src/tokenv1.mjs";
 import { RoomConnection } from "../../packages/fleet-room/client.mjs";
@@ -17,7 +18,11 @@ const url = `http://127.0.0.1:${port}`;
 const root = mkdtempSync(join(tmpdir(), "fleet-room-worker-"));
 const names = { FLEET: "FleetDO", DEVICE: "DeviceDO", MCP: "McpDO", PEER_SESSION: "PeerSessionDO", REVOCATION: "RevocationDO", ROOM_RELAY: "RoomRelayDO" };
 const scriptPath = resolve(process.argv[2] || "/tmp/fleet-room-worker-bundle/worker.js");
+// Exercise the same admission bindings as the candidate deployment, without
+// loading its credentials or replacing rate limits with an always-allow stub.
+const candidate = unstable_readConfig({ config: resolve("packages/fleet-worker/wrangler.toml") });
 const mf = new Miniflare(convertV4MiniflareOptions({ host: "127.0.0.1", port, workers: [{ name: "fleet-room-test", modules: true, modulesRoot: dirname(scriptPath), scriptPath, compatibilityDate: "2026-04-07",
+  ratelimits: Object.fromEntries(candidate.ratelimits.map(({ name, ...limit }) => [name, limit])),
   bindings: { HUB_ORIGIN: url }, durableObjects: Object.fromEntries(Object.entries(names).map(([k, className]) => [k, { className, useSQLite: true }])),
 }] }));
 let runner, observer;
@@ -56,6 +61,37 @@ try {
   assert.equal(oaepRead.status, 200, await oaepRead.text());
   const crossOrigin = await fetch(url + "/v1/room-control", { method: "POST", headers: { cookie: owner.cookie, origin: "https://attacker.example" }, body: "{}" });
   assert.equal(crossOrigin.status, 403);
+  // Hit the real OAuth admission budget on loopback. A cancelled callback
+  // returns before state lookup/provider fetch, and redirects stay disabled.
+  const oauthLimit = candidate.ratelimits.find(({ name }) => name === "OAUTH_RATE_LIMITER");
+  assert.deepEqual(oauthLimit.simple, { limit: 60, period: 60 });
+  let denied = 0;
+  for (let attempt = 0; attempt < 3 && !denied; attempt++) {
+    // Allow a bounded retry if the first burst straddles a minute boundary.
+    const replies = await Promise.all(Array.from({ length: oauthLimit.simple.limit + 1 }, async () => {
+      const response = await fetch(url + "/v1/auth/callback/google?error=local-test-cancelled", { redirect: "manual" });
+      const body = await response.text();
+      assert.ok([400, 429].includes(response.status), `Unexpected OAuth admission status ${response.status}`);
+      if (response.status === 400) assert.match(body, /local-test-cancelled/);
+      else {
+        assert.equal(response.headers.get("retry-after"), "60");
+        assert.equal(JSON.parse(body).error, "too many authentication requests");
+      }
+      return response.status;
+    }));
+    denied += replies.filter(status => status === 429).length;
+  }
+  assert.ok(denied > 0, "real OAuth binding must reject requests beyond its admission budget");
+  const afterLimit = await control("messages.read", { roomId: "worker-room", discussionId: "main" });
+  assert.equal(afterLimit.status, 200, JSON.stringify(afterLimit.body));
+  assert.equal(afterLimit.body.messages[0].text, "仅组长保存");
+  const tasksAfterLimit = await control("tasks.list", { roomId: "worker-room" });
+  assert.equal(tasksAfterLimit.status, 200, JSON.stringify(tasksAfterLimit.body));
+  assert.ok(Array.isArray(tasksAfterLimit.body.tasks));
+  const postLimitAuthorization = await highSecAuthorization(owner.token, url);
+  const postLimitRead = await fetch(url + "/v1/room-control", { method: "POST", headers: { authorization: postLimitAuthorization }, body: JSON.stringify({ leaderId: "leader", action: "rooms.list", input: {} }) });
+  assert.equal(postLimitRead.status, 200, await postLimitRead.text());
+  console.log("PASS: real OAuth admission returns 429 while authenticated Room reads, task listing and OAEP remain available");
   // Actual token rotation invalidates an already-established Room WebSocket.
   const reset = await fetch(url + "/v1/hub_token", { method: "POST", headers: { cookie: owner.cookie, origin: url } });
   assert.equal(reset.status, 200);

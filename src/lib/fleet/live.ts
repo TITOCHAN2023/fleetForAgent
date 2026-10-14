@@ -1,3 +1,5 @@
+import { HubPayloads, expiredResult, isTerminalResult } from "../../../packages/fleet-hub/payload-cache.mjs";
+
 type WsLike = {
   readyState: number;
   send: (data: string) => void;
@@ -10,11 +12,6 @@ export type LiveSlot = {
   ws: WsLike;
 };
 
-type ScreenSlot = {
-  last?: Record<string, unknown>;
-  byCorr: Map<string, Record<string, unknown>>;
-};
-
 type BeatWaiter = { resolve: (ok: boolean) => void; timer: ReturnType<typeof setTimeout> };
 type BeatSlot = { seq: number; waiters: BeatWaiter[] };
 type DesktopWaiter = {
@@ -25,8 +22,8 @@ type DesktopWaiter = {
 type LiveStore = {
   byDevice: Map<string, LiveSlot>;
   byUser: Map<string, Set<string>>;
-  screens: Map<string, ScreenSlot>;
-  results: Map<string, Map<string, Record<string, unknown>>>;
+  payloads: HubPayloads;
+  completed: Set<string>;
   agentVer: Map<string, string>;
   beats: Map<string, BeatSlot>;
   desktop: Map<string, DesktopWaiter>;
@@ -40,13 +37,33 @@ function store(): LiveStore {
   g.__fleetLive__ ??= {
     byDevice: new Map(),
     byUser: new Map(),
-    screens: new Map(),
-    results: new Map(),
+    payloads: new HubPayloads(),
+    completed: new Set(),
     agentVer: new Map(),
     beats: new Map(),
     desktop: new Map(),
   };
   const s = g.__fleetLive__;
+  s.completed ??= new Set();
+  if (!s.payloads) {
+    s.payloads = new HubPayloads();
+    // Development hot reload: migrate snapshots into the bounded cache rather
+    // than discarding still-useful output. This never alters routing/auth state.
+    const old = s as LiveStore & {
+      results?: Map<string, Map<string, Record<string, unknown>>>;
+      screens?: Map<string, { last?: Record<string, unknown>; byCorr: Map<string, Record<string, unknown>> }>;
+    };
+    for (const [device, rows] of old.results ?? []) for (const [corr, row] of rows) {
+      s.payloads.putResult(device, corr, row);
+      if (isTerminalResult(row)) s.completed.add(s.payloads.key(device, corr));
+    }
+    for (const [device, slot] of old.screens ?? []) {
+      for (const [corr, row] of slot.byCorr) s.payloads.putScreen(device, corr, row);
+      if (slot.last) s.payloads.putScreen(device, "", slot.last);
+    }
+    Reflect.deleteProperty(s, "screens");
+    Reflect.deleteProperty(s, "results");
+  }
   s.agentVer ??= new Map();
   s.beats ??= new Map();
   s.desktop ??= new Map();
@@ -110,33 +127,25 @@ export function ownerOf(deviceId: string): string | null {
 }
 
 export function putScreen(deviceId: string, body: Record<string, unknown>, corr?: string) {
-  const s = store();
-  const slot: ScreenSlot = s.screens.get(deviceId) ?? { byCorr: new Map() };
-  slot.last = body;
-  if (corr) slot.byCorr.set(corr, body);
-  s.screens.set(deviceId, slot);
+  store().payloads.putScreen(deviceId, corr, body);
 }
 
 export function getScreen(deviceId: string, corr?: string): Record<string, unknown> | null {
-  const slot = store().screens.get(deviceId);
-  if (!slot) return null;
   // A missing explicit handle is not permission to show another task's pane.
-  if (corr) return slot.byCorr.get(corr) ?? null;
-  return slot.last ?? null;
+  return store().payloads.getScreen(deviceId, corr) ?? null;
 }
 
 export function putResult(deviceId: string, corr: string, row: Record<string, unknown>) {
   const s = store();
-  let m = s.results.get(deviceId);
-  if (!m) {
-    m = new Map();
-    s.results.set(deviceId, m);
-  }
-  m.set(corr, row);
+  const key = s.payloads.key(deviceId, corr);
+  if (isTerminalResult(row)) s.completed.add(key);
+  else if (s.completed.has(key)) return;
+  s.payloads.putResult(deviceId, corr, row);
 }
 
 export function getResult(deviceId: string, corr: string): Record<string, unknown> | undefined {
-  return store().results.get(deviceId)?.get(corr);
+  const s = store();
+  return s.payloads.getResult(deviceId, corr) ?? (s.completed.has(s.payloads.key(deviceId, corr)) ? expiredResult() : undefined);
 }
 
 export function putAgentVer(deviceId: string, ver?: string) {
@@ -233,12 +242,12 @@ function userSet(userId: string): Set<string> {
 }
 
 /** Tests only. */
-export function resetLive() {
+export function resetLive(payloadOptions = {}) {
   const s = store();
   s.byDevice.clear();
   s.byUser.clear();
-  s.screens.clear();
-  s.results.clear();
+  s.payloads = new HubPayloads(payloadOptions);
+  s.completed.clear();
   s.agentVer.clear();
   s.beats.clear();
   s.desktop.clear();

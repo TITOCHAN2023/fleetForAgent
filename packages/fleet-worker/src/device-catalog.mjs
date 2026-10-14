@@ -5,6 +5,7 @@ const USER_DEVICE_PREFIX = "udi:";
 // trust the v2 marker written by the atomic index implementation below.
 const USER_DEVICE_READY_PREFIX = "udi-ready-v2:";
 const USER_DEVICE_ALIAS_PREFIX = "uda:";
+const USER_DEVICE_ALIAS_READY_PREFIX = "uda-ready-v1:";
 const STORAGE_BATCH_SIZE = 128;
 
 export const DEVICE_ALIAS_MAX_CHARS = 64;
@@ -67,11 +68,26 @@ export async function storeCatalogDevice(storage, next) {
   }
   const indexKey = userDeviceIndexKey(userId, next.id);
   const indexed = await storage.get(indexKey);
-  if (indexed === catalogKey) {
+  const alias = normalizeDeviceAlias(next.alias);
+  // New rows must maintain alias indexes even after this account's migration.
+  // Keep presence-only writes cheap when there is no alias or it is indexed.
+  const aliasIndexKey = alias?.key ? userDeviceAliasIndexKey(userId, alias.key) : null;
+  const aliasOwner = aliasIndexKey ? await storage.get(aliasIndexKey) : null;
+  let aliasIndexed = !aliasIndexKey || aliasOwner === next.id;
+  if (!aliasIndexed && typeof aliasOwner === "string") {
+    const other = await storage.get(deviceCatalogKey(aliasOwner));
+    // A heartbeat must not steal a valid legacy duplicate's chosen alias.
+    aliasIndexed = other?.userId === userId && normalizeDeviceAlias(other.alias)?.key === alias.key;
+  }
+  if (indexed === catalogKey && aliasIndexed) {
     await storage.put(catalogKey, next);
     return;
   }
-  await storage.put({ [catalogKey]: next, [indexKey]: catalogKey });
+  await storage.put({
+    [catalogKey]: next,
+    [indexKey]: catalogKey,
+    ...(aliasIndexKey && !aliasIndexed ? { [aliasIndexKey]: next.id } : {}),
+  });
 }
 
 async function listByPrefix(storage, prefix) {
@@ -135,6 +151,12 @@ export async function listCatalogDevices(storage, userId) {
 
 /** Resolve an account-owned device by immutable id first, then by alias. */
 export async function resolveCatalogDevice(storage, userId, reference) {
+  return storage.transaction((txn) => resolveCatalogDeviceInTransaction(txn, userId, reference));
+}
+
+// Device claim already owns a transaction; never try to infer that boundary
+// from whether a transaction-shaped adapter also exposes transaction().
+export async function resolveCatalogDeviceInTransaction(storage, userId, reference) {
   const ref = String(reference ?? "").trim();
   if (!userId || !ref) return null;
 
@@ -143,6 +165,7 @@ export async function resolveCatalogDevice(storage, userId, reference) {
 
   const normalized = normalizeDeviceAlias(ref);
   if (!normalized?.key) return null;
+  await ensureAliasIndex(storage, userId);
   const indexKey = userDeviceAliasIndexKey(userId, normalized.key);
   const indexedId = await storage.get(indexKey);
   if (typeof indexedId === "string" && indexedId) {
@@ -154,13 +177,31 @@ export async function resolveCatalogDevice(storage, userId, reference) {
     await storage.delete(indexKey);
   }
 
-  // Alias indexes were introduced after the device catalog. One bounded
-  // account-local scan repairs an older row the first time it is addressed.
+  return null;
+}
+
+async function ensureAliasIndex(storage, userId) {
+  const readyKey = `${USER_DEVICE_ALIAS_READY_PREFIX}${userId}`;
+  if (await storage.get(readyKey)) return;
   const rows = await listCatalogDevices(storage, userId);
-  const matched = rows.find((row) => normalizeDeviceAlias(row.alias)?.key === normalized.key);
-  if (!matched) return null;
-  await storage.put(indexKey, matched.id);
-  return matched;
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const aliases = new Map();
+  for (const row of rows) {
+    const alias = normalizeDeviceAlias(row.alias);
+    if (!alias?.key) continue;
+    const key = userDeviceAliasIndexKey(userId, alias.key);
+    // Legacy duplicates retain the catalog's first-match behavior.
+    if (!aliases.has(key)) aliases.set(key, row.id);
+  }
+  const indexed = await getEntries(storage, [...aliases.keys()]);
+  for (const [key, id] of indexed) {
+    const row = byId.get(id);
+    const alias = normalizeDeviceAlias(row?.alias);
+    if (alias?.key && userDeviceAliasIndexKey(userId, alias.key) === key) aliases.set(key, id);
+  }
+  await putEntries(storage, [...aliases]);
+  // The caller transaction commits every page and the marker atomically.
+  await storage.put(readyKey, true);
 }
 
 /** Atomically set/clear one account-local alias without changing device identity. */
@@ -187,7 +228,11 @@ export async function setCatalogDeviceAlias(storage, userId, deviceId, value) {
 
     const previous = normalizeDeviceAlias(current.alias);
     if (previous?.key && previous.key !== normalized.key) {
-      await txn.delete(userDeviceAliasIndexKey(userId, previous.key));
+      const key = userDeviceAliasIndexKey(userId, previous.key);
+      // Preserve another legacy duplicate rather than making it unreachable.
+      const replacement = devices.find((row) => row.id !== id && normalizeDeviceAlias(row.alias)?.key === previous.key);
+      if (replacement) await txn.put(key, replacement.id);
+      else await txn.delete(key);
     }
 
     const next = { ...current };

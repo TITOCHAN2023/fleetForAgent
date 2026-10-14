@@ -77,6 +77,10 @@ export function createSessionBook() {
       if (!c || !owner.has(c)) return undefined;
       return owner.get(c);
     },
+    isFinished(corr) {
+      const c = String(corr || "").trim();
+      return owner.has(c) && !alive.get(owner.get(c))?.has(c);
+    },
     liveOf(fp) {
       return live.get(normalizeFingerprint(fp)) || "";
     },

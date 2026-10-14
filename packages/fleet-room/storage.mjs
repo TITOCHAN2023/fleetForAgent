@@ -2,6 +2,29 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, openSync, closeSync, fchmodSync, fstatSync, constants } from "node:fs";
 import { dirname } from "node:path";
 
+// SQLite's BINARY order compares UTF-8 bytes, which follow Unicode scalar order.
+// Carry past U+10FFFF and skip surrogates when computing the exclusive bound.
+function prefixEnd(prefix) {
+  const chars = Array.from(prefix);
+  while (chars.length) {
+    const last = chars.pop().codePointAt(0);
+    if (last < 0x10ffff) return chars.join("") + String.fromCodePoint(last === 0xd7ff ? 0xe000 : last + 1);
+  }
+  return null;
+}
+
+function listPrefix(db, prefix) {
+  // Preserve the old SQLite semantics for malformed strings and embedded NULs.
+  if (/[\0\uD800-\uDFFF]/u.test(prefix)) {
+    return db.prepare("SELECT key,value FROM room_kv WHERE substr(key,1,?)=? ORDER BY key").all([...prefix].length, prefix);
+  }
+  if (!prefix) return db.prepare("SELECT key,value FROM room_kv ORDER BY key").all();
+  const end = prefixEnd(prefix);
+  return end === null
+    ? db.prepare("SELECT key,value FROM room_kv WHERE key>=? ORDER BY key").all(prefix)
+    : db.prepare("SELECT key,value FROM room_kv WHERE key>=? AND key<? ORDER BY key").all(prefix, end);
+}
+
 /** The authoritative Room ledger lives exclusively in the leader's private directory. */
 export class RoomStorage {
   constructor(filename) {
@@ -20,7 +43,7 @@ export class RoomStorage {
       get: async (key) => { const r = this.db.prepare("SELECT value FROM room_kv WHERE key=?").get(key); return r ? JSON.parse(r.value) : undefined; },
       put: async (key, value) => { this.db.prepare("INSERT INTO room_kv VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key, JSON.stringify(value)); },
       delete: async (key) => this.db.prepare("DELETE FROM room_kv WHERE key=?").run(key).changes > 0,
-      list: async ({ prefix = "" } = {}) => new Map(this.db.prepare("SELECT key,value FROM room_kv WHERE substr(key,1,?)=? ORDER BY key").all([...prefix].length, prefix).map((r) => [r.key, JSON.parse(r.value)])),
+      list: async ({ prefix = "" } = {}) => new Map(listPrefix(this.db, prefix).map((r) => [r.key, JSON.parse(r.value)])),
     };
   }
   transaction(fn) {

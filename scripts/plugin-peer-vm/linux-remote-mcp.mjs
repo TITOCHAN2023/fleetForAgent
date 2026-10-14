@@ -37,8 +37,13 @@ export async function remoteMcp(hub, token, transport) {
       pending.clear();
     }
   }
+  try {
   if (transport === 'sse') {
-    const response = await fetch(hub + '/mcp/sse', { headers: { authorization: `Bearer ${token}` }, signal: abort.signal });
+    // Bound connection setup without imposing a lifetime limit on the SSE stream.
+    const timer = setTimeout(() => abort.abort(), 15000);
+    let response;
+    try { response = await fetch(hub + '/mcp/sse', { headers: { authorization: `Bearer ${token}` }, signal: abort.signal }); }
+    finally { clearTimeout(timer); }
     assert.equal(response.status, 200);
     reader = response.body.getReader(); void readEvents();
     await Promise.race([endpointReady, new Promise((_, reject) => {
@@ -52,7 +57,8 @@ export async function remoteMcp(hub, token, transport) {
     if (transport === 'http') {
       const response = await fetch(hub + '/mcp', { method: 'POST', headers: {
         'content-type': 'application/json', accept: 'application/json, text/event-stream',
-        ...(session ? { 'mcp-session-id': session } : { authorization: `Bearer ${token}` }),
+        authorization: `Bearer ${token}`,
+        ...(session ? { 'mcp-session-id': session } : {}),
       }, body, signal: AbortSignal.timeout(30000) });
       assert(response.ok, `HTTP MCP status ${response.status}`);
       session ||= response.headers.get('mcp-session-id'); assert(session);
@@ -63,7 +69,7 @@ export async function remoteMcp(hub, token, transport) {
         pending.set(id, { resolve, reject, timer });
       });
       reply.catch(() => {});
-      const response = await fetch(session, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(15000) });
+      const response = await fetch(session, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body, signal: AbortSignal.timeout(15000) });
       assert(response.ok, `SSE MCP status ${response.status}`); await response.arrayBuffer();
       message = await reply;
     }
@@ -71,6 +77,19 @@ export async function remoteMcp(hub, token, transport) {
     return message.result;
   }
   await request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'isolated-linux-lab', version: '1' } });
+  // A leaked session ID alone cannot call or close this live session. Keep the
+  // negative checks next to the normal client so VM runs prove both contracts.
+  const unauthenticated = await fetch(transport === 'http' ? hub + '/mcp' : session, {
+    method: 'POST', headers: { 'content-type': 'application/json', ...(transport === 'http' ? { 'mcp-session-id': session } : {}) },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 99999, method: 'tools/list' }), signal: AbortSignal.timeout(10000),
+  });
+  assert.equal(unauthenticated.status, 401);
+  await unauthenticated.arrayBuffer();
+  if (transport === 'http') {
+    const closeAttempt = await fetch(hub + '/mcp', { method: 'DELETE', headers: { 'mcp-session-id': session }, signal: AbortSignal.timeout(10000) });
+    assert.equal(closeAttempt.status, 401); await closeAttempt.arrayBuffer();
+  }
+  await request('tools/list');
   return {
     async call(name, args = {}) {
       const result = await request('tools/call', { name, arguments: args });
@@ -84,8 +103,17 @@ export async function remoteMcp(hub, token, transport) {
       assert.equal(row.stdout.trim(), result.content[0].text.trim()); return row;
     },
     async close() {
-      if (transport === 'http') await fetch(hub + '/mcp', { method: 'DELETE', headers: { 'mcp-session-id': session }, signal: AbortSignal.timeout(10000) });
+      if (transport === 'http') {
+        const response = await fetch(hub + '/mcp', { method: 'DELETE', headers: { 'mcp-session-id': session, authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) });
+        assert.equal(response.status, 204);
+      }
       else { abort.abort(); await reader.cancel().catch(() => {}); }
     },
   };
+  } catch (error) {
+    // Creation can fail before the caller has registered this client for cleanup.
+    abort.abort();
+    await reader?.cancel().catch(() => {});
+    throw error;
+  }
 }

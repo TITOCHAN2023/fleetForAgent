@@ -139,3 +139,25 @@ test("each SSE session carries its own run corr into pane operations", () => {
     device_id: "box-a",
   });
 });
+
+test("Node SSE bounds bytes, removes slow session, and never replays a tool", async () => {
+  let calls = 0;
+  const sessions = new Map();
+  const handle = createMcpSseHandler({
+    sessions, maxQueueBytes: 256,
+    authenticate: async () => ({ ...fakeOperator(), callTool: async () => {
+      calls++; return { text: "界".repeat(200) };
+    } }),
+  });
+  const response = await handle(new Request("https://fleet.example/mcp/sse"));
+  const reader = response.body!.getReader();
+  const endpoint = endpointFrom(await readEvent(reader));
+  const post = () => handle(new Request(`https://fleet.example${endpoint}`, {
+    method: "POST", body: JSON.stringify({ id: 1, method: "tools/call", params: { name: "x" } }),
+  }));
+  assert.equal((await post()).status, 202);
+  await assert.rejects(reader.read(), /SSE.*limit/);
+  assert.equal(sessions.size, 0);
+  assert.equal((await post()).status, 404);
+  assert.equal(calls, 1);
+});

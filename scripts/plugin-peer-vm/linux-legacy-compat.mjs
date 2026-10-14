@@ -16,8 +16,15 @@ const { token } = JSON.parse(await readFile(base + '/seed.json'));
 const home = await mkdtemp(base + '/legacy-compat-');
 const device = '33333333-3333-4333-8333-333333333333';
 await writeFile(home + '/config.json', JSON.stringify({ enabled: true, permit: 'allow', hubInput: hub, hubToken: token, deviceId: device, autoUpdate: false }), { mode: 0o600 });
-const child = spawn('/opt/fleet-lab/fleet-agent-main-compat', ['--daemon'], {
-  env: { ...process.env, FLEET_HOME: home, FLEET_SETTINGS_ADDR: '127.0.0.1:17891', FLEET_AUTO_UPDATE: 'false' },
+const childEnv = { ...process.env };
+for (const key of Object.keys(childEnv)) if (key.startsWith('FLEET_')) delete childEnv[key];
+Object.assign(childEnv, { FLEET_HOME: home, FLEET_URL: hub, FLEET_TOKEN: token,
+  FLEET_ENABLED: 'true', FLEET_SETTINGS_ADDR: '127.0.0.1:17891', FLEET_AUTO_UPDATE: 'false' });
+// Supervise the no-args service path; --daemon intentionally double-forks.
+const child = spawn('/opt/fleet-lab/fleet-agent-main-compat', [], {
+  env: childEnv,
+  // Own this disposable service and its children without daemon double-fork.
+  detached: true,
   stdio: 'ignore',
 });
 let spawnError;
@@ -28,8 +35,9 @@ const fingerprint = randomUUID();
 const runs = [];
 const op = createOperator({ fingerprint, saveState() {}, rpc: async (path, body) => {
   if (path === '/v1/run') runs.push(body);
-  const authorization = await highSecAuthorization(token, hub);
-  const response = await fetch(hub + path, { method: 'POST', headers: fleetHubHeaders({ authorization, fingerprint }), body: JSON.stringify(body) });
+  const signal = AbortSignal.timeout(10000);
+  const authorization = await highSecAuthorization(token, hub, (url, init) => fetch(url, { ...init, signal }));
+  const response = await fetch(hub + path, { method: 'POST', signal, headers: fleetHubHeaders({ authorization, fingerprint }), body: JSON.stringify(body) });
   assert.equal(response.status, 200, path);
   return response.json();
 } });
@@ -60,7 +68,14 @@ try {
   assert.equal((await readFile(home + '/count', 'utf8')).trim(), 'once');
   console.log(JSON.stringify({ test: 'main-branch Agent works with candidate Hub and Tool; unsupported recovery rejected before dispatch', passed: true, executions: 1, agent_version: online.agentVer }));
 } finally {
-  child.kill('SIGTERM');
+  const stop = signal => {
+    if (!child.pid) return;
+    try { process.kill(-child.pid, signal); }
+    catch (error) { if (error.code !== 'ESRCH') throw error; }
+  };
+  stop('SIGTERM');
   await Promise.race([exited, delay(5000)]);
-  if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await exited; }
+  // Reap any remaining children even when the service already exited.
+  stop('SIGKILL');
+  await exited;
 }

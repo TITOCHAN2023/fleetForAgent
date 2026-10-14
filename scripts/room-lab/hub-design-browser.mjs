@@ -257,7 +257,7 @@ try {
   assert((await page.locator(".setup-copy pre").innerText()).includes('"type": "sse"'));
   await page.getByRole("button", { name: "stdio · npx", exact: true }).click();
   assert(!(await page.locator(".setup-copy pre").innerText()).includes("FLEET_TOKEN"));
-  await page.getByRole("link", { name: "Install Agent", exact: true }).click();
+  await page.getByRole("link", { name: "Install Sandbox", exact: true }).click();
   await page.getByRole("button", { name: "Windows PowerShell", exact: true }).click();
   assert((await page.locator(".setup-copy pre").innerText()).includes("install.ps1"));
   assert(!(await page.locator(".setup-copy pre").innerText()).includes("-Token"));

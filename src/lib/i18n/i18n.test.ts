@@ -34,7 +34,8 @@ test("guide architecture sentence is explicit", () => {
   assert.match(tr("guide.arch"), /dial out/);
   assert.match(tr("guide.arch"), /Windows/);
   assert.match(tr("login.try"), /fleet\.ginfo\.cc/);
-  assert.match(tr("login.body"), /CLI/);
+  assert.match(tr("login.body"), /Self-hosting/);
+  assert.match(tr("rel.s2"), /Linux uses the CLI without a browser/);
   assert.equal(tr("home.hero"), "One tool for every computer anywhere.");
   assert.equal(tr("nav.help"), "Help");
   assert.equal(tr("nav.docs"), "Docs");
@@ -42,7 +43,8 @@ test("guide architecture sentence is explicit", () => {
   setLocale("zh");
   assert.match(tr("guide.arch"), /连出去/);
   assert.match(tr("login.try"), /fleet\.ginfo\.cc/);
-  assert.match(tr("login.body"), /命令行/);
+  assert.match(tr("login.body"), /自托管/);
+  assert.match(tr("rel.s2"), /Linux 使用命令行，不打开浏览器/);
   assert.match(tr("home.hero"), /电脑/);
   assert.equal(tr("docs.tryAction"), "立即体验");
   setLocale("en");

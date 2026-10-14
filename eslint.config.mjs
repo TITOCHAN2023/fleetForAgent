@@ -18,6 +18,7 @@ export default tseslint.config(
       "src/routeTree.gen.ts",
       "packages/fleet-worker/public/rooms/assets/**",
       "scripts/plugin-peer-vm/.runs/**",
+      "scripts/runtime-bounds-lab/.artifacts/**",
     ],
   },
   js.configs.recommended,

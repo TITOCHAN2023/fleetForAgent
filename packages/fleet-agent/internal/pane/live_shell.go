@@ -798,12 +798,6 @@ func (s *Supervisor) tryFinishLive(fp string, job *liveJob, live *liveShell, for
 		job.pane.mu.Unlock()
 	}
 
-	s.mu.Lock()
-	if s.slotLocked(fp).pending == job {
-		s.slotLocked(fp).pending = nil
-	}
-	s.mu.Unlock()
-
 	out = stripEchoedCommand(stripCompletionText(out), job.command)
 	if live.screen != nil {
 		live.screen.resetPrimary()
@@ -824,6 +818,15 @@ func (s *Supervisor) tryFinishLive(fp string, job *liveJob, live *liveShell, for
 	if _, isExit := exitCommandCode(job.command); isExit && live.alive() {
 		live.kill()
 	}
+	// Publish the shell as available only after its old screen has been
+	// repainted, the pane has retained its private result, and an exit has
+	// destroyed the old shell. An enqueue must not hand that shell to a new
+	// job while the previous job can still wipe its screen or kill it.
+	s.mu.Lock()
+	if s.slotLocked(fp).pending == job {
+		s.slotLocked(fp).pending = nil
+	}
+	s.mu.Unlock()
 	go s.pumpLive(fp)
 	return true
 }

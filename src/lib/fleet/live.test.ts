@@ -18,7 +18,24 @@ import {
   cancelDesktopWait,
   getScreen,
   putScreen,
+  putResult,
+  getResult,
 } from "./live";
+
+test("payload eviction and expiry never demote completed work to running or leak another task", () => {
+  let now = 0;
+  resetLive({ maxBytes: 128, ttlMs: 10, summaryTtlMs: 20, now: () => now });
+  putResult("a", "job", { ok: true, stdout: "x".repeat(1024) });
+  assert.equal(getResult("a", "job")?.status, "unknown");
+  now = 30;
+  putResult("a", "job", { status: "running" });
+  assert.equal(getResult("a", "job")?.code, "RESULT_NOT_RETAINED");
+  assert.equal(getResult("b", "job"), undefined);
+  assert.equal(getResult("a", "not-started"), undefined);
+  putResult("a", "job", { ok: true, stdout: "recovered" });
+  assert.equal(getResult("a", "job")?.stdout, "recovered");
+  resetLive();
+});
 
 test("explicit recovery screen never falls back to another task or machine", () => {
   resetLive();

@@ -226,8 +226,8 @@ test("Worker serves /fleet-tool.tgz without hiding asset response semantics", as
   assert.equal(await unsatisfiedRange.text(), "range unavailable");
 });
 
-test("wrangler keeps SPA fallback, explicit DO migrations, and token vars secret", () => {
-  assert.match(wrangler, /not_found_handling = "single-page-application"/);
+test("wrangler keeps real 404s, explicit DO migrations, and token vars secret", () => {
+  assert.match(wrangler, /not_found_handling = "404-page"/);
   const routes = JSON.parse(wrangler.match(/^run_worker_first\s*=\s*(\[[^\n]+\])/m)?.[1] ?? "[]");
   for (const route of ["/source", "/trust", "/v1", "/v1/*", "/mcp", "/mcp/sse", "/ops", "/fleet-tool.tgz"]) {
     assert.ok(routes.includes(route), `missing Worker route: ${route}`);

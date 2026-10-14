@@ -101,7 +101,7 @@ async function waitHubResult(deviceId: string, corr: string, waitMs: number) {
   const deadline = Date.now() + budget;
   let row = getResult(deviceId, corr);
   if (budget <= 0) return row;
-  while (!isHubResultDone(row) && Date.now() < deadline) {
+  while ((!isHubResultDone(row) || row?.code === "RESULT_NOT_RETAINED") && Date.now() < deadline) {
     const left = deadline - Date.now();
     if (left <= 0) break;
     await sleep(Math.min(HUB_WAIT_POLL_MS, left));
@@ -504,7 +504,8 @@ export async function handleHubHttp(request: Request): Promise<Response> {
     const deviceId = await resolveDeviceId(userId, reference);
     if (!deviceId) return json({ error: "not found" }, 404);
     const waitMs = clampHubWaitMs(body.wait_ms);
-    if (!isHubResultDone(getResult(deviceId, corr))) {
+    const cached = getResult(deviceId, corr);
+    if (!isHubResultDone(cached) || cached?.code === "RESULT_NOT_RETAINED") {
       sendToDevice(userId, deviceId, envelope("get_result", { corr, fingerprint: fingerprintFromHeaders(request.headers) }, corr));
     }
     const row = waitMs > 0 ? await waitHubResult(deviceId, corr, waitMs) : getResult(deviceId, corr);

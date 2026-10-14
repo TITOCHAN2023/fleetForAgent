@@ -14,6 +14,7 @@ export function createSessionBook(): {
   claim(fp: string, corr: string): void;
   finish(corr: string): void;
   ownerOf(corr: string): string | undefined;
+  isFinished(corr: string): boolean;
   liveOf(fp: string): string;
   aliveOf(fp: string): string[];
   resolve(fp: string, ticket?: string | null): { drop: boolean; corr: string };

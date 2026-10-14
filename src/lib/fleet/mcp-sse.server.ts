@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { MCP_SSE_QUEUE_BYTES } from "../../../packages/fleet-worker/src/mcp-sse.mjs";
 import {
   createOperator,
   FLEET_VERSION,
@@ -58,6 +59,7 @@ type Session = {
   expiresAt: number;
   closed: boolean;
   close: () => void;
+  removeAbortListener?: () => void;
 };
 
 type Authenticate = (request: Request) => Promise<Operator>;
@@ -66,6 +68,7 @@ type McpSseOptions = {
   authenticate?: Authenticate;
   now?: () => number;
   sessions?: Map<string, Session>;
+  maxQueueBytes?: number;
 };
 
 class HubRpcError extends Error {
@@ -113,9 +116,18 @@ function rpcKey(id: JsonRpcId | undefined) {
 }
 
 function writeMessage(session: Session, payload: unknown) {
+  writeFrame(session, sseEvent("message", JSON.stringify(payload)));
+}
+
+function writeFrame(session: Session, frame: Uint8Array) {
   if (session.closed) return;
   try {
-    session.controller.enqueue(sseEvent("message", JSON.stringify(payload)));
+    if (frame.byteLength > (session.controller.desiredSize ?? 0)) {
+      session.controller.error(new Error("SSE queue byte limit exceeded"));
+      session.close();
+      return;
+    }
+    session.controller.enqueue(frame);
   } catch {
     session.close();
   }
@@ -249,6 +261,7 @@ function closeSession(sessions: Map<string, Session>, session: Session) {
   if (session.closed) return;
   session.closed = true;
   clearInterval(session.keepalive);
+  session.removeAbortListener?.();
   sessions.delete(session.id);
   try {
     session.controller.close();
@@ -301,7 +314,7 @@ export function createMcpSseHandler(options: McpSseOptions = {}) {
               return;
             }
             try {
-              controller.enqueue(sseComment("keepalive"));
+              writeFrame(session, sseComment("keepalive"));
             } catch {
               session.close();
             }
@@ -318,16 +331,23 @@ export function createMcpSseHandler(options: McpSseOptions = {}) {
           };
           session.close = () => closeSession(sessions, session as Session);
           sessions.set(id, session);
-          controller.enqueue(sseEvent("endpoint", `/mcp/sse?sessionId=${encodeURIComponent(id)}`));
+          writeFrame(session, sseEvent("endpoint", `/mcp/sse?sessionId=${encodeURIComponent(id)}`));
         },
         cancel() {
           if (session) closeSession(sessions, session);
         },
-      });
+      }, { highWaterMark: options.maxQueueBytes ?? MCP_SSE_QUEUE_BYTES, size: (chunk) => chunk.byteLength });
 
-      request.signal.addEventListener("abort", () => {
+      const onAbort = () => {
         if (session) closeSession(sessions, session);
-      });
+      };
+      // start() has run synchronously, but TypeScript cannot observe that assignment.
+      const openedSession = sessions.get(id);
+      if (openedSession) {
+        openedSession.removeAbortListener = () => request.signal.removeEventListener("abort", onAbort);
+        request.signal.addEventListener("abort", onAbort, { once: true });
+        if (request.signal.aborted) onAbort();
+      }
 
       return new Response(stream, {
         headers: {

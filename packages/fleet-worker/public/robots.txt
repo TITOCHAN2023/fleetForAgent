@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+Disallow: /v1/
+Disallow: /mcp
+Disallow: /ops
+Disallow: /rooms/
+
+# Advisory only. Authentication and admission controls enforce access.
+Sitemap: https://fleet.ginfo.cc/sitemap.xml

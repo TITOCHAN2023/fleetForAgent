@@ -122,7 +122,13 @@ try {
   const group = await Promise.all([0, 1, 2, 3].map(i => client('operator-' + i)));
   const one = group[0], two = group[1];
   await record('two isolated real Linux agents online', async () => {
-    const rows = await until(async () => { const r = await one.call('list_computers'); const cs = r.computers; return cs?.length === 2 && cs.every(c => c.online) && cs; });
+    const rows = await until(async () => {
+      const { computers = [] } = await one.call('list_computers');
+      // Legacy compatibility leaves an offline catalog entry behind. Keep its
+      // evidence; require exactly the two candidate devices to be online.
+      const online = computers.filter(c => c.online);
+      return online.length === 2 && online.every(c => c.id === A || c.id === B) && online;
+    });
     assert.deepEqual(rows.map(r => r.id).sort(), [A, B]);
     for (const r of rows) { assert(!('ip' in r)); assert(r.caps.includes('operation_recovery_v1')); }
     return { devices: rows.map(r => ({ id: r.id, version: r.agentVer })) };

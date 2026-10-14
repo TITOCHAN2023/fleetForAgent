@@ -1,91 +1,94 @@
 # Fleet
 
-**Docs:** [English](docs/en/README.md) · [中文](docs/zh/README.md)
+[English](docs/en/README.md) · [中文](docs/zh/README.md)
 
 ![Fleet](docs/media/title.png)
 
-**One MCP tool. Windows, Linux, and macOS. From anywhere.**
+**Let AI use the computers you already own.**
 
-Start on the live hub: **[https://fleet.ginfo.cc](https://fleet.ginfo.cc)**  
-Local `npm run dev` is a CLI on 127.0.0.1. The product is the cloud: agents dial out over WebSocket, so a laptop, a colo box, and a Windows PC join the same account.
+Fleet connects an MCP client to your Windows, Linux and macOS machines. Commands execute on the selected device, under its local permission setting. Use the [hosted Hub](https://fleet.ginfo.cc), or run a personal Hub on your own server or reachable LAN.
 
-![How a command travels](docs/media/architecture-flow.gif)
+[Read-only demo](https://fleet.ginfo.cc/demo/) · [Setup](https://fleet.ginfo.cc/help) · [Privacy and permissions](https://fleet.ginfo.cc/privacy/) · [Releases](https://github.com/TITOCHAN2023/fleetForAgent/releases/latest) · [Security reporting](SECURITY.md)
 
-Four values: **domain URL**, **hub token**, **Agent on each PC**, **import the tool**. Then Cursor / Claude can list and run on every machine you enrolled.
+## Three names, different jobs
 
-[Try the hub](https://fleet.ginfo.cc) · [Docs](https://fleet.ginfo.cc/docs) · [Source](https://fleet.ginfo.cc/source) · [Latest release](https://github.com/TITOCHAN2023/fleetForAgent/releases/latest) · [Deploy](docs/en/deploy.md) · [Trust](docs/en/trust.md) · [中文文档](docs/zh/README.md)
+| Name | Role |
+|---|---|
+| Fleet Sandbox plugin | Machine-side service that executes commands and hosts device plugins. The name does not promise OS-level isolation. |
+| Fleet Tool | Operator-side MCP bridge used by your AI client. Supports local stdio; the hosted Hub also exposes Streamable HTTP and classic SSE. |
+| Fleet Agent | An AI participant registered in Rooms, such as a Grok or Codex runner. An MCP-only participant cannot be remotely awakened. |
 
-## How it works
+Compatibility names remain unchanged. Downloads may still be named `FleetAgent-…`, the macOS app is `Fleet Agent.app`, the command is `fleet` / `fleet-agent`, and settings remain under `~/.fleet-agent`. Product labels do not change protocol names or existing configuration.
 
-![Fleet architecture](docs/media/architecture.svg)
+## How a task travels
 
-```
-Cursor / Claude  --HTTPS + flt_ token-->  fleet.ginfo.cc
-                                              │  WSS /v1/device (outbound only)
-                    ┌─────────────────────────┼─────────────────────────┐
-                    ▼                         ▼                         ▼
-              Windows amd64              Linux amd64/arm64        macOS arm64/amd64
-```
-
-1. **Tool** — Cursor, Claude, or any MCP client. `FLEET_URL` + `FLEET_TOKEN`.
-2. **Server** — the cloud hub ([fleet.ginfo.cc](https://fleet.ginfo.cc)). Login, mint tokens, relay jobs.
-3. **Agents** — a small process on each PC. They open an outbound WebSocket. No inbound ports, no public IP on the device.
-
-A command is a round trip: tool → hub → the OS you picked → stdout back.
-
-Silent explainer: [docs/media/architecture.mp4](docs/media/architecture.mp4)
-
-## Try it (cloud)
-
-1. Open **[https://fleet.ginfo.cc](https://fleet.ginfo.cc)** and sign in with Google / X.
-2. Settings → generate a Hub token (shown once).
-3. Install Agent from [Releases](https://github.com/TITOCHAN2023/fleetForAgent/releases/latest) on each computer. Paste `https://fleet.ginfo.cc` + the token.
-4. Import the operator:
-
-```bash
-FLEET_URL=https://fleet.ginfo.cc FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
+```mermaid
+flowchart LR
+  AI["AI client / Fleet Tool"] -->|"Authenticated HTTPS"| Hub["Hosted or self-hosted Hub"]
+  Sandbox["Fleet Sandbox plugin"] -->|"Outbound WSS"| Hub
+  AI -.->|"Optional RTC for supported commands"| Sandbox
+  Sandbox -->|"Local permission"| OS["Selected device OS"]
 ```
 
-Full walkthrough: [English](docs/en/deploy.md) · [中文](docs/zh/deploy.md)
+Devices maintain outbound WebSocket connections. Supported regular commands can use RTC and fall back to WebSocket when a direct path fails. Direct-only plugin data paths, including file transfer, have **no relay fallback**. Their setup fails if the direct connection cannot be established. Heartbeats and revocation stay on the control connection.
 
-## Tests
+Tasks live on the device. Keep the returned task identity and use `wait` / `get_result`; a timeout is not evidence of failure. Use `recover_session` after interruption instead of blindly repeating a command whose outcome is unknown. Aliases help select machines; stable device and task IDs preserve identity.
 
-`npm test` and `packages/fleet-agent` `go test` are unit suites. They do not simulate two machines. Cross-host behavior needs the two-pod intranet lab. On Linux each pod is capped at 1 CPU / 1 GiB:
+## Connect your first machine
 
-```bash
+1. Sign in to the [hosted Hub](https://fleet.ginfo.cc) with Google or X. Generate your account token in Settings and store it securely.
+2. Copy the macOS/Linux/WSL or Windows installer from Settings, or download a release. Install Fleet Sandbox on each target computer with the same Hub URL and token. Begin with `ask` permission.
+3. Copy an MCP configuration from Settings into your AI client. Choose Streamable HTTP, classic SSE for a compatible client, or local stdio with Node and `fleet-tool`.
+4. Ask the AI to list machines, select one by ID or unique alias, and run a harmless command. Check that the result belongs to the intended device.
+
+Configurations remain visible when the page no longer holds your plaintext token. Add your saved token yourself. **Do not reset a working token just to copy configuration.** A reset revokes all clients using it.
+
+Remote MCP requests must send authorization on every request, including session continuation and deletion. A Session ID is not a credential. Clients that only authenticate initialization need an update or a configuration change; clients already sending credentials on every request retain the same protocol.
+
+Device plugins are listed in the [curated registry](https://fleet.ginfo.cc/plugins). Their install and invoke actions follow the device permission setting. `allow` authorizes them without another local click; it also grants the power of the operating-system user running Sandbox. A command denylist is defense in depth, not a security sandbox.
+
+## Rooms and recovery
+
+[Rooms](packages/fleet-room/README.md) coordinate online Fleet Agents across your devices. Only the leader owns the Room ledger. Tasks retain the target device selected when queued. Changing the default device affects later tasks, not work already running.
+
+Room member runners currently require Linux tmpfs and separately installed, authenticated ACP adapters. Their volatile adapter state must be prepared again after reboot. This does not guarantee that arbitrary adapters or model providers retain no data. Windows/macOS do not have equivalent member containment.
+
+## Hosted and self-hosted
+
+- **Hosted Hub** provides Google/X login and account-scoped machines. You trust the Hub operator with relayed content and authentication.
+- **Personal Node Hub** uses one `SELF_HOST_TOKEN`, not the public Hub's per-account `flt_1` flow. Read the [Node Hub instructions](packages/fleet-hub/README.md) and put TLS in front of any non-loopback deployment.
+- **Your Cloudflare Worker** needs your own OAuth, origin and deployment configuration. Follow [English deployment](docs/en/deploy.md) or [中文部署](docs/zh/deploy.md).
+
+`npm install && npm run dev` starts the development website on `0.0.0.0:8080`. Opening `127.0.0.1:8080` is local access; remote devices need a reachable Hub address. Self-hosting can work on a LAN or private network and does not require a public cloud.
+
+## Data and trust
+
+WSS/TLS protects network transport. The Hub can see relayed command output and Room traffic; this is not end-to-end encryption against the Hub. The Worker temporarily persists completed command/plugin results for 15 minutes, terminal snapshots for 5 minutes with activity-based refresh, and active session records for 24 hours. Cleanup is expiry-driven, not a guarantee of instantaneous physical erasure. Account, credential and device records have separate lifetimes. Room history stays on the leader.
+
+Read [data retention](docs/en/privacy.md), [release evidence and trust limits](docs/en/trust.md), and [security reporting](SECURITY.md). `/source` is self-reported build metadata, not runtime attestation. Checksums detect mismatched downloads; they do not replace publisher trust or a signed-update policy. Auto-update is a separate opt-in setting; publishing an installer does not imply every running device has upgraded.
+
+## Development and tests
+
+```sh
+npm ci
+npm test
+npm run typecheck
 npm run test:intranet
 ```
 
-Details: [`TESTING.md`](TESTING.md) and `scripts/intranet-lab/`. The heavier plugin/RTC lab is `npm run test:intranet:peer`.
+Unit tests are not a two-machine proof. The intranet lab runs isolated Linux endpoints; plugin/RTC tests use `npm run test:intranet:peer`. See [TESTING.md](TESTING.md). Do not run destructive-command tests on personal machines.
 
-## Local is only a CLI
-
-```bash
-npm install
-npm run dev
-```
-
-http://127.0.0.1:8080 is for hacking. A hub on loopback cannot reach Windows, Linux, and macOS that are not on that box — it never becomes a fleet. At most you get a command-line tool. Deploy the hub in the cloud (this repo’s Worker, or just use **[https://fleet.ginfo.cc](https://fleet.ginfo.cc)**) if you want the product.
-
-## Layout
-
-| Path | What |
+| Path | Role |
 |---|---|
-| `src/routes/v1/` | Website hub routes (`/v1/*`). Token per account. |
-| `packages/fleet-agent/` | Go agent. Config: site origin + Hub token. Layout: [`packages/fleet-agent/README.md`](packages/fleet-agent/README.md) |
-| `packages/fleet-tool/` | Operator / MCP. Env: `FLEET_URL` + `FLEET_TOKEN` |
-| `packages/fleet-worker/` | Cloudflare Worker backend. Same Worker also serves `/ops` when `ADMIN_EMAILS` is set (empty = no admins). |
-| `packages/fleet-hub/` | Optional standalone Node hub |
-| `docs/en/`, `docs/zh/` | Docs by language |
-| `docs/media/` | Architecture diagrams, GIF, explainer video |
-| `migrations/` | Auth + fleet schema (PGLite locally, Postgres in prod) |
-## Ops
+| `packages/fleet-agent/` | Fleet Sandbox machine service; compatibility package name |
+| `packages/fleet-tool/` | MCP/operator client |
+| `packages/fleet-room/` | AI runners, leader ledger and Room protocol |
+| `packages/fleet-worker/` | Cloudflare Hub and hosted static UI |
+| `packages/fleet-hub/` | Personal Node Hub |
+| `src/routes/v1/` | Development website Hub routes |
+| `docs/en/`, `docs/zh/` | Bilingual documentation |
 
-Admins whose cookie-session email is in `ADMIN_EMAILS` see a muted Ops switch in the site header (no `/ops` URL to remember). The ops view is usage and last-seen freshness, searchable, newest activity first. Empty secret = no admins; everyone else gets 404. Privacy: no device names, hostnames, or IPs. Ban: 「操作不了你的机子，只是用于异常账号识别」 / “Cannot operate your machines. This is only for identifying abnormal accounts.” The public Worker has no shared cross-account machine-control credential; the ops allowlist grants no extra machine-control authority.
-
-```bash
-npx wrangler secret put ADMIN_EMAILS
-```
+Ops access via `ADMIN_EMAILS` provides operational metadata and account-ban controls, not cross-account machine-control authority. A ban can affect availability; it does not grant permission to run commands on another account's device.
 
 ## License
 

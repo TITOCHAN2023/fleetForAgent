@@ -58,6 +58,9 @@ The helpers are intentionally explicit, not a production installer:
    under `/opt/fleet-lab/runtime` on B and link each workspace's `node_modules`.
    `linux-hub.mjs` builds once and runs workerd through Miniflare's public
    compatibility converter. No watcher, inspector, remote bindings or deploy.
+   It reads the candidate `wrangler.toml` admission-rate bindings through
+   Wrangler and installs real local limiters; do not replace them with an
+   always-allow stub. Missing bindings can fail closed before authentication.
    The config and DO database are private to `/var/lib/fleet-hub-lab`.
 6. Run `agent a` on A, `agent b` on B; `room leader peer-a` on A,
    `room peer-b` on B; and `stun` on A. Both guests use the same private Hub
@@ -131,6 +134,25 @@ For real legacy compatibility, compile a recorded `main` revision as
 `linux-legacy-compat.mjs` as `fleet-test`. It starts only that binary in a fresh
 private directory, uses `127.0.0.1:17891`, and stops its own process afterward.
 It must not replace or restart either candidate Agent during the steady window.
+Run it outside suites that require exactly two online devices. Offline catalog
+entries are retained as evidence; extra **online** devices still fail the suite.
+
+`linux-release-smoke.mjs` separately checks the official v0.6.7 Linux arm64
+binary, four operators, HTTP/SSE MCP, result recovery, and the official ACP
+plugin. Verify the cached archive against the checksum manifest read directly
+from GitHub's v0.6.7 release before extracting it into
+`/opt/fleet-lab/hn-official-0.6.7`. The helper also pins the extracted binary hash.
+Run this **after** the two-device steady window: it registers an extra device
+in a fresh private directory on B, uses port 17891, and terminates only its own
+process group. It never replaces the two Sandbox services. Failed evidence
+remains in that fresh directory. A release smoke pass is not a 30-minute
+stability result for that release.
+
+Both compatibility helpers supervise the no-args service path. Do not pass
+`--daemon`: that deliberately double-forks into a different process group.
+Use `linux-release-smoke.mjs --fail-after-online` to verify failure cleanup:
+the injected error must exit nonzero, leave no helper-owned process, and close
+port 17891. Run this separately from the successful business smoke.
 
 ## Limits
 

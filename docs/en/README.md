@@ -1,47 +1,23 @@
 # Fleet
 
-**One MCP tool. Windows, Linux, and macOS. From anywhere.**
+[中文](../zh/README.md) · [Project overview](../../README.md) · [Read-only demo](https://fleet.ginfo.cc/demo/)
 
-Live hub: **[https://fleet.ginfo.cc](https://fleet.ginfo.cc)**
+Fleet lets an AI client use your own computers. The **Fleet Sandbox plugin** runs on the machine; **Fleet Tool** connects your MCP client; a **Fleet Agent** is an AI participant in Rooms. Existing binary names, token fields and configuration paths remain compatible. Sandbox is a product name, not a claim of OS isolation.
 
-![How a command travels](../media/architecture-flow.gif)
+## Get connected
 
-Install an Agent on each computer, then import the tool with **this URL + a hub token**. Cursor / Claude talks to the server; the server already has a WebSocket from every Windows, Linux, and Mac box that dialed out — any arch the Agent runs on.
+1. Use the [hosted Hub](https://fleet.ginfo.cc) or [self-host](deploy.md).
+2. Generate a token in hosted Settings, then install Sandbox on each target computer with that Hub origin and token. Start with local `ask` permission.
+3. Import Streamable HTTP, classic SSE or stdio MCP configuration from Settings into your AI client.
+4. List machines, select an ID or unique alias, then run a harmless command. Continue a running task with `wait` or `get_result`; use `recover_session` after interruptions before deciding whether a retry is safe.
 
-[Try fleet.ginfo.cc](https://fleet.ginfo.cc) · [Docs](https://fleet.ginfo.cc/docs) · [Source](https://fleet.ginfo.cc/source) · [Deploy](deploy.md) · [Trust](trust.md) · [Auth](auth.md) · [Notes](notes.md)
+The public Hub uses per-account `flt_1` tokens. The [single-user Node Hub](../../packages/fleet-hub/README.md) uses its own `SELF_HOST_TOKEN`. A reachable LAN works for self-hosting; loopback addresses refer to the current computer only.
 
-中文：[../zh/README.md](../zh/README.md)
+## Current boundaries
 
-## How it works
+- Ordinary commands support RTC with WebSocket fallback. Direct-only file transfer fails without a direct path; it never silently switches to a Hub relay.
+- Plugin installation and invocation follow device permission. With `allow`, there is no extra click and plugins run with the service user's privileges.
+- [Rooms](../../packages/fleet-room/README.md) keep their ledger on the leader. Linux member runners require tmpfs; Windows/macOS member containment is not implemented.
+- The Hub can see relayed data. Worker command/plugin results expire after 15 minutes, snapshots after 5 minutes with activity refresh, and active records after 24 hours. These are not system-wide deletion guarantees.
 
-![Fleet architecture](../media/architecture.svg)
-
-1. **Tool** — Cursor, Claude, MCP. `FLEET_URL` + `FLEET_TOKEN`.
-2. **Server** — [fleet.ginfo.cc](https://fleet.ginfo.cc) (or a Worker with OAuth and per-account token issuance configured). Relays jobs. The simpler single-user self-host path is the Node hub.
-3. **Agents** — outbound `WSS /v1/device` on Windows amd64, Linux amd64/arm64, macOS arm64/amd64. No inbound ports.
-
-Explainer video: [architecture.mp4](../media/architecture.mp4)
-
-## Try the cloud first
-
-1. Sign in at [https://fleet.ginfo.cc](https://fleet.ginfo.cc) (Google / X).
-2. Settings → generate a Hub token.
-3. [Install Agent](https://github.com/TITOCHAN2023/fleetForAgent/releases/latest) on each PC. Hub address = `https://fleet.ginfo.cc`.
-4. Point the tool at the same pair:
-
-```bash
-FLEET_URL=https://fleet.ginfo.cc FLEET_TOKEN=flt_... node packages/fleet-tool/index.mjs list
-```
-
-The same Worker can serve `/ops` (usage, last-seen freshness, Ban) for emails in the `ADMIN_EMAILS` secret. Empty secret = no admins. Not a separate Worker. Ops and Ban add no machine-control authority.
-
-Details: [deploy.md](deploy.md) · [auth.md](auth.md)
-
-## Local is a CLI
-
-```bash
-npm install
-npm run dev
-```
-
-http://127.0.0.1:8080 is for hacking. A hub on loopback cannot join Windows / Linux / macOS that cannot see that address — local deploy never becomes a fleet. At most you get a command-line tool. Put the hub in the cloud (or start at **[https://fleet.ginfo.cc](https://fleet.ginfo.cc)**) if you want the product.
+[Full setup](deploy.md) · [Privacy and retention](privacy.md) · [Trust evidence](trust.md) · [Authentication](auth.md) · [Security reporting](../../SECURITY.md)

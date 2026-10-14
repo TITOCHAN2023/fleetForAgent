@@ -4,12 +4,16 @@ import { hostname } from 'node:os';
 import { readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
+import { unstable_readConfig } from 'wrangler';
 
 assert.equal(process.platform, 'linux');
 assert.equal(hostname(), 'lima-linux-a');
 assert.notEqual(process.getuid(), 0);
 const state = '/var/lib/fleet-hub-lab';
 const config = JSON.parse(await readFile(state + '/wrangler.json', 'utf8'));
+// Exercise the deployed admission bindings, not an always-allow test stub.
+// Keep credentials/persistence in the private lab config above.
+const candidate = unstable_readConfig({ config: '/opt/fleet-lab/workspace/packages/fleet-worker/wrangler.toml' });
 const secrets = await readFile(state + '/.dev.vars', 'utf8');
 const key = secrets.match(/^VM_SEED_KEY=([a-f0-9]{64})$/m)?.[1];
 assert(key);
@@ -21,6 +25,7 @@ const mf = new Miniflare(convertV4MiniflareOptions({
   name: config.name, modules: true, script: outputFiles[0].text,
   compatibilityDate: config.compatibility_date, host: '0.0.0.0', port: 8787,
   bindings: { ...config.vars, VM_SEED_KEY: key },
+  ratelimits: Object.fromEntries(candidate.ratelimits.map(({ name, ...limit }) => [name, limit])),
   durableObjects: Object.fromEntries(config.durable_objects.bindings.map(b =>
     [b.name, { className: b.class_name, useSQLite: true }])),
   resourcePersistencePath: state + '/state/v3',

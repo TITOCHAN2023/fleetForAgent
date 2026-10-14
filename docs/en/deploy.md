@@ -1,11 +1,14 @@
 # Deploy FleetForAgent
 
-Try the live hub first: **[https://fleet.ginfo.cc](https://fleet.ginfo.cc)**  
-Local `npm run dev` is a CLI on loopback — it cannot run a fleet. Cloud is where Windows / Linux / macOS join the same account.
+Use the [hosted Hub](https://fleet.ginfo.cc), or run a personal Hub on a reachable server or LAN. The development website runs on `0.0.0.0:8080`; a loopback URL refers only to the current machine. Self-hosting does not require public cloud infrastructure.
+
+The machine-side product is the **Fleet Sandbox plugin**. **Fleet Agent** refers to an AI participant in Rooms. Existing `FleetAgent`, `fleet-agent`, `Fleet Agent.app` and `~/.fleet-agent` names below are compatibility names, not separate products. [Current overview](README.md) · [Retention and permissions](privacy.md) · [Rooms and Linux member requirements](../../packages/fleet-room/README.md)
+
+Remote MCP requires Authorization on every request, including session continuation and deletion. A Session ID is not a credential. Clients authenticating only initialization must update or change configuration.
 
 ```
 New user → https://fleet.ginfo.cc → mint a Hub token
-Install Agent on each PC → paste https://fleet.ginfo.cc + token
+Install Fleet Sandbox on each PC → paste https://fleet.ginfo.cc + token
 Import the tool → FLEET_URL + FLEET_TOKEN
 ```
 

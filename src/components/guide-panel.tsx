@@ -122,7 +122,8 @@ function CodeBlock({ label, text }: { label: string; text: string }) {
 }
 
 export function GuidePanel() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const zh = locale === "zh";
   return (
     <div className="grid gap-4">
       <section className="rounded-xl border border-border bg-surface p-5">
@@ -140,6 +141,20 @@ export function GuidePanel() {
             <Link to="/releases">{t("nav.downloads")}</Link>
           </Button>
         </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-surface p-5">
+        <h2 className="text-base font-medium">{zh ? "名称、权限与恢复" : "Names, permissions and recovery"}</h2>
+        <p className="mt-2 text-sm leading-relaxed text-muted">{zh
+          ? "Fleet Sandbox 插件在机器侧执行命令，Fleet Agent 指 Room 的 AI 参与者。现有 Fleet Agent.app、fleet-agent 和配置路径保持兼容。Sandbox 名称不代表操作系统隔离；allow 会自动授权命令与插件。"
+          : "Fleet Sandbox is the machine-side plugin; Fleet Agent means an AI participant in Rooms. Fleet Agent.app, fleet-agent and configuration paths stay compatible. Sandbox does not imply OS isolation; allow authorizes commands and plugins automatically."}</p>
+        <p className="mt-2 text-sm leading-relaxed text-muted">{zh
+          ? "普通命令的 RTC 失败后可回退 WS，direct-only 文件传输没有中继回退。任务运行中用 wait/get_result，断线后先 recover_session，不要盲目重跑结果未知的命令。"
+          : "Regular commands can fall back from RTC to WS; direct-only file transfer has no relay fallback. Continue tasks with wait/get_result and recover_session after interruption instead of blindly repeating an unknown outcome."}</p>
+        <p className="mt-2 text-sm leading-relaxed text-muted">{zh
+          ? "远程 MCP 每次请求都要携带 Authorization，Session ID 不能代替凭据。只在初始化认证的客户端需要升级或调整配置。"
+          : "Remote MCP requires Authorization on every request. A Session ID is not a credential. Clients authenticating only initialization need an update or configuration change."}</p>
+        <p className="mt-3 text-sm"><a className="underline" href="https://fleet.ginfo.cc/privacy/">{zh ? "隐私、留存和权限说明" : "Privacy, retention and permissions"}</a></p>
       </section>
 
       <section className="rounded-xl border border-border bg-surface p-5">

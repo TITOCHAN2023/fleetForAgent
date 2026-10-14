@@ -52,6 +52,15 @@ export function LoginLanding() {
             <p className="text-sm text-muted sm:col-span-2">{t("login.authOff")}</p>
           )}
         </div>
+        <p className="mt-6 text-sm text-muted">
+          <a className="underline underline-offset-4" href="https://fleet.ginfo.cc/demo/">
+            {locale === "zh" ? "先看只读演示，无需登录" : "Explore the read-only demo, no sign-in"}
+          </a>
+          {" · "}
+          <a className="underline underline-offset-4" href="https://fleet.ginfo.cc/privacy/">
+            {locale === "zh" ? "隐私与权限" : "Privacy & permissions"}
+          </a>
+        </p>
       </div>
 
       <section className="mx-auto max-w-5xl px-5 pb-16">

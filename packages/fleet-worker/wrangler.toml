@@ -11,10 +11,13 @@ workers_dev = false
 # When shipping an agent release (code-only; do not add a Durable Object
 # migration): set LATEST_AGENT_VER to the tag (e.g. 0.3.2). Clients learn
 # it from hello_ok / pong / /v1/health and pull OS/arch assets from
-# AGENT_UPDATE_BASE (default GitHub releases/latest/download) plus
+# AGENT_UPDATE_BASE (GitHub releases/download/v{advertised-version}) plus
 # checksums-{ver}.txt. Optional AGENT_UPDATE_CHECKSUMS / AGENT_UPDATE_SUMS
 # override the checksums URL or inline the checksums.txt body.
 #   npx wrangler secret put LATEST_AGENT_VER
+# LATEST_AGENT_VER is the advertised update, NOT necessarily the newest download.
+# Current hardened clients independently discover official GitHub releases; this
+# announcement is not a global rollout lock. Keep legacy advert URLs consistent.
 #
 # aud inside every flt_1 token. Never taken from the Host header.
 [vars]
@@ -38,8 +41,21 @@ custom_domain = true
 [assets]
 directory = "./public"
 binding = "ASSETS"
-not_found_handling = "single-page-application"
+not_found_handling = "404-page"
 run_worker_first = ["/source", "/trust", "/v1", "/v1/*", "/mcp", "/mcp/sse", "/ops", "/fleet-tool.tgz"]
+
+# Admission budgets only; no blanket limit on WSS, valid MCP sessions, result
+# polling, or plugins. Counters are approximate and per Cloudflare location.
+# Namespace IDs are account-local: use distinct IDs for a staging deployment.
+[[ratelimits]]
+name = "OAUTH_RATE_LIMITER"
+namespace_id = "1001001"
+simple = { limit = 60, period = 60 }
+
+[[ratelimits]]
+name = "CHALLENGE_RATE_LIMITER"
+namespace_id = "1001002"
+simple = { limit = 6000, period = 60 }
 
 [[durable_objects.bindings]]
 name = "DEVICE"

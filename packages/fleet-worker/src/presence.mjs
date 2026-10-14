@@ -3,6 +3,16 @@
 export const DEFAULT_UPDATE_BASE =
   "https://github.com/TITOCHAN2023/fleetForAgent/releases/latest/download";
 
+// The rollout version may deliberately lag the newest downloadable release.
+// Pin both binaries and checksums together, even when old deployments explicitly
+// configured GitHub's moving latest alias. Custom mirrors retain their contract.
+export function versionedUpdateBase(base, ver) {
+  const root = String(base ?? "").trim().replace(/\/+$/, "") || DEFAULT_UPDATE_BASE;
+  const version = String(ver ?? "").trim().replace(/^[vV]/, "");
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) return "";
+  return root.replace(/^(https:\/\/github\.com\/[^/]+\/[^/]+\/releases)\/latest\/download$/, `$1/download/v${encodeURIComponent(version)}`);
+}
+
 /** Same SHA-256 lines GitHub / the public download page ship as checksums*.txt. */
 export function parseChecksums(text) {
   const out = {};
@@ -36,7 +46,8 @@ export function checksumsURL(base, ver) {
 export function advertisedUpdate({ latestAgentVer, updateBase, checksumsUrl, checksumsText } = {}) {
   const ver = String(latestAgentVer ?? "").trim();
   if (!ver) return {};
-  const base = String(updateBase ?? "").trim() || DEFAULT_UPDATE_BASE;
+  const base = versionedUpdateBase(updateBase, ver);
+  if (!base) return {};
   const out = { latest_agent_ver: ver, update_base: base };
   const sumsUrl = String(checksumsUrl ?? "").trim() || checksumsURL(base, ver);
   if (sumsUrl) out.update_checksums = sumsUrl;

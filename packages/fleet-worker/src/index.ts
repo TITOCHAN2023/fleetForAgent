@@ -13,6 +13,7 @@
  */
 
 import { cookieMutationAllowed } from "./request-origin.mjs";
+import { ResultWaiters } from "./result-waiters.mjs";
 import { handleOAuth } from "./oauth";
 export { RoomRelayDO } from "./room-relay";
 import { readRoomBody } from "./room-relay";
@@ -24,6 +25,7 @@ import {
   listCatalogDevices,
   markUserDeviceIndexReady,
   resolveCatalogDevice,
+  resolveCatalogDeviceInTransaction,
   setCatalogDeviceAlias,
   storeCatalogDevice,
 } from "./device-catalog.mjs";
@@ -386,7 +388,6 @@ function updateAdvert(env: Env) {
 }
 
 const HUB_WAIT_MAX_MS = 30_000;
-const HUB_WAIT_POLL_MS = 25;
 const RTC_SIGNAL_TTL_MS = 60_000;
 const RTC_SDP_MAX_BYTES = 128 << 10;
 export const DEVICE_WS_TEXT_MAX_BYTES = 16 << 20;
@@ -452,23 +453,6 @@ function boundedStoredPayload(
     bytes,
     t: value.t,
   };
-}
-
-async function waitDeviceResult(
-  getRow: () => Promise<Record<string, unknown> | undefined>,
-  waitMs: number,
-) {
-  const budget = clampHubWaitMs(waitMs);
-  const deadline = Date.now() + budget;
-  let row = await getRow();
-  if (budget <= 0) return row;
-  while (!isHubResultDone(row) && Date.now() < deadline) {
-    const left = deadline - Date.now();
-    if (left <= 0) break;
-    await new Promise((r) => setTimeout(r, Math.min(HUB_WAIT_POLL_MS, left)));
-    row = await getRow();
-  }
-  return row;
 }
 
 type Envelope = {
@@ -1762,7 +1746,7 @@ export class FleetDO implements DurableObject {
       return { ok: false, status: 409, error: "taken" };
     }
     if (!prev && row.userId) {
-      const aliasOwner = await resolveCatalogDevice<DeviceRow>(storage, row.userId, row.id);
+      const aliasOwner = await resolveCatalogDeviceInTransaction<DeviceRow>(storage, row.userId, row.id);
       if (aliasOwner && aliasOwner.id !== row.id) {
         return { ok: false, status: 409, error: "device id conflicts with alias" };
       }
@@ -2577,6 +2561,10 @@ export class DeviceDO implements DurableObject {
   ctx: DurableObjectState;
   env: Env;
   private lifecycleScheduled = false;
+  private resultWaiters = new ResultWaiters({
+    read: (corr: string) => this.readStoredResult(corr),
+    isDone: isHubResultDone,
+  });
   private beatSeq = 0;
   private beatWaiters: Array<() => void> = [];
   private desktopWaiters = new Map<
@@ -2861,7 +2849,7 @@ export class DeviceDO implements DurableObject {
       );
       const waitMs = clampHubWaitMs(body.wait_ms);
       if (waitMs <= 0) return json({ corr, status: "running" });
-      const row = await waitDeviceResult(() => this.readStoredResult(corr), waitMs);
+      const row = await this.resultWaiters.wait(corr, waitMs, request.signal);
       return json(hubResultPayload(corr, row));
     }
 
@@ -2974,7 +2962,7 @@ export class DeviceDO implements DurableObject {
       const waitMs = clampHubWaitMs(url.searchParams.get("wait_ms"));
       const row =
         waitMs > 0
-          ? await waitDeviceResult(() => this.readStoredResult(corr), waitMs)
+          ? await this.resultWaiters.wait(corr, waitMs, request.signal)
           : await this.readStoredResult(corr);
       return json(hubResultPayload(corr, row));
     }
@@ -3254,6 +3242,7 @@ export class DeviceDO implements DurableObject {
       }
       await this.putDeviceExpiry(`res:${parsed.corr}`, stored, Date.now() + DEVICE_RESULT_TTL_MS);
       await this.finishSession(parsed.corr);
+      this.resultWaiters.notify(parsed.corr, stored);
       return;
     }
 
@@ -3266,6 +3255,7 @@ export class DeviceDO implements DurableObject {
       });
       await this.putDeviceExpiry(`res:${parsed.corr}`, stored, Date.now() + DEVICE_RESULT_TTL_MS);
       await this.finishSession(parsed.corr);
+      this.resultWaiters.notify(parsed.corr, stored);
     }
   }
 

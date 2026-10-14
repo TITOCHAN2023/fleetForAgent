@@ -19,14 +19,20 @@ const (
 	headLines          = 200
 	screenLines        = 80
 	completedPaneLimit = 256
+	lineMaxBytes       = rawOutMaxBytes // preserve the existing 64 KiB oneshot output window
+	streamPartMaxBytes = 128 * 1024     // independently bound the first and last lines
+	displayMaxBytes    = 128 * 1024
+	byteOmission       = "[... bytes omitted ...]"
 )
 
 type streamBuf struct {
-	head     []string
-	tail     []string
-	current  string
-	headDone bool
-	dropped  int
+	head      []string
+	tail      []string
+	current   string
+	headDone  bool
+	dropped   int
+	headBytes int
+	tailBytes int
 }
 
 func newStreamBuf() *streamBuf {
@@ -38,27 +44,82 @@ func (s *streamBuf) append(chunk string) {
 	if !utf8.ValidString(chunk) {
 		chunk = strings.ToValidUTF8(chunk, "\uFFFD")
 	}
-	parts := strings.Split(chunk, "\n")
-	s.current += parts[0]
-	for _, rest := range parts[1:] {
+	for {
+		part, rest, newline := strings.Cut(chunk, "\n")
+		s.current = appendBoundedLine(s.current, part)
+		if !newline {
+			return
+		}
 		s.pushCompleted(s.current)
-		s.current = rest
+		s.current = ""
+		chunk = rest
 	}
 }
 
 func (s *streamBuf) pushCompleted(line string) {
-	if !s.headDone {
+	if !s.headDone && s.headBytes+len(line) <= streamPartMaxBytes {
 		s.head = append(s.head, line)
+		s.headBytes += len(line)
 		if len(s.head) >= headLines {
 			s.headDone = true
 		}
 		return
 	}
+	s.headDone = true
 	s.tail = append(s.tail, line)
-	if len(s.tail) > ringLines {
+	s.tailBytes += len(line)
+	for len(s.tail) > ringLines || s.tailBytes > streamPartMaxBytes {
 		s.dropped++
+		s.tailBytes -= len(s.tail[0])
+		s.tail[0] = ""
 		s.tail = s.tail[1:]
 	}
+}
+
+// All callers supply valid UTF-8. The retained line is bounded even before a
+// newline arrives. Each append copies at most lineMaxBytes, not all prior output.
+// Clone short slices so a retained line cannot pin a large input chunk.
+func appendBoundedLine(previous, chunk string) string {
+	if len(previous)+len(chunk) <= lineMaxBytes {
+		if previous == "" {
+			return strings.Clone(chunk)
+		}
+		return previous + chunk
+	}
+	headBudget := (lineMaxBytes - len(byteOmission)) / 2
+	tailBudget := lineMaxBytes - len(byteOmission) - headBudget
+	head := utf8Prefix(previous, headBudget)
+	if len(previous) < headBudget {
+		head = previous + utf8Prefix(chunk, headBudget-len(previous))
+	}
+	tail := utf8Suffix(chunk, tailBudget)
+	if len(chunk) < tailBudget {
+		tail = utf8Suffix(previous, tailBudget-len(chunk)) + chunk
+	}
+	// Keep the marker at a stable byte offset even when a multibyte rune does
+	// not fit the prefix budget; later appends must not retain part of a marker.
+	return head + strings.Repeat(" ", headBudget-len(head)) + byteOmission + tail
+}
+
+func utf8Prefix(text string, budget int) string {
+	if len(text) <= budget {
+		return text
+	}
+	for budget > 0 && !utf8.RuneStart(text[budget]) {
+		budget--
+	}
+	return text[:budget]
+}
+
+func utf8Suffix(text string, budget int) string {
+	if len(text) <= budget {
+		return text
+	}
+	start := len(text) - budget
+	for start < len(text) && !utf8.RuneStart(text[start]) {
+		start++
+	}
+	return text[start:]
 }
 
 func (s *streamBuf) render() string {
@@ -114,6 +175,7 @@ type Supervisor struct {
 	panes     map[string]*Pane
 	order     []string
 	completed []*Pane // completion order; running/queued panes never enter this queue
+	nextDirty int     // round-robin cursor, guarded by mu
 	// live is the anonymous (empty fingerprint) slot. Tests and 0.2.7 hubs.
 	live  *liveShell
 	slots map[string]*liveSlot
@@ -162,9 +224,11 @@ func (p *Pane) retainCompletion() {
 		delete(s.panes, old.corr)
 	}
 	order := s.order[:0]
-	for _, id := range s.order {
+	for i, id := range s.order {
 		if id != old.id {
 			order = append(order, id)
+		} else if i < s.nextDirty {
+			s.nextDirty--
 		}
 	}
 	clear(s.order[len(order):])
@@ -385,14 +449,30 @@ func (p *Pane) append(which, chunk string) {
 
 func (p *Pane) appendDisplayLocked(chunk string) {
 	chunk = strings.ReplaceAll(chunk, "\r", "")
-	parts := strings.Split(chunk, "\n")
+	chunk = strings.ToValidUTF8(chunk, "\uFFFD")
 	if len(p.lines) == 0 {
 		p.lines = []string{""}
 	}
-	p.lines[len(p.lines)-1] += parts[0]
-	p.lines = append(p.lines, parts[1:]...)
-	if len(p.lines) > ringLines {
-		p.lines = p.lines[len(p.lines)-ringLines:]
+	bytes := 0
+	for _, line := range p.lines {
+		bytes += len(line)
+	}
+	for {
+		part, rest, newline := strings.Cut(chunk, "\n")
+		last := len(p.lines) - 1
+		bytes -= len(p.lines[last])
+		p.lines[last] = appendBoundedLine(p.lines[last], part)
+		bytes += len(p.lines[last])
+		for len(p.lines) > ringLines || bytes > displayMaxBytes {
+			bytes -= len(p.lines[0])
+			p.lines[0] = ""
+			p.lines = p.lines[1:]
+		}
+		if !newline {
+			return
+		}
+		p.lines = append(p.lines, "")
+		chunk = rest
 	}
 }
 
@@ -428,17 +508,24 @@ func (s *Supervisor) PaneSnapshot(p *Pane) (text string, running bool, code, seq
 		return
 	}
 	s.mu.Lock()
-	live := s.slotLocked(p.fingerprint).live
-	s.mu.Unlock()
-	if live != nil && live.screen != nil {
-		text, row, col = live.screen.grid()
+	sl := s.slots[p.fingerprint]
+	// A shared shell belongs only to its current job, not every retained or
+	// queued pane of that operator. Keep the owner check and grid read under
+	// mu so a handoff cannot substitute the next job's screen for this corr.
+	if sl != nil && sl.pending != nil && sl.pending.pane == p && sl.live != nil && sl.live.screen != nil {
 		p.mu.Lock()
-		p.seq++
-		running, code, seq = p.running, p.exitCode, p.seq
-		p.dirty = false
+		if p.running {
+			text, row, col = sl.live.screen.grid()
+			p.seq++
+			running, code, seq = p.running, p.exitCode, p.seq
+			p.dirty = false
+			p.mu.Unlock()
+			s.mu.Unlock()
+			return
+		}
 		p.mu.Unlock()
-		return
 	}
+	s.mu.Unlock()
 	return p.SnapshotFrame()
 }
 
@@ -576,17 +663,19 @@ func (s *Supervisor) List() []map[string]any {
 func (s *Supervisor) TakeDirty() *Pane {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var latest *Pane
-	for _, id := range s.order {
-		p := s.panes[id]
+	for scanned := 0; scanned < len(s.order); scanned++ {
+		s.nextDirty %= len(s.order)
+		p := s.panes[s.order[s.nextDirty]]
+		s.nextDirty++
 		if p == nil {
 			continue
 		}
 		p.mu.Lock()
-		if p.dirty {
-			latest = p
-		}
+		dirty := p.dirty
 		p.mu.Unlock()
+		if dirty {
+			return p
+		}
 	}
-	return latest
+	return nil
 }

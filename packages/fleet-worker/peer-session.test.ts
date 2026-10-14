@@ -36,6 +36,24 @@ import { handleOAuth } from "./src/oauth.ts";
 import { MCP_SESSION_IDLE_MS, MCP_SESSION_MAX_AGE_MS } from "./src/mcp-sse.mjs";
 import { operationCorr } from "../fleet-tool/operator.mjs";
 
+test("DeviceDO waiting for one corr wakes on persisted result without replaying run", async () => {
+  const sent: Array<{ type: string; corr: string }> = [];
+  const ws = { deserializeAttachment: () => ({}), send: (raw: string) => sent.push(JSON.parse(raw)) } as unknown as WebSocket;
+  const { device } = fakeDeviceHarness([ws]);
+  const started = await device.fetch(new Request("https://device/run", {
+    method: "POST", headers: { "X-Fleet-Operator": "wait-owner" }, body: JSON.stringify({ command: "echo safe" }),
+  }));
+  const { corr } = await started.json() as { corr: string };
+  const pending = Array.from({ length: 10 }, () => device.fetch(new Request(`https://device/result?corr=${corr}&wait_ms=1000`, {
+    headers: { "X-Fleet-Operator": "wait-owner" },
+  })));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await device.webSocketMessage(ws, JSON.stringify({ v: 1, type: "result", corr, body: { ok: true, exit_code: 0, stdout: "terminal" } }));
+  const rows = await Promise.all((await Promise.all(pending)).map((response) => response.json())) as Array<{ stdout: string }>;
+  assert.ok(rows.every((row) => row.stdout === "terminal"));
+  assert.equal(sent.filter((frame) => frame.type === "run").length, 1);
+});
+
 test("DeviceDO recovery uses one scoped ID, queries the device and never demotes completion", async () => {
   const sent: Array<{ type: string; corr: string; body: Record<string, unknown> }> = [];
   const ws = {

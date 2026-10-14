@@ -36,6 +36,12 @@ export function listCatalogDevices<T extends CatalogDevice>(
   userId: string,
 ): Promise<T[]>;
 export function resolveCatalogDevice<T extends CatalogDevice>(
+  storage: DeviceCatalogStorage,
+  userId: string,
+  reference: unknown,
+): Promise<T | null>;
+/** The caller owns the transaction, including every migration page and marker. */
+export function resolveCatalogDeviceInTransaction<T extends CatalogDevice>(
   storage: DeviceCatalogAccess,
   userId: string,
   reference: unknown,

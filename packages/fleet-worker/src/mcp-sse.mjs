@@ -9,6 +9,7 @@ export const MCP_PROTOCOL_VERSION = MCP_LEGACY_PROTOCOL_VERSION;
 export const MCP_KEEPALIVE_MS = 15_000;
 export const MCP_SESSION_IDLE_MS = 10 * 60 * 1000;
 export const MCP_SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+export const MCP_SSE_QUEUE_BYTES = 8 * 1024 * 1024;
 
 const encoder = new TextEncoder();
 
@@ -25,12 +26,13 @@ export function isMcpSessionExpired({ now, expiresAt, lastActivityAt, idleMs }) 
 }
 
 export class McpSseSession {
-  constructor({ rpc, now = Date.now, keepaliveMs = MCP_KEEPALIVE_MS, idleMs = MCP_SESSION_IDLE_MS } = {}) {
+  constructor({ rpc, now = Date.now, keepaliveMs = MCP_KEEPALIVE_MS, idleMs = MCP_SESSION_IDLE_MS, maxQueueBytes = MCP_SSE_QUEUE_BYTES } = {}) {
     if (typeof rpc !== "function") throw new Error("rpc required");
     this.rpcSession = new McpRpcSession({ rpc, env: {}, protocolVersion: MCP_PROTOCOL_VERSION });
     this.now = now;
     this.keepaliveMs = keepaliveMs;
     this.idleMs = idleMs;
+    this.maxQueueBytes = maxQueueBytes;
     this.controller = null;
     this.timer = null;
     this.expiresAt = 0;
@@ -53,7 +55,8 @@ export class McpSseSession {
     const stream = new ReadableStream({
       start: (controller) => {
         this.controller = controller;
-        controller.enqueue(sseEvent("endpoint", endpoint));
+        this.enqueue(sseEvent("endpoint", endpoint));
+        if (this.closed) return;
         this.timer = setInterval(() => {
           if (this.closed) return;
           if (isMcpSessionExpired({
@@ -66,14 +69,14 @@ export class McpSseSession {
             return;
           }
           try {
-            controller.enqueue(sseComment("keepalive"));
+            this.enqueue(sseComment("keepalive"));
           } catch {
             this.close();
           }
         }, this.keepaliveMs);
       },
       cancel: () => this.close(),
-    });
+    }, { highWaterMark: this.maxQueueBytes, size: (chunk) => chunk.byteLength });
     return new Response(stream, {
       headers: {
         "content-type": "text/event-stream; charset=utf-8",
@@ -99,10 +102,22 @@ export class McpSseSession {
   write(payload) {
     if (this.closed || !this.controller) return;
     try {
-      this.controller.enqueue(sseEvent("message", JSON.stringify(payload)));
+      this.enqueue(sseEvent("message", JSON.stringify(payload)));
     } catch {
       this.close();
     }
+  }
+
+  enqueue(frame) {
+    if (this.closed || !this.controller) return;
+    if (frame.byteLength > (this.controller.desiredSize ?? 0)) {
+      // error(), unlike close(), releases already buffered frames immediately.
+      // Only the transport is closed: never retry or cancel the running operation.
+      this.controller.error(new Error("SSE queue byte limit exceeded"));
+      this.close();
+      return;
+    }
+    this.controller.enqueue(frame);
   }
 
   async dispatch(message, authorize = async () => {}) {

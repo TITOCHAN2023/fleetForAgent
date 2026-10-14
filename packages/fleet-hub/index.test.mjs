@@ -29,6 +29,37 @@ test("lost Hub cache can re-query a scoped operation without sending run", async
   assert.equal(final.json.stdout, "recovered without replay");
 });
 
+test("evicted terminal payload stays unknown, owned and query-only", async (t) => {
+  let offset = 0;
+  const hub = createHub({ now: () => Date.now() + offset, payloadCacheOptions: { maxBytes: 128, summaryTtlMs: 10 } });
+  t.after(() => hub.close());
+  const { http, ws: wsUrl } = await listen(hub);
+  const dev = connectDevice(wsUrl);
+  t.after(() => dev.ws.close());
+  await dev.opened; await waitType(dev.inbox, "hello_ok");
+  const owner = { "X-Fleet-Operator": "owner" };
+  const started = await post(http, "/v1/run", { device_id: "dev-1", command: "echo safe" }, undefined, owner);
+  const corr = started.json.corr;
+  await waitType(dev.inbox, "run");
+  dev.ws.send(JSON.stringify({ v: 1, type: "result", corr, body: { ok: true, exit_code: 0, stdout: "x".repeat(1024) } }));
+  await new Promise((r) => setTimeout(r, 20));
+  const result = await post(http, "/v1/get_result", { device_id: "dev-1", corr }, undefined, owner);
+  assert.equal(result.json.status, "unknown");
+  assert.equal(result.json.code, "RESULT_NOT_RETAINED");
+  await waitType(dev.inbox, "get_result");
+  assert.equal(dev.inbox.filter((m) => m.type === "run").length, 1);
+  const foreign = await post(http, "/v1/get_result", { device_id: "dev-1", corr }, undefined, { "X-Fleet-Operator": "foreign" });
+  assert.deepEqual(foreign.json, { status: "pending" });
+  offset = 1000;
+  const expired = await post(http, "/v1/plugin_result", { device_id: "dev-1", corr }, undefined, owner);
+  assert.equal(expired.json.status, "unknown", "existing ownership metadata proves completion after summary expiry");
+  const recovered = post(http, "/v1/get_result", { device_id: "dev-1", corr, wait_ms: 1000 }, undefined, owner);
+  await new Promise((r) => setTimeout(r, 20));
+  dev.ws.send(JSON.stringify({ v: 1, type: "result", corr, body: { ok: true, exit_code: 0, stdout: "recovered" } }));
+  assert.equal((await recovered).json.stdout, "recovered", "wait_ms waits through an expired-payload sentinel");
+  assert.equal(dev.inbox.filter((m) => m.type === "run").length, 1);
+});
+
 async function listen(hub) {
   await new Promise((resolve) => hub.server.listen(0, "127.0.0.1", resolve));
   const { port } = hub.server.address();

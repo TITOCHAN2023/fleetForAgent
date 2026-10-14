@@ -152,3 +152,28 @@ test("meaningful MCP work refreshes the idle deadline", async () => {
   await readEvent(reader);
   await reader.cancel();
 });
+
+test("slow SSE consumer is disconnected at a byte limit and buffered data is discarded", async () => {
+  const session = new McpSseSession({ rpc: async () => ({}), maxQueueBytes: 256 });
+  const response = session.open("slow");
+  try {
+    for (let i = 0; i < 20; i++) session.write({ text: "界".repeat(20) });
+    assert.equal(session.closed, true);
+    assert.equal(session.timer, null);
+    assert.equal(session.controller, null);
+    await assert.rejects(response.body.getReader().read(), /SSE.*limit/);
+  } finally { session.close(); }
+});
+
+test("draining SSE consumers can receive more than the lifetime byte budget", async () => {
+  const session = new McpSseSession({ rpc: async () => ({}), maxQueueBytes: 256 });
+  const reader = session.open("draining").body.getReader();
+  try {
+    await readEvent(reader);
+    for (let i = 0; i < 50; i++) {
+      session.write({ text: "界".repeat(20) });
+      await readEvent(reader);
+    }
+    assert.equal(session.closed, false);
+  } finally { await reader.cancel(); }
+});

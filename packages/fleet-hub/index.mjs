@@ -33,6 +33,7 @@ import {
   trustPage,
 } from "../fleet-worker/src/source.mjs";
 import { RoomRelay, relayRegistration, ROOM_FRAME_LIMIT } from "../fleet-room/relay.mjs";
+import { HubPayloads, expiredResult } from "./payload-cache.mjs";
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -61,6 +62,7 @@ export function createHub({
   now = () => Date.now(),
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   desktopWaitMs = DESKTOP_WAIT_MS,
+  payloadCacheOptions = {},
   latestAgentVer = process.env.FLEET_LATEST_AGENT_VER || "",
   updateBase = process.env.FLEET_UPDATE_BASE || "",
   checksumsUrl = process.env.FLEET_UPDATE_CHECKSUMS || "",
@@ -77,10 +79,7 @@ export function createHub({
   const fleet = new Map();
   /** @type {Map<string, import("ws").WebSocket>} */
   const sockets = new Map();
-  /** @type {Map<string, { last?: Record<string, unknown>, byCorr: Map<string, Record<string, unknown>> }>} */
-  const screens = new Map();
-  /** @type {Map<string, Map<string, Record<string, unknown>>>} */
-  const results = new Map();
+  const payloads = new HubPayloads({ ...payloadCacheOptions, now });
   /** @type {Map<string, ReturnType<typeof createSessionBook>>} */
   const sessions = new Map();
   /** @type {Map<string, { seq: number, waiters: Array<() => void> }>} */
@@ -197,10 +196,7 @@ export function createHub({
       return;
     }
     if (parsed.type === "screen") {
-      const slot = screens.get(id) ?? { byCorr: new Map() };
-      slot.last = parsed.body ?? {};
-      if (parsed.corr) slot.byCorr.set(parsed.corr, parsed.body ?? {});
-      screens.set(id, slot);
+      payloads.putScreen(id, parsed.corr, parsed.body ?? {});
       return;
     }
     if (parsed.type === "accepted" && parsed.corr) {
@@ -212,6 +208,7 @@ export function createHub({
       return;
     }
     if (parsed.type === "plugin_accepted" && parsed.corr) {
+      if (isHubResultDone(deviceResults(id).get(parsed.corr))) return;
       deviceResults(id).set(parsed.corr, { status: parsed.body?.status ?? "running" });
       return;
     }
@@ -236,12 +233,10 @@ export function createHub({
   }
 
   function deviceResults(id) {
-    let m = results.get(id);
-    if (!m) {
-      m = new Map();
-      results.set(id, m);
-    }
-    return m;
+    return {
+      get: (corr) => payloads.getResult(id, corr) ?? (sessions.get(id)?.isFinished(corr) ? expiredResult() : undefined),
+      set: (corr, row) => payloads.putResult(id, corr, row),
+    };
   }
 
   function deviceSessions(id) {
@@ -268,7 +263,7 @@ export function createHub({
     const deadline = now() + budget;
     let row = deviceResults(deviceId).get(corr);
     if (budget <= 0) return row;
-    while (!isHubResultDone(row) && now() < deadline) {
+    while ((!isHubResultDone(row) || row?.code === "RESULT_NOT_RETAINED") && now() < deadline) {
       const left = deadline - now();
       if (left <= 0) break;
       await sleep(Math.min(HUB_WAIT_POLL_MS, left));
@@ -682,8 +677,7 @@ export function createHub({
         body.device_id,
         envelope("read_screen", withFingerprint({ corr: resolved.corr }, fp), resolved.corr),
       );
-      const slot = screens.get(body.device_id);
-      const row = slot?.byCorr.get(resolved.corr) || null;
+      const row = payloads.getScreen(body.device_id, resolved.corr) || null;
       write(res, 200, { status: row ? "ok" : "empty", screen: row });
       return;
     }
@@ -719,7 +713,8 @@ export function createHub({
         write(res, 200, { status: "pending" });
         return;
       }
-      if (!isHubResultDone(deviceResults(body.device_id).get(resolved.corr))) {
+      const cached = deviceResults(body.device_id).get(resolved.corr);
+      if (!isHubResultDone(cached) || cached?.code === "RESULT_NOT_RETAINED") {
         sendTo(body.device_id, envelope("get_result", withFingerprint({ corr: resolved.corr }, fp), resolved.corr));
       }
       const waitMs = clampHubWaitMs(body.wait_ms);

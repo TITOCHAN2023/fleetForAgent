@@ -70,3 +70,15 @@ test("session book claims, isolates, and finishes without leaking", () => {
   assert.equal(book.liveOf("fp-a"), "c-a");
   assert.equal(book.resolve("fp-a", "c-a").drop, false);
 });
+
+test("terminal proof uses existing identity metadata and never guesses for unknown or active jobs", () => {
+  const book = createSessionBook();
+  assert.equal(book.isFinished("missing"), false);
+  book.claim("fp", "running");
+  book.claim("fp", "done");
+  book.finish("done");
+  assert.equal(book.isFinished("done"), true);
+  assert.equal(book.isFinished("running"), false);
+  assert.equal(book.ownerOf("done"), "fp");
+  assert.equal(book.resolve("other", "done").drop, true);
+});

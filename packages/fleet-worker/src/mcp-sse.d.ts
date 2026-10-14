@@ -2,6 +2,7 @@ export const MCP_PROTOCOL_VERSION: string;
 export const MCP_KEEPALIVE_MS: number;
 export const MCP_SESSION_IDLE_MS: number;
 export const MCP_SESSION_MAX_AGE_MS: number;
+export const MCP_SSE_QUEUE_BYTES: number;
 
 export type JsonRpcMessage = {
   jsonrpc?: string;
@@ -24,6 +25,7 @@ export class McpSseSession {
     now?: () => number;
     keepaliveMs?: number;
     idleMs?: number;
+    maxQueueBytes?: number;
   });
   readonly opened: boolean;
   readonly closed: boolean;

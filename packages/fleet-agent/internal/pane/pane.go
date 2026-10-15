@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"github.com/TITOCHAN2023/fleetForAgent/internal/hostaudit"
 	"io"
 	"os/exec"
 	"runtime"
@@ -153,6 +154,7 @@ type Pane struct {
 	stdin             io.WriteCloser
 	cmd               *exec.Cmd
 	handle            sessionHandle
+	audit             hostaudit.Session
 	screen            *vtScreen
 	rawOut            string
 	dirty             bool
@@ -271,6 +273,33 @@ func (s *Supervisor) SpawnFor(fingerprint, corr, command string) (*Pane, error) 
 	}
 	return s.spawnOneshotFor(fingerprint, corr, command)
 }
+
+// SpawnForObserved keeps the historical path when observation is disabled.
+func (s *Supervisor) SpawnForObserved(fingerprint, corr, command string, opts hostaudit.Options, sink hostaudit.Sink) (*Pane, error) {
+	if runtime.GOOS != "windows" {
+		return s.spawnOneshotPTYObserved(fingerprint, corr, command, func(cmd *exec.Cmd) (*exec.Cmd, hostaudit.Session, error) {
+			return hostaudit.Prepare(cmd, corr, "pane-"+corr, opts, sink)
+		})
+	}
+	p, err := s.spawnOneshotFor(fingerprint, corr, command)
+	if err == nil {
+		_, session, _ := hostaudit.Prepare(p.cmd, corr, p.ID(), opts, sink)
+		p.audit = session
+		session.Bind(p.ProcessPID())
+		go func() {
+			for {
+				done, code := p.Finished()
+				if done {
+					session.RootCompleted(code)
+					return
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+		}()
+	}
+	return p, err
+}
+func (p *Pane) AuditSession() hostaudit.Session { return p.audit }
 
 func (s *Supervisor) spawnOneshot(corr, command string) (*Pane, error) {
 	return s.spawnOneshotFor("", corr, command)

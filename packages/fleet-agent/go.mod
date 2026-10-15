@@ -6,13 +6,14 @@ require (
 	github.com/coder/websocket v1.8.13
 	github.com/creack/pty v1.1.24
 	github.com/energye/systray v1.0.3
+	github.com/godbus/dbus/v5 v5.1.0
 	github.com/hinshun/vt10x v0.0.0-20220301184237-5011da428d02
 	github.com/pion/webrtc/v4 v4.1.6
+	golang.org/x/crypto v0.33.0
 	golang.org/x/sys v0.34.0
 )
 
 require (
-	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/pion/datachannel v1.5.10 // indirect
 	github.com/pion/dtls/v3 v3.0.7 // indirect
@@ -30,6 +31,5 @@ require (
 	github.com/pion/transport/v3 v3.0.8 // indirect
 	github.com/pion/turn/v4 v4.1.1 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
-	golang.org/x/crypto v0.33.0 // indirect
 	golang.org/x/net v0.35.0 // indirect
 )

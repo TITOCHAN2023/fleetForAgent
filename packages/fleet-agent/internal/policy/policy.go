@@ -7,8 +7,32 @@ import (
 	"unicode/utf8"
 )
 
+// Blocked refuses a device command before it is executed.
+// Restore of a literal base64 pipe or echo substitution only adds a refusal.
+// A decode that fails is left alone.
 func Blocked(command string) bool {
-	return blocked(command, 0)
+	if blocked(command, 0) {
+		return true
+	}
+	text, ok, capped := unfoldAll(command)
+	if capped {
+		return true
+	}
+	return ok && blocked(text, 0)
+}
+
+// Unfolded is the command after a recognized literal restore.
+// It is the text the refusal records. It is not a shell.
+func Unfolded(command string) (string, bool) {
+	text, ok, _ := unfoldAll(command)
+	if !ok {
+		return "", false
+	}
+	shown := strings.Join(fieldsRespectingSimple(text), " ")
+	if shown == "" {
+		return text, true
+	}
+	return shown, true
 }
 
 func blocked(command string, depth int) bool {
@@ -41,6 +65,9 @@ func blocked(command string, depth int) bool {
 }
 
 func nestedShellBody(args []string) (string, bool) {
+	if len(args) >= 2 && commandBase(args[0]) == "eval" {
+		return strings.Join(args[1:], " "), true
+	}
 	if len(args) < 3 {
 		return "", false
 	}
@@ -370,36 +397,17 @@ func safeCleanupPath(p string) bool {
 	if p == "~" || strings.HasPrefix(p, "~/") || p == "$HOME" || strings.HasPrefix(p, "$HOME/") {
 		return false
 	}
+	cleaned := ""
 	if strings.HasPrefix(p, "/") {
-		cleaned := path.Clean(p)
-		if cleaned == "/" {
-			return false
-		}
-		rel := strings.TrimPrefix(cleaned, "/")
-		return rel != "" && strings.Contains(rel, "/")
-	}
-	if winAbsTwoComponents(p) {
-		return true
-	}
-	return false
-}
-
-func winAbsTwoComponents(p string) bool {
-	if len(p) < 3 {
+		cleaned = path.Clean(p)
+	} else if winAbsPath(p) {
+		cleaned = path.Clean(strings.ReplaceAll(p[2:], `\`, "/"))
+	} else {
 		return false
 	}
-	r, _ := utf8.DecodeRuneInString(p)
-	if !unicode.IsLetter(r) || p[1] != ':' {
+	if cleaned == "/" {
 		return false
 	}
-	if p[2] != '\\' && p[2] != '/' {
-		return false
-	}
-	normalized := strings.ReplaceAll(p[2:], `\`, "/")
-	cleaned := path.Clean("/" + strings.TrimLeft(normalized, "/"))
-	if cleaned == "/" || strings.ContainsAny(cleaned, "*?[") {
-		return false
-	}
-	rest := strings.TrimPrefix(cleaned, "/")
-	return rest != "" && strings.Contains(rest, "/")
+	rel := strings.TrimPrefix(cleaned, "/")
+	return rel != "" && strings.Contains(rel, "/")
 }

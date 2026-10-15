@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/TITOCHAN2023/fleetForAgent/internal/activity"
 	"regexp"
 	"slices"
 	"strings"
@@ -467,6 +468,7 @@ func (a *Agent) handlePluginPeerPrepare(ctx context.Context, sink EnvelopeSink, 
 		a.sendPluginPeerFailure(ctx, sink, fmt.Sprint(env.Body["session_id"]), fmt.Sprint(env.Body["round_id"]), "INVALID_PREPARE")
 		return false
 	}
+	a.activityRequestAs(ctx, Envelope{Type: "plugin", Corr: req.SessionID, Body: map[string]any{"plugin_id": req.Plugin.ID, "action": req.Plugin.Action}})
 	// Existing prepares are idempotent, including while their original request
 	// is waiting for consent. New work gets a cheap device-policy gate before
 	// any plugin binary is hashed.
@@ -694,7 +696,9 @@ func (s *pluginPeerSession) startEpoch(roundID string) {
 		}
 	}()
 
-	meta, plugin, err := openPluginPeer(e.ctx, s.pluginID, s.protocol, s.role, s.action)
+	inv := pluginInvocation{V: 1, Corr: s.sessionID, Origin: "remote", DeviceID: s.agent.deviceID, Actor: s.operatorID, agent: s.agent}
+	pluginCtx := context.WithValue(e.ctx, pluginInvocationKey{}, inv)
+	meta, plugin, err := openPluginPeer(pluginCtx, s.pluginID, s.protocol, s.role, s.action)
 	if err != nil {
 		s.failEpoch(e, "PLUGIN_UNAVAILABLE", err)
 		return
@@ -725,6 +729,7 @@ func (s *pluginPeerSession) startEpoch(roundID string) {
 	}
 	e.plugin = plugin
 	s.mu.Unlock()
+	s.recordActivity("started", map[string]any{"round_id": e.roundID})
 	pendingWrite, err := writePluginPeerControlBounded(e.ctx, plugin, pluginPeerOpen(s.action, s.input, s.peer))
 	if pendingWrite != nil {
 		if guardOwned {
@@ -991,6 +996,7 @@ func (s *pluginPeerSession) sendEvent(roundID, event, code string) error {
 }
 
 func (s *pluginPeerSession) sendEventContext(ctx context.Context, roundID, event, code string) error {
+	s.recordActivity(event, map[string]any{"round_id": roundID, "code": code})
 	body := map[string]any{"session_id": s.sessionID, "round_id": roundID, "event": event}
 	if code != "" {
 		body["failure_code"] = normalizePluginPeerFailureCode(code, "PLUGIN_PEER_FAILED")
@@ -1009,6 +1015,7 @@ func (s *pluginPeerSession) sendControl(env Envelope) error {
 }
 
 func (a *Agent) sendPluginPeerFailure(ctx context.Context, sink EnvelopeSink, sessionID, roundID, code string) {
+	a.record(activity.Event{Corr: sessionID, Actor: actorFromContext(ctx), Kind: "plugin", Phase: "refused", Source: "core", Summary: "peer prepare", Details: map[string]any{"round_id": roundID, "code": code}})
 	if sink == nil || sessionID == "" || roundID == "" {
 		return
 	}
@@ -2769,4 +2776,11 @@ func closePluginPeersConcurrently(sessions []*pluginPeerSession, closeSession fu
 		}()
 	}
 	wait.Wait()
+}
+
+func (s *pluginPeerSession) recordActivity(phase string, details map[string]any) {
+	if s.agent == nil {
+		return
+	}
+	s.agent.record(activity.Event{Corr: s.sessionID, PluginID: s.pluginID, Actor: s.operatorID, Kind: "plugin", Phase: phase, Source: "core", Summary: s.action, Details: details})
 }

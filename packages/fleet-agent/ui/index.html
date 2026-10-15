@@ -285,6 +285,7 @@
           if (["warn", "error"].includes(l.level)) line.className = l.level;
           line.textContent = l.msg; return line;
         }));
+        if (s.activity_error) $("err").textContent = "Activity journal: " + s.activity_error;
       }
       $("enabled").onclick = async () => {
         const s = await api("/api/state");
@@ -461,5 +462,6 @@
       poll();
       setInterval(poll, 1000);
     </script>
-  </body>
+  <script src="/device.js" defer></script>
+ </body>
 </html>

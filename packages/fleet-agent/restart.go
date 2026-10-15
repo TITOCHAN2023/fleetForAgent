@@ -289,6 +289,11 @@ func (a *Agent) handoffRestart(exe string, extraEnv map[string]string) error {
 		return err
 	}
 
+	if err := a.releaseStorageForHandoff(); err != nil {
+		a.recoverAfterFailedHandoff(err.Error())
+		return err
+	}
+
 	if err := spawnSuccessor(plan.Exe, plan.Args, plan.Env); err != nil {
 		a.recoverAfterFailedHandoff("spawn: " + err.Error())
 		return err
@@ -305,6 +310,9 @@ func (a *Agent) handoffRestart(exe string, extraEnv map[string]string) error {
 }
 
 func (a *Agent) recoverAfterFailedHandoff(reason string) {
+	if err := a.restoreStorageAfterHandoff(); err != nil {
+		reason += "; storage recovery failed"
+	}
 	a.mu.Lock()
 	a.endRestartLocked()
 	a.log("error", "restart failed: "+reason)

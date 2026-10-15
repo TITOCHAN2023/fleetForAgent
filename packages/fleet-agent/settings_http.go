@@ -9,15 +9,25 @@ import (
 )
 
 var settingsMutationPaths = map[string]struct{}{
-	"/api/enabled":    {},
-	"/api/permit":     {},
-	"/api/connect":    {},
-	"/api/approve":    {},
-	"/api/deny":       {},
-	"/api/quit":       {},
-	"/api/restart":    {},
-	"/api/autoupdate": {},
-	"/api/rollback":   {},
+	"/api/plugin-storage-key":      {},
+	"/api/storage/setup":           {},
+	"/api/storage/unlock":          {},
+	"/api/plugins/open":            {},
+	"/api/plugins/invoke":          {},
+	"/api/plugins/install-local":   {},
+	"/api/plugins/close":           {},
+	"/api/plugins/uninstall-local": {},
+	"/api/plugins/cancel":          {},
+	"/api/plugin-activity":         {},
+	"/api/enabled":                 {},
+	"/api/permit":                  {},
+	"/api/connect":                 {},
+	"/api/approve":                 {},
+	"/api/deny":                    {},
+	"/api/quit":                    {},
+	"/api/restart":                 {},
+	"/api/autoupdate":              {},
+	"/api/rollback":                {},
 }
 
 // secureSettingsHandler is the trust boundary around the loopback settings UI.
@@ -31,7 +41,7 @@ func secureSettingsHandler(next http.Handler) http.Handler {
 		}
 
 		switch {
-		case r.URL.Path == "/api/state":
+		case r.URL.Path == "/api/storage" || r.URL.Path == "/api/state" || r.URL.Path == "/api/activity" || r.URL.Path == "/api/activity/export" || r.URL.Path == "/api/plugins" || r.URL.Path == "/api/plugins/result":
 			if r.Method != http.MethodGet {
 				w.Header().Set("Allow", http.MethodGet)
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

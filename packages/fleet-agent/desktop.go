@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/TITOCHAN2023/fleetForAgent/internal/desktop"
+	"github.com/TITOCHAN2023/fleetForAgent/internal/hostaudit"
 )
 
 const (
@@ -66,6 +67,9 @@ func (a *Agent) desktopIO() desktop.Backend {
 }
 
 func (a *Agent) desktopVerdict(kind desktopKind) (permitVerdict, string) {
+	if a.storageLocked.Load() {
+		return permitRefuse, "fleet: encrypted storage is locked"
+	}
 	if !a.enabled || a.permit == PermitOff {
 		return permitRefuse, "fleet: permit=off — 本机不允许桌面控制"
 	}
@@ -101,7 +105,14 @@ func (a *Agent) handleDesktopScreenshot(ctx context.Context, sink EnvelopeSink, 
 }
 
 func (a *Agent) handleDesktopAction(ctx context.Context, sink EnvelopeSink, env Envelope) {
-	a.sendDesktop(ctx, sink, env.Corr, a.desktopActionBody(env.Body))
+	result := a.desktopActionBody(env.Body)
+	if action := strings.ToLower(strings.TrimSpace(desktop.AsString(env.Body["action"]))); action != "wait" {
+		delivered, _ := result["ok"].(bool)
+		a.hostAuditSink(ctx)(hostaudit.Event{Kind: "input_delivery", Phase: "observed", Corr: env.Corr, Operation: action, Evidence: "desktop_backend_return", Details: map[string]any{"delivered": delivered, "subsequent_effect_causality": false, "target_context_available": false}})
+		a.hostAuditSink(ctx)(hostaudit.Event{Kind: "target_context", Phase: "observed", Corr: env.Corr, Evidence: "requested_frame_context", Details: map[string]any{"frame_id": desktop.AsString(env.Body["frame_id"]), "process_target_verified": false, "subsequent_effect_causality": false}})
+		a.hostAuditSink(ctx)(hostaudit.Event{Kind: "coverage", Phase: "gap", Corr: env.Corr, Evidence: "backend_health", Reason: "desktop_causality_unavailable"})
+	}
+	a.sendDesktop(ctx, sink, env.Corr, result)
 }
 
 func (a *Agent) desktopScreenshotBody(corr string, body map[string]any) map[string]any {

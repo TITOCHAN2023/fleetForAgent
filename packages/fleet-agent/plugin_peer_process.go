@@ -48,6 +48,7 @@ type processPluginPeer struct {
 	cancelApplied bool
 	cancelSeen    atomic.Bool
 	cancelDrain   sync.Once
+	auditFinish   func()
 }
 
 // ioWriteCloser is intentionally smaller than io.WriteCloser so fake peers do
@@ -69,6 +70,20 @@ func startPluginPeerProcess(ctx context.Context, pluginID, protocol, role, actio
 		"FLEET_PLUGIN_PEER=1",
 		"FLEET_PLUGIN_ID="+meta.ID,
 	)
+	auditFinish := func() {}
+	if inv, ok := ctx.Value(pluginInvocationKey{}).(pluginInvocation); ok && inv.agent != nil {
+		token, finish := inv.agent.registerPluginScope(pluginID, inv.Corr, inv.Actor)
+		auditFinish = finish
+		if token != "" {
+			cmd.Env = append(cmd.Env, "FLEET_PLUGIN_ACTIVITY_URL="+settingsURL()+"/api/plugin-activity", "FLEET_PLUGIN_ACTIVITY_TOKEN="+token, "FLEET_PLUGIN_STORAGE_URL="+settingsURL()+"/api/plugin-storage-key")
+		}
+	}
+	started := false
+	defer func() {
+		if !started {
+			auditFinish()
+		}
+	}()
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return installedPlugin{}, nil, err
@@ -79,7 +94,7 @@ func startPluginPeerProcess(ctx context.Context, pluginID, protocol, role, actio
 		return installedPlugin{}, nil, err
 	}
 	peer := &processPluginPeer{
-		cmd: cmd, ctx: ctx, stdin: stdin,
+		cmd: cmd, ctx: ctx, stdin: stdin, auditFinish: auditFinish,
 		stdout: bufio.NewReaderSize(stdout, pluginPeerControlMax+pluginPeerHeaderBytes),
 		stderr: &capBuffer{max: 256 << 10},
 		done:   make(chan struct{}),
@@ -91,6 +106,7 @@ func startPluginPeerProcess(ctx context.Context, pluginID, protocol, role, actio
 		return installedPlugin{}, nil, err
 	}
 	peer.tree = tree
+	started = true
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -147,6 +163,9 @@ func (p *processPluginPeer) startWait() {
 	p.wait.Do(func() {
 		go func() {
 			defer close(p.done)
+			if p.auditFinish != nil {
+				defer p.auditFinish()
+			}
 			wait := p.waitFn
 			if wait == nil {
 				wait = p.cmd.Wait

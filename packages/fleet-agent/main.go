@@ -17,13 +17,18 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/TITOCHAN2023/fleetForAgent/internal/activity"
 	"github.com/TITOCHAN2023/fleetForAgent/internal/desktop"
+	"github.com/TITOCHAN2023/fleetForAgent/internal/hostaudit"
 	"github.com/TITOCHAN2023/fleetForAgent/internal/keepalive"
 	"github.com/TITOCHAN2023/fleetForAgent/internal/pane"
 	"github.com/TITOCHAN2023/fleetForAgent/internal/policy"
+	"github.com/TITOCHAN2023/fleetForAgent/internal/receipts"
 	"github.com/TITOCHAN2023/fleetForAgent/internal/tray"
+	"github.com/TITOCHAN2023/fleetForAgent/internal/vault"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 )
@@ -32,6 +37,9 @@ var agentVersion = "0.6.8"
 
 //go:embed ui/index.html
 var uiHTML []byte
+
+//go:embed ui/device.js
+var deviceJS []byte
 
 type Permit string
 
@@ -62,6 +70,7 @@ const (
 )
 
 type Pending struct {
+	Actor       string                     `json:"-"`
 	Corr        string                     `json:"corr"`
 	Command     string                     `json:"command"`
 	Requested   int64                      `json:"requestedAt"`
@@ -112,74 +121,94 @@ func (a *Agent) relayEnvelopeSink() EnvelopeSink {
 }
 
 type State struct {
-	Enabled    bool       `json:"enabled"`
-	Permit     Permit     `json:"permit"`
-	HubInput   string     `json:"hubInput"`
-	HubToken   string     `json:"hubToken"`
-	DeviceID   string     `json:"deviceId"`
-	AgentVer   string     `json:"agentVer"`
-	WSS        string     `json:"wss"`
-	Conn       string     `json:"conn"`
-	Error      string     `json:"error"`
-	Logs       []LogLine  `json:"logs"`
-	Pending    *Pending   `json:"pending"`
-	AutoUpdate bool       `json:"autoUpdate"`
-	Update     updateInfo `json:"update"`
+	Enabled         bool               `json:"enabled"`
+	Permit          Permit             `json:"permit"`
+	HubInput        string             `json:"hubInput"`
+	HubToken        string             `json:"hubToken"`
+	DeviceID        string             `json:"deviceId"`
+	AgentVer        string             `json:"agentVer"`
+	WSS             string             `json:"wss"`
+	Conn            string             `json:"conn"`
+	Error           string             `json:"error"`
+	HostAuditHealth []hostaudit.Health `json:"host_audit_health,omitempty"`
+	ActivityError   string             `json:"activity_error,omitempty"`
+	Logs            []LogLine          `json:"logs"`
+	Pending         *Pending           `json:"pending"`
+	AutoUpdate      bool               `json:"autoUpdate"`
+	Update          updateInfo         `json:"update"`
 }
 
 type Agent struct {
-	mu                  sync.Mutex
-	operationMu         sync.Mutex
-	operations          map[string]*operationReceipt
-	runAdmissions       map[string]int
-	enabled             bool
-	permit              Permit
-	hubInput            string
-	hubToken            string
-	authKid             string
-	authRevoked         bool
-	deviceID            string
-	wss                 string
-	conn                string
-	err                 string
-	logs                []LogLine
-	pending             *Pending
-	desktopPending      *Pending
-	desktopShotGranted  bool
-	desktopInputGranted bool
-	desktopDeniedOnce   bool
-	lastFrame           *desktop.DesktopFrame
-	lastDigest          string
-	shotTimes           []time.Time
-	actTimes            []time.Time
-	backend             desktop.Backend
-	osBackend           desktop.Backend
-	seq                 int
-	ws                  *websocket.Conn
-	cancel              context.CancelFunc
-	cfgPath             string
-	panes               *pane.Supervisor
-	paneSinks           map[string]EnvelopeSink
-	rtcSessions         map[string]*rtcAgentSession
-	rtcPending          map[string]*rtcPendingOffer
-	peerSessions        map[string]*pluginPeerSession
-	peerDeliveries      map[string]struct{}
-	peerDeliveryOrder   []string
-	peerCancelReceipts  map[string]struct{}
-	peerCancelOrder     []string
-	peerCancelRecovery  map[string]*pluginPeerSession
-	peerRecoveryOrder   []string
-	hb                  time.Duration
-	restarting          bool
-	updateCommitting    bool
-	activeWork          int
-	autoUpdate          bool
-	updateSig           versionSignal
-	policyBlocked       func(string) bool
-	relaySink           EnvelopeSink
+	hostObservations         hostaudit.Registry
+	storageMu                sync.Mutex
+	storageManager           *vault.Manager
+	storageCipher            *vault.Cipher
+	storageLocked            atomic.Bool
+	storageDir, storageError string
+	invocationReceipts       *receipts.Store
+	activity                 *activity.Store
+	activityMu               sync.Mutex
+	activityError            string
+	pluginScopes             map[string]pluginEventScope
+	taskMu                   sync.Mutex
+	pluginTasks              map[string]context.CancelFunc
+	pluginInvocations        map[string]*pluginInvocationReceipt
+	taskCancelled            map[string]bool
+	pageMu                   sync.Mutex
+	pages                    map[string]pluginPageSession
+	mu                       sync.Mutex
+	operationMu              sync.Mutex
+	operations               map[string]*operationReceipt
+	runAdmissions            map[string]int
+	enabled                  bool
+	permit                   Permit
+	hubInput                 string
+	hubToken                 string
+	authKid                  string
+	authRevoked              bool
+	deviceID                 string
+	wss                      string
+	conn                     string
+	err                      string
+	logs                     []LogLine
+	pending                  *Pending
+	desktopPending           *Pending
+	desktopShotGranted       bool
+	desktopInputGranted      bool
+	desktopDeniedOnce        bool
+	lastFrame                *desktop.DesktopFrame
+	lastDigest               string
+	shotTimes                []time.Time
+	actTimes                 []time.Time
+	backend                  desktop.Backend
+	osBackend                desktop.Backend
+	seq                      int
+	ws                       *websocket.Conn
+	cancel                   context.CancelFunc
+	cfgPath                  string
+	panes                    *pane.Supervisor
+	paneSinks                map[string]EnvelopeSink
+	rtcSessions              map[string]*rtcAgentSession
+	rtcPending               map[string]*rtcPendingOffer
+	peerSessions             map[string]*pluginPeerSession
+	peerDeliveries           map[string]struct{}
+	peerDeliveryOrder        []string
+	peerCancelReceipts       map[string]struct{}
+	peerCancelOrder          []string
+	peerCancelRecovery       map[string]*pluginPeerSession
+	peerRecoveryOrder        []string
+	hb                       time.Duration
+	restarting               bool
+	updateCommitting         bool
+	activeWork               int
+	autoUpdate               bool
+	updateSig                versionSignal
+	policyBlocked            func(string) bool
+	relaySink                EnvelopeSink
 }
 
 func (a *Agent) log(level, msg string) {
+	msg = activity.Redact(msg)
 	a.seq++
 	line := LogLine{ID: fmt.Sprintf("l%d", a.seq), T: time.Now().UnixMilli(), Level: level, Msg: msg}
 	a.logs = append([]LogLine{line}, a.logs...)
@@ -187,6 +216,7 @@ func (a *Agent) log(level, msg string) {
 		a.logs = a.logs[:200]
 	}
 	log.Printf("%s %s", level, msg)
+	a.record(activity.Event{Kind: "device", Phase: level, Source: "core", Summary: msg})
 }
 
 func (a *Agent) snapshot() State {
@@ -216,11 +246,18 @@ func (a *Agent) snapshot() State {
 func (a *Agent) publicSnapshot() State {
 	s := a.snapshot()
 	s.HubToken = hubTokenPublic(s.HubToken)
+	a.activityMu.Lock()
+	s.ActivityError = a.activityError
+	s.HostAuditHealth = a.hostObservations.Health()
+	a.activityMu.Unlock()
 	return s
 }
 
 // inputVerdict is called with a.mu held.
 func (a *Agent) inputVerdict() (permitVerdict, string) {
+	if a.storageLocked.Load() {
+		return permitRefuse, "fleet: encrypted storage is locked"
+	}
 	if !a.enabled || a.permit == PermitOff {
 		return permitRefuse, "fleet: permit=off — 本机不允许执行"
 	}
@@ -344,6 +381,9 @@ func normalizeHub(raw string) (wss string, err error) {
 func (a *Agent) setEnabled(on bool) {
 	a.mu.Lock()
 	a.enabled = on
+	if !on {
+		a.hostObservations.Stop("device_disabled")
+	}
 	hub := a.hubInput
 	if !on {
 		a.disconnectLocked("本机开关已关闭")
@@ -371,6 +411,8 @@ func (a *Agent) setPermit(p Permit) {
 		a.lastDigest = ""
 		a.log("info", "permit → "+string(p))
 		if p == PermitOff {
+			a.hostObservations.Stop("permit_revoked")
+			a.cancelPluginTasks()
 			pending = a.pending
 			a.pending = nil
 			peerSessions = a.takePluginPeersLocked()
@@ -402,6 +444,7 @@ func (a *Agent) pushUI() {
 }
 
 func (a *Agent) disconnectLocked(reason string) {
+	a.cancelPluginTasks()
 	if a.cancel != nil {
 		a.cancel()
 		a.cancel = nil
@@ -414,6 +457,8 @@ func (a *Agent) disconnectLocked(reason string) {
 	a.pending = nil
 	if pending != nil && pending.Kind == pendingKindRun {
 		go rejectPending(pending, errors.New("fleet: connection closed before local approval; command not started"))
+	} else if pending != nil {
+		go rejectPending(pending, errors.New("fleet: device disconnected"))
 	}
 	sessions := a.takeRTCSessionsLocked()
 	peerSessions := a.takePluginPeersLocked()
@@ -714,7 +759,13 @@ func (a *Agent) handleAuthRevoked(c *websocket.Conn, env Envelope) bool {
 		return false
 	}
 	a.authRevoked = true
+	a.hostObservations.Stop("identity_revoked")
+	a.cancelPluginTasks()
+	pending := a.pending
 	a.pending = nil
+	if pending != nil {
+		go rejectPending(pending, errors.New("fleet: identity revoked"))
+	}
 	a.paneSinks = nil
 	sessions := a.takeRTCSessionsLocked()
 	peerSessions := a.takePluginPeersLocked()
@@ -743,6 +794,9 @@ func (a *Agent) handleAuthRevoked(c *websocket.Conn, env Envelope) bool {
 // dispatchEnvelope is shared by every data transport. Keep business message
 // handling here so adding RTC cannot fork shell, pane, desktop, or plugin rules.
 func (a *Agent) dispatchEnvelope(ctx context.Context, sink EnvelopeSink, env Envelope) {
+	ctx = context.WithValue(ctx, pluginPrincipalKey{}, a.activityActor(ctx))
+	a.activityRequestAs(ctx, env)
+	sink = a.activitySink(sink)
 	if updateGuardedEnvelope(env.Type) {
 		if !a.beginWork() {
 			go a.replyUpdateBusy(ctx, sink, env)
@@ -760,19 +814,13 @@ func (a *Agent) dispatchEnvelope(ctx context.Context, sink EnvelopeSink, env Env
 			if _, ok := env.Body["request_id"].(string); ok {
 				a.handleRecoverableRun(ctx, sink, env.Corr, cmd, fp)
 			} else {
-				a.handleRun(ctx, sink, env.Corr, cmd, fp)
+				a.dispatchInput(ctx, sink, env)
 			}
 		})
 	case "get_result":
 		go a.handleResultQuery(ctx, sink, env)
 	case "type":
-		keys, _ := env.Body["keys"].(string)
-		key, _ := env.Body["key"].(string)
-		id, _ := env.Body["pane_id"].(string)
-		if id == "" {
-			id, _ = env.Body["corr"].(string)
-		}
-		a.goWork(func() { a.handleType(ctx, sink, env.Corr, id, keys, key, envelopeFingerprint(env.Body)) })
+		a.goWork(func() { a.dispatchInput(ctx, sink, env) })
 	case "read_screen":
 		id, _ := env.Body["pane_id"].(string)
 		if id == "" {
@@ -787,7 +835,7 @@ func (a *Agent) dispatchEnvelope(ctx context.Context, sink EnvelopeSink, env Env
 	case "desktop_screenshot":
 		a.goWork(func() { a.handleDesktopScreenshot(ctx, sink, env) })
 	case "desktop_action":
-		a.goWork(func() { a.handleDesktopAction(ctx, sink, env) })
+		a.goWork(func() { a.dispatchInput(ctx, sink, env) })
 	case "plugin":
 		a.handlePlugin(ctx, sink, env)
 	}
@@ -815,13 +863,17 @@ func (a *Agent) handleRun(ctx context.Context, sink EnvelopeSink, corr, cmd, fin
 		return
 	}
 	if a.commandBlocked(cmd) {
-		a.log("error", "blocked destructive: "+cmd)
+		msg := "blocked destructive: " + cmd
+		if text, ok := policy.Unfolded(cmd); ok && text != cmd {
+			msg += " restored: " + clip(text, 512)
+		}
+		a.log("error", msg)
 		a.mu.Unlock()
 		_ = sink(ctx, resultEnv(corr, false, 126, "", "fleet: refused by device policy"))
 		return
 	}
 	if v == permitAsk {
-		a.pending = &Pending{Kind: pendingKindRun, Corr: corr, Command: cmd, Requested: time.Now().UnixMilli(), Fingerprint: fingerprint, Sink: sink}
+		a.pending = &Pending{Actor: actorFromContext(ctx), Kind: pendingKindRun, Corr: corr, Command: cmd, Requested: time.Now().UnixMilli(), Fingerprint: fingerprint, Sink: sink}
 		a.log("warn", "waiting consent: "+cmd)
 		a.mu.Unlock()
 		notifyConsent(cmd)
@@ -839,11 +891,25 @@ func (a *Agent) spawnPane(ctx context.Context, sink EnvelopeSink, corr, cmd, fin
 	}
 	sup := a.panes
 	a.mu.Unlock()
-	p, err := sup.SpawnFor(fingerprint, corr, cmd)
+	p, err := sup.SpawnForObserved(fingerprint, corr, cmd, hostaudit.DefaultOptions(hostaudit.OptIn(os.Getenv("FLEET_HOST_AUDIT"))), a.hostAuditSink(ctx))
 	if err != nil {
 		_ = sink(ctx, resultEnv(corr, false, 1, "", err.Error()))
 		return
 	}
+	pid := p.ProcessPID()
+	if session := p.AuditSession(); session != nil {
+		a.mu.Lock()
+		observing := a.enabled && a.permit != PermitOff && !a.authRevoked && !a.storageLocked.Load()
+		if observing {
+			a.hostObservations.Add(session)
+		}
+		a.mu.Unlock()
+		if !observing {
+			session.Close("authorization_changed_during_launch")
+		}
+	}
+	a.recordCommandProcess(ctx, corr, cmd, pid, "started", nil)
+	a.recordCommandCoverage(ctx, corr, pid)
 	a.mu.Lock()
 	if a.paneSinks == nil {
 		a.paneSinks = make(map[string]EnvelopeSink)
@@ -861,6 +927,7 @@ func (a *Agent) spawnPane(ctx context.Context, sink EnvelopeSink, corr, cmd, fin
 		for {
 			done, code := p.Finished()
 			if done {
+				a.recordCommandProcess(ctx, corr, cmd, pid, "completed", map[string]any{"exit_code": code})
 				stdout, stderr := p.ResultText()
 				_ = sink(ctx, resultEnv(corr, code == 0, code, stdout, stderr))
 				a.mu.Lock()
@@ -868,8 +935,8 @@ func (a *Agent) spawnPane(ctx context.Context, sink EnvelopeSink, corr, cmd, fin
 				a.mu.Unlock()
 				return
 			}
-			// The job belongs to the device, not this transport connection.
-			// Keep collecting completion even if the reply socket disappears.
+			// The job belongs to the device. Keep the completion, including its
+			// durable receipt, if the reply socket disappears.
 			time.Sleep(50 * time.Millisecond)
 		}
 	})
@@ -900,7 +967,8 @@ func (a *Agent) handleType(ctx context.Context, sink EnvelopeSink, corr, id, key
 	if v == permitAsk {
 		label := typeConsentText(keys, key)
 		a.pending = &Pending{
-			Kind: pendingKindType, Corr: corr, Command: label, Requested: time.Now().UnixMilli(),
+			Actor: actorFromContext(ctx),
+			Kind:  pendingKindType, Corr: corr, Command: label, Requested: time.Now().UnixMilli(),
 			Fingerprint: fingerprint, PaneID: id, Keys: keys, Key: key, Sink: sink,
 		}
 		a.log("warn", "waiting consent: "+label)
@@ -927,6 +995,7 @@ func (a *Agent) deliverType(ctx context.Context, sink EnvelopeSink, corr, id, ke
 		return
 	}
 	err := p.TypeInput(keys, key)
+	a.recordHostInput(ctx, corr, p, err == nil)
 	ok := err == nil
 	msg := ""
 	if err != nil {
@@ -1041,15 +1110,16 @@ func (a *Agent) approve() {
 	if p == nil || p.Sink == nil {
 		return
 	}
+	ctx := context.WithValue(context.Background(), pluginPrincipalKey{}, p.Actor)
 	if p.Kind == pendingKindPlugin && p.Plugin != nil {
 		_ = p.Sink(context.Background(), pluginAcceptedEnv(p.Corr, "running"))
 		a.goWork(func() { a.executePlugin(context.Background(), p.Sink, p.Corr, *p.Plugin) })
 	} else if p.Peer != nil {
 		a.goWork(func() { p.Peer.approve() })
 	} else if p.Kind == pendingKindType {
-		a.goWork(func() { a.deliverType(context.Background(), p.Sink, p.Corr, p.PaneID, p.Keys, p.Key, p.Fingerprint) })
+		a.goWork(func() { a.deliverType(ctx, p.Sink, p.Corr, p.PaneID, p.Keys, p.Key, p.Fingerprint) })
 	} else {
-		a.goWork(func() { a.spawnPane(context.Background(), p.Sink, p.Corr, p.Command, p.Fingerprint) })
+		a.goWork(func() { a.spawnPane(ctx, p.Sink, p.Corr, p.Command, p.Fingerprint) })
 	}
 	a.mu.Lock()
 	a.log("info", "approved: "+p.Command)
@@ -1134,8 +1204,18 @@ func main() {
 	agent.load()
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/device.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		_, _ = w.Write(deviceJS)
+	})
+	agent.registerPluginPages(mux)
+	agent.registerStorage(mux)
+	mux.HandleFunc("/api/activity", agent.serveActivity)
+	mux.HandleFunc("/api/activity/export", agent.exportActivity)
+	mux.HandleFunc("/api/plugin-activity", agent.servePluginActivity)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; frame-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 		_, _ = w.Write(uiHTML)
 	})
 	mux.HandleFunc("/api/state", func(w http.ResponseWriter, r *http.Request) {
@@ -1296,6 +1376,16 @@ func main() {
 		time.Sleep(400 * time.Millisecond)
 		return
 	}
+	if err := agent.initStorage(dir); err != nil {
+		log.Fatalf("open device storage: %v", err)
+	}
+	defer func() {
+		if journal := agent.journal(); journal != nil {
+			journal.Close()
+		}
+	}()
+	agent.record(activity.Event{Kind: "device", Phase: "started", Source: "core", Summary: "Fleet Agent started"})
+
 	go settingsNet.serve(ln, roomViewHandler(secureSettingsHandler(mux)))
 	if runtime.GOOS == "linux" {
 		log.Println("linux tray; hub from FLEET_URL + FLEET_TOKEN or", configPath())

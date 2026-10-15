@@ -96,11 +96,15 @@ type pluginManifest struct {
 	ApprovalActions []string                    `json:"approval_actions,omitempty"`
 	Runtime         string                      `json:"runtime,omitempty"`
 	ActionSpecs     map[string]pluginActionSpec `json:"action_specs,omitempty"`
+	UI              *pluginUI                   `json:"ui,omitempty"`
 	PeerProtocols   []pluginPeerProtocol        `json:"peer_protocols,omitempty"`
 	Artifacts       []pluginArtifact            `json:"artifacts"`
 }
 
 type pluginRequest struct {
+	UIRead    bool            `json:"-"`
+	Principal string          `json:"-"`
+	Local     bool            `json:"-"`
 	Operation string          `json:"operation"`
 	PluginID  string          `json:"plugin_id,omitempty"`
 	Manifest  *pluginManifest `json:"manifest,omitempty"`
@@ -110,6 +114,7 @@ type pluginRequest struct {
 }
 
 type installedPlugin struct {
+	InstallSource   string                      `json:"install_source,omitempty"`
 	ID              string                      `json:"id"`
 	Name            string                      `json:"name"`
 	Version         string                      `json:"version"`
@@ -123,6 +128,7 @@ type installedPlugin struct {
 	ApprovalActions []string                    `json:"approval_actions,omitempty"`
 	Runtime         string                      `json:"runtime,omitempty"`
 	ActionSpecs     map[string]pluginActionSpec `json:"action_specs,omitempty"`
+	UI              *pluginUI                   `json:"ui,omitempty"`
 	PeerProtocols   []pluginPeerProtocol        `json:"peer_protocols,omitempty"`
 	InstalledAt     int64                       `json:"installed_at"`
 }
@@ -198,6 +204,15 @@ func pluginResultEnv(corr string, result any, err error) Envelope {
 func (a *Agent) handlePlugin(ctx context.Context, sink EnvelopeSink, env Envelope) {
 	sink = a.pluginReplySink(sink)
 	req, err := decodePluginRequest(env.Body)
+	req.Local, _ = ctx.Value(localPluginCallKey{}).(bool)
+	req.Principal, _ = ctx.Value(pluginPrincipalKey{}).(string)
+	if req.Local {
+		req.Principal = "local"
+	} else if req.Principal == "" {
+		a.mu.Lock()
+		req.Principal = a.authKid
+		a.mu.Unlock()
+	}
 	if err != nil {
 		_ = sink(ctx, pluginResultEnv(env.Corr, nil, fmt.Errorf("invalid plugin request: %w", err)))
 		return
@@ -250,6 +265,49 @@ func (a *Agent) handlePlugin(ctx context.Context, sink EnvelopeSink, env Envelop
 }
 
 func (a *Agent) executePlugin(ctx context.Context, sink EnvelopeSink, corr string, req pluginRequest) {
+	if req.Local {
+		req.Principal = "local"
+	}
+	receipt, leader, claimErr := a.claimPluginInvocation(corr, req)
+	if claimErr != nil {
+		_ = sink(ctx, pluginResultEnv(corr, nil, claimErr))
+		return
+	}
+	if !leader {
+		select {
+		case <-receipt.Done:
+			_ = sink(ctx, receipt.Envelope)
+		case <-ctx.Done():
+		}
+		return
+	}
+	a.mu.Lock()
+	disabled := a.restarting || req.Operation != "list" && !req.UIRead && (!a.enabled || a.permit == PermitOff || a.authRevoked || a.storageLocked.Load())
+	if disabled {
+		a.mu.Unlock()
+		failed := pluginResultEnv(corr, nil, errors.New("device disabled before plugin start"))
+		failed = a.completePluginInvocation(corr, failed)
+		_ = sink(ctx, failed)
+		return
+	}
+	ctx, finish, startErr := a.beginPluginTask(ctx, corr)
+	a.mu.Unlock()
+	if startErr != nil {
+		failed := pluginResultEnv(corr, nil, startErr)
+		failed = a.completePluginInvocation(corr, failed)
+		_ = sink(ctx, failed)
+		return
+	}
+	defer finish()
+	origin := "remote"
+	if req.Local {
+		origin = "local"
+	}
+	a.mu.Lock()
+	deviceID := a.deviceID
+	a.mu.Unlock()
+	ctx = context.WithValue(ctx, pluginInvocationKey{}, pluginInvocation{V: 1, Corr: corr, Origin: origin, DeviceID: deviceID, Actor: req.Principal, agent: a})
+	a.recordPluginStarted(ctx, req.PluginID, corr, req.Action)
 	var result any
 	var err error
 	switch req.Operation {
@@ -277,7 +335,10 @@ func (a *Agent) executePlugin(ctx context.Context, sink EnvelopeSink, corr strin
 	default:
 		err = fmt.Errorf("unknown plugin operation %q", req.Operation)
 	}
-	deliveryErr := deliverPluginResult(ctx, sink, pluginResultEnv(corr, result, err))
+	completed := pluginResultEnv(corr, result, err)
+	completed.Body["plugin_id"] = req.PluginID
+	completed = a.completePluginInvocation(corr, completed)
+	deliveryErr := deliverPluginResult(ctx, sink, completed)
 	a.mu.Lock()
 	if deliveryErr != nil {
 		a.log("error", "plugin result delivery: "+deliveryErr.Error())
@@ -412,7 +473,7 @@ func officialRepositoryPath(raw string) (string, error) {
 	if len(parts) != 2 || parts[0] != "TITOCHAN2023" {
 		return "", errors.New("untrusted plugin repository")
 	}
-	if _, err := cleanPluginID(parts[1]); err != nil {
+	if _, err := cleanPluginID(strings.ToLower(parts[1])); err != nil {
 		return "", errors.New("untrusted plugin repository")
 	}
 	return path, nil
@@ -666,6 +727,9 @@ func containedPluginDir(root, id string) (string, error) {
 }
 
 func validateOfficialManifest(m pluginManifest) (pluginArtifact, error) {
+	if err := validatePluginUI(m.UI, m.Actions, m.ActionSpecs, m.Runtime); err != nil {
+		return pluginArtifact{}, err
+	}
 	if m.SchemaVersion != 1 || m.Publisher != "Fleet Official" || m.License == "" {
 		return pluginArtifact{}, errors.New("untrusted plugin manifest")
 	}
@@ -825,7 +889,11 @@ func installPluginFromHub(ctx context.Context, m pluginManifest, hubInput, hubTo
 		Runtime:         runtimeName,
 		ActionSpecs:     actionSpecs,
 		PeerProtocols:   peerProtocols,
+		UI:              m.UI,
 		InstalledAt:     time.Now().UnixMilli(),
+	}
+	if meta.UI == nil {
+		meta.UI = pluginUIFromExecutable(target, actions, actionSpecs, runtimeName)
 	}
 	if err := writePluginMeta(dir, meta); err != nil {
 		_ = os.Remove(target)
@@ -834,6 +902,44 @@ func installPluginFromHub(ctx context.Context, m pluginManifest, hubInput, hubTo
 	}
 	_ = os.Remove(backup)
 	return meta, nil
+}
+
+// The registry names actions and artifacts. The page declaration stays in the
+// hash-pinned plugin. A manifest that names an action outside that list is ignored.
+func pluginUIFromExecutable(path string, actions []string, specs map[string]pluginActionSpec, runtimeName string) *pluginUI {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "manifest")
+	cmd.Stdin = nil
+	env := make([]string, 0, len(os.Environ()))
+	for _, item := range os.Environ() {
+		if strings.HasPrefix(item, "FLEET_") {
+			continue
+		}
+		env = append(env, item)
+	}
+	cmd.Env = env
+	out, err := cmd.Output()
+	if err != nil || len(out) == 0 || len(out) > 64<<10 {
+		return nil
+	}
+	var wrapped struct {
+		Result json.RawMessage `json:"result"`
+	}
+	raw := out
+	if json.Unmarshal(out, &wrapped) == nil && len(wrapped.Result) > 0 {
+		raw = wrapped.Result
+	}
+	var body struct {
+		UI *pluginUI `json:"ui"`
+	}
+	if json.Unmarshal(raw, &body) != nil || body.UI == nil {
+		return nil
+	}
+	if err := validatePluginUI(body.UI, actions, specs, runtimeName); err != nil {
+		return nil
+	}
+	return body.UI
 }
 
 func writePluginMeta(dir string, meta installedPlugin) error {
@@ -894,6 +1000,9 @@ func installedPluginMetadata(id string) (installedPlugin, error) {
 }
 
 func validateInstalledPlugin(meta installedPlugin) error {
+	if err := validatePluginUI(meta.UI, meta.Actions, meta.ActionSpecs, meta.Runtime); err != nil {
+		return err
+	}
 	if _, err := cleanPluginID(meta.ID); err != nil {
 		return err
 	}
@@ -1098,12 +1207,24 @@ func invokePlugin(ctx context.Context, req pluginRequest) (any, error) {
 	if len(input) == 0 {
 		input = json.RawMessage(`{}`)
 	}
-	payload, err := json.Marshal(map[string]any{"action": req.Action, "input": input})
+	inv, hasInvocation := ctx.Value(pluginInvocationKey{}).(pluginInvocation)
+	payloadObject := map[string]any{"action": req.Action, "input": input}
+	if hasInvocation {
+		payloadObject["context"] = inv
+	}
+	payload, err := json.Marshal(payloadObject)
 	if err != nil {
 		return nil, err
 	}
 	cmd := exec.Command(path)
 	cmd.Env = append(os.Environ(), "FLEET_PLUGIN_DATA_DIR="+filepath.Join(dir, "data"))
+	if hasInvocation && inv.agent != nil {
+		token, finish := inv.agent.registerPluginScope(req.PluginID, inv.Corr, inv.Actor)
+		defer finish()
+		if token != "" {
+			cmd.Env = append(cmd.Env, "FLEET_PLUGIN_ACTIVITY_URL="+settingsURL()+"/api/plugin-activity", "FLEET_PLUGIN_ACTIVITY_TOKEN="+token, "FLEET_PLUGIN_STORAGE_URL="+settingsURL()+"/api/plugin-storage-key")
+		}
+	}
 	cmd.Stdin = bytes.NewReader(payload)
 	out := &capBuffer{max: pluginMaxOutput}
 	errOut := &capBuffer{max: 256 << 10}

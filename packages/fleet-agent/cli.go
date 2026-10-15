@@ -25,7 +25,7 @@ func isCLICommand(name string) bool {
 	case "help", "-h", "--help", "version", "--version",
 		"status", "start", "stop", "quit", "restart",
 		"enable", "disable", "permit", "connect",
-		"session", "approve", "deny", "install", "update", "rollback", "autoupdate":
+		"session", "approve", "deny", "plugins", "activity", "storage", "settings", "install", "update", "rollback", "autoupdate":
 		return true
 	default:
 		return false
@@ -73,6 +73,15 @@ func runCLI(args []string) int {
 		err = cliPost("/api/approve", nil)
 	case "deny":
 		err = cliPost("/api/deny", nil)
+	case "plugins":
+		err = cliPlugins(rest)
+	case "storage":
+		err = cliStorage(rest)
+	case "activity":
+		err = cliGetJSON("/api/activity")
+	case "settings":
+		fmt.Println(settingsURL())
+		return 0
 	case "install":
 		err = cliInstall()
 	default:
@@ -110,7 +119,12 @@ CLI and UI share one state. Do not edit config.json while it runs.
   fleet install              put "fleet" on PATH
   fleet help
 
-Linux has no settings page: use these commands or the tray.
+fleet storage [setup|unlock] [--password-stdin]
+fleet plugins [install-local /absolute/package/directory]
+  fleet activity             recent persistent device activity (JSON)
+  fleet settings             print the local settings URL
+
+Linux also serves the local page; it never opens a browser automatically.
 Start the daemon with:  fleet start   or   fleet --daemon
 `, agentVersion)
 }
@@ -561,4 +575,58 @@ func tokenMark(s string) string {
 		return "missing"
 	}
 	return "set"
+}
+
+func cliGetJSON(path string) error {
+	r, err := http.Get(apiRoot() + path)
+	if err != nil {
+		return err
+	}
+	defer r.Body.Close()
+	if r.StatusCode != 200 {
+		return fmt.Errorf("local API: %s", r.Status)
+	}
+	_, err = io.Copy(os.Stdout, r.Body)
+	return err
+}
+func cliPlugins(args []string) error {
+	if len(args) == 0 {
+		return cliGetJSON("/api/plugins")
+	}
+	if len(args) == 2 && args[0] == "install-local" {
+		return cliPost("/api/plugins/install-local", map[string]any{"directory": args[1]})
+	}
+	return fmt.Errorf("usage: fleet plugins [install-local /absolute/package/directory]")
+}
+
+func cliStorage(args []string) error {
+	if len(args) == 0 {
+		return cliGetJSON("/api/storage")
+	}
+	if args[0] != "setup" && args[0] != "unlock" {
+		return fmt.Errorf("usage: fleet storage [setup|unlock] [--password-stdin]")
+	}
+	password := []byte{}
+	if len(args) > 1 {
+		if len(args) != 2 || args[1] != "--password-stdin" {
+			return fmt.Errorf("usage: fleet storage [setup|unlock] [--password-stdin]")
+		}
+		info, err := os.Stdin.Stat()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeCharDevice != 0 {
+			return fmt.Errorf("passphrase must be supplied through stdin, not typed into an echoing terminal")
+		}
+		password, err = io.ReadAll(io.LimitReader(os.Stdin, 4097))
+		if err != nil {
+			return err
+		}
+		if len(password) > 4096 {
+			return fmt.Errorf("passphrase input too large")
+		}
+		password = bytes.TrimSuffix(bytes.TrimSuffix(password, []byte("\n")), []byte("\r"))
+	}
+	defer clear(password)
+	return cliPost("/api/storage/"+args[0], map[string]any{"password": string(password)})
 }

@@ -8,21 +8,40 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TITOCHAN2023/fleetForAgent/internal/hostaudit"
 	"github.com/creack/pty"
 )
 
 func (s *Supervisor) spawnOneshotPTY(fingerprint, corr, command string) (*Pane, error) {
+	return s.spawnOneshotPTYObserved(fingerprint, corr, command, nil)
+}
+
+func (s *Supervisor) spawnOneshotPTYObserved(fingerprint, corr, command string, prepare func(*exec.Cmd) (*exec.Cmd, hostaudit.Session, error)) (*Pane, error) {
 	cmd := exec.Command(pickShell(), "-c", command)
 	if home := userHome(); home != "" {
 		cmd.Dir = home
 	}
 	cmd.Env = append(runCommandEnv(), "FLEET_SESSION_OWNER="+fingerprint)
+	var audit hostaudit.Session
+	if prepare != nil {
+		var err error
+		cmd, audit, err = prepare(cmd)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: livePtyRows, Cols: livePtyCols})
 	if err != nil {
+		if audit != nil {
+			audit.Close("launch_failed")
+		}
 		return nil, fmt.Errorf("pty start: %w", err)
 	}
 	disableMasterEcho(ptmx)
+	if audit != nil {
+		audit.Bind(cmd.Process.Pid)
+	}
 
 	p := &Pane{
 		id:          "pane-" + corr,
@@ -32,6 +51,7 @@ func (s *Supervisor) spawnOneshotPTY(fingerprint, corr, command string) (*Pane, 
 		running:     true,
 		stdin:       ptmx,
 		cmd:         cmd,
+		audit:       audit,
 		lines:       []string{""},
 		stdout:      newStreamBuf(),
 		stderr:      newStreamBuf(),
@@ -55,6 +75,9 @@ func (s *Supervisor) spawnOneshotPTY(fingerprint, corr, command string) (*Pane, 
 			if ee, ok := waitErr.(*exec.ExitError); ok {
 				code = ee.ExitCode()
 			}
+		}
+		if audit != nil {
+			audit.RootCompleted(code)
 		}
 		select {
 		case <-drained:

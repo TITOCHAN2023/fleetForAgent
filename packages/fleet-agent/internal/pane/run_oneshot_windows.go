@@ -2,6 +2,15 @@
 
 package pane
 
+import (
+	"github.com/TITOCHAN2023/fleetForAgent/internal/hostaudit"
+	"os/exec"
+)
+
+func (s *Supervisor) spawnOneshotPTYObserved(fingerprint, corr, command string, _ func(*exec.Cmd) (*exec.Cmd, hostaudit.Session, error)) (*Pane, error) {
+	return s.spawnOneshotFor(fingerprint, corr, command)
+}
+
 func (s *Supervisor) spawnOneshotPTY(fingerprint, corr, command string) (*Pane, error) {
 	return s.spawnOneshotFor(fingerprint, corr, command)
 }

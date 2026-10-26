@@ -147,6 +147,9 @@ type Agent struct {
 	desktopPending      *Pending
 	desktopShotGranted  bool
 	desktopInputGranted bool
+	// desktopInputExpires bounds a mouse/keyboard grant; typing is arbitrary
+	// execution, so one approval must not last for the whole WSS session.
+	desktopInputExpires time.Time
 	desktopDeniedOnce   bool
 	lastFrame           *desktop.DesktopFrame
 	lastDigest          string
@@ -180,6 +183,7 @@ type Agent struct {
 }
 
 func (a *Agent) log(level, msg string) {
+	msg = redactSecrets(msg)
 	a.seq++
 	line := LogLine{ID: fmt.Sprintf("l%d", a.seq), T: time.Now().UnixMilli(), Level: level, Msg: msg}
 	a.logs = append([]LogLine{line}, a.logs...)
@@ -1027,6 +1031,7 @@ func (a *Agent) approve() {
 		a.desktopPending = nil
 		if p.Kind == pendingKindDesktopInput {
 			a.desktopInputGranted = true
+			a.desktopInputExpires = time.Now().Add(desktopInputGrantTTL)
 		} else {
 			a.desktopShotGranted = true
 		}

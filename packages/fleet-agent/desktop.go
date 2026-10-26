@@ -55,6 +55,9 @@ const (
 	desktopKindInput
 )
 
+// desktopInputGrantTTL is how long one mouse/keyboard approval stays valid.
+const desktopInputGrantTTL = 10 * time.Minute
+
 func (a *Agent) desktopIO() desktop.Backend {
 	if a.backend != nil {
 		return a.backend
@@ -78,6 +81,10 @@ func (a *Agent) desktopVerdict(kind desktopKind) (permitVerdict, string) {
 	}
 	granted := a.desktopShotGranted
 	if kind == desktopKindInput {
+		if a.desktopInputGranted && !a.desktopInputExpires.IsZero() && time.Now().After(a.desktopInputExpires) {
+			a.desktopInputGranted = false
+			a.desktopInputExpires = time.Time{}
+		}
 		granted = a.desktopInputGranted
 	}
 	if granted {

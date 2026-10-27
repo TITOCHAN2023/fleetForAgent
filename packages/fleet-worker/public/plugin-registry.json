@@ -2,7 +2,7 @@
   "schema_version": 1,
   "source": {
     "repository": "https://github.com/TITOCHAN2023/fleet-plugins",
-    "commit": "83e95b56a1fec0143a2408905447692b90f6d637"
+    "commit": "ac2eceec91931ed47d78f22d92773fc8b2c23ac2"
   },
   "plugins": [
     {
@@ -126,6 +126,106 @@
       ],
       "source_file": "plugins/fleet-transfer.md",
       "body": "# Fleet Transfer\n\n`fleet.transfer` is the official file-system adapter for Fleet's direct-only\nfile transfer path. Fleet core authenticates the account and endpoints, signs a\nshort-lived direct-session ticket, and requires one local authorization\ndecision on each endpoint. A device Agent applies its permit: `off` refuses,\n`ask` prompts locally, and `allow` authorizes without another plugin click.\nThe plugin then reads or writes one regular file through the generic bounded\n`fleet.plugin.peer.v1` ABI.\n\nFile bytes use a dedicated reliable WebRTC DataChannel. The Worker and Durable\nObject carry only authentication, signaling, status, and short-lived tickets.\nIf a direct connection cannot be established, the transfer fails instead of\nfalling back to WebSocket, Worker, R2, TURN, or another relay.\n\nVersion 0.2.1 keeps manifest, chunk/hash, resume, acknowledgement, and commit\ninside the two plugin endpoints' private `fleet.transfer.v2` DATA protocol.\nFleet core preserves opaque DATA frame boundaries and does not understand file\ntransfer. One file, SHA-256 integrity, verified resume checkpoints, safe\ncancellation, no-clobber publication, and idempotent completion retry backed by\na transfer-bound local receipt are supported. Directories, symbolic links,\nspecial files, overwrite, and cross-account transfer remain excluded.\nBoth endpoints enforce a 10 GiB default local file-size limit. The target also\nkeeps 1 GiB free by default and rechecks capacity while receiving; operators\nmay override either byte limit through the plugin process environment.",
+      "platforms": [
+        {
+          "os": "darwin",
+          "arch": "amd64"
+        },
+        {
+          "os": "darwin",
+          "arch": "arm64"
+        },
+        {
+          "os": "linux",
+          "arch": "amd64"
+        },
+        {
+          "os": "linux",
+          "arch": "arm64"
+        },
+        {
+          "os": "windows",
+          "arch": "amd64"
+        },
+        {
+          "os": "windows",
+          "arch": "arm64"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "id": "fleet.sandbox",
+      "order": 30,
+      "name": "Fleet Sandbox",
+      "version": "0.1.0",
+      "publisher": "Fleet Official",
+      "license": "MIT",
+      "repository": "https://github.com/TITOCHAN2023/fleet-sandbox-plugin",
+      "homepage": "https://github.com/TITOCHAN2023/fleet-sandbox-plugin",
+      "categories": [
+        "Sandbox",
+        "Device",
+        "Security"
+      ],
+      "description": {
+        "en": "Run one command in a native sandbox on the device and keep the workspace there.",
+        "zh": "在设备本机沙箱里执行一条命令，工作区留在这台机器上。"
+      },
+      "installable": true,
+      "runtime": "task",
+      "actions": [
+        "ui",
+        "probe",
+        "config",
+        "configure",
+        "run",
+        "inspect",
+        "diff",
+        "list",
+        "export",
+        "encrypt_storage",
+        "discard"
+      ],
+      "approval_actions": [],
+      "action_specs": {
+        "ui": {
+          "runtime": "task"
+        },
+        "probe": {
+          "runtime": "task"
+        },
+        "config": {
+          "runtime": "task"
+        },
+        "configure": {
+          "runtime": "task"
+        },
+        "run": {
+          "runtime": "task"
+        },
+        "inspect": {
+          "runtime": "task"
+        },
+        "diff": {
+          "runtime": "task"
+        },
+        "list": {
+          "runtime": "task"
+        },
+        "export": {
+          "runtime": "task"
+        },
+        "encrypt_storage": {
+          "runtime": "task"
+        },
+        "discard": {
+          "runtime": "task"
+        }
+      },
+      "peer_protocols": [],
+      "source_file": "plugins/fleet-sandbox.md",
+      "body": "# Fleet Sandbox\n\n`fleet.sandbox` runs one command inside a native sandbox on the Fleet device.\nThe workspace stays on that machine. Hub authentication and the task ticket stay\non the existing Fleet path; this plugin does not receive Fleet or model\ncredentials.\n\nLinux uses Landlock, seccomp, and namespaces when the kernel provides them.\nWindows ships an AppContainer and Job Object build that has not been executed\non Windows. macOS uses the experimental Seatbelt launcher, without a signed\nApp Sandbox helper or Endpoint Security / Network Extension entitlement.\n\nThe device page lists workspaces and can configure, run, inspect, diff, export,\nor discard one workspace. Writes still follow the device permit.\n\nInstall it by asking an AI connected to Fleet Tool to call `install_plugin` with\n`plugin_id` set to `fleet.sandbox`. Software changes always require confirmation\non the target device.",
       "platforms": [
         {
           "os": "darwin",

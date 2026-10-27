@@ -370,7 +370,7 @@ func (a *Agent) newRTCSession(handshakeCtx, lifetimeCtx context.Context, sid, op
 				a.dropRTCSession(sid, s)
 				return
 			}
-			a.dispatchEnvelope(sessionCtx, a.rtcSink(s), env)
+			a.dispatchEnvelope(context.WithValue(sessionCtx, pluginPrincipalKey{}, s.operatorID), a.rtcSink(s), env)
 		})
 	})
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {

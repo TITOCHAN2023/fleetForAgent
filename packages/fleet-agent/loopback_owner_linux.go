@@ -68,13 +68,19 @@ func scanProcNetTCP(sc *bufio.Scanner, local, remote netip.AddrPort) (int, bool)
 			continue
 		}
 		fields := strings.Fields(sc.Text())
-		if len(fields) < 8 {
+		if len(fields) < 10 {
 			continue
 		}
 		l, ok1 := parseProcNetAddr(fields[1])
 		r, ok2 := parseProcNetAddr(fields[2])
 		if !ok1 || !ok2 || l != local || r != remote {
 			continue
+		}
+		// Orphaned sockets (including FIN_WAIT2/TIME_WAIT) may report UID 0
+		// after their owning file has gone. That is not evidence of root.
+		inode, err := strconv.ParseUint(fields[9], 10, 64)
+		if err != nil || inode == 0 {
+			return 0, false
 		}
 		uid, err := strconv.Atoi(fields[7])
 		if err != nil {

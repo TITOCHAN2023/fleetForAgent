@@ -169,3 +169,57 @@ func TestSettingsClientRefusesForeignServer(t *testing.T) {
 		t.Fatalf("dial err = %v", err)
 	}
 }
+
+func TestScanProcNetTCPRejectsOwnerlessRootRows(t *testing.T) {
+	if binary.NativeEndian.Uint32([]byte{1, 0, 0, 0}) != 1 {
+		t.Skip("fixture is little-endian")
+	}
+	local := netip.MustParseAddrPort("127.0.0.1:40000")
+	remote := netip.MustParseAddrPort("127.0.0.1:17986")
+	for _, state := range []string{"01", "05", "06"} {
+		table := "header\n" + "0: 0100007F:9C40 0100007F:4642 " + state + " 0:0 0:0 0 0 0 0 1\n"
+		if uid, ok := scanProcNetTCP(bufio.NewScanner(strings.NewReader(table)), local, remote); ok {
+			t.Fatalf("ownerless %s row accepted as uid %d", state, uid)
+		}
+	}
+	table := "header\n0: 0100007F:9C40 0100007F:4642 01 0:0 0:0 0 0 0 123 1\n"
+	if uid, ok := scanProcNetTCP(bufio.NewScanner(strings.NewReader(table)), local, remote); !ok || uid != 0 {
+		t.Fatalf("live root socket rejected: uid=%d ok=%v", uid, ok)
+	}
+}
+
+// A client can queue a mutation and close before Accept checks its identity.
+// Linux then reports UID 0 with no inode; queued bytes must not inherit trust.
+func TestLoopbackPeerRejectsClosedSenderWithQueuedRequest(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	client, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = client.Write([]byte("queued")); err != nil {
+		client.Close()
+		t.Fatal(err)
+	}
+	if err = client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	server, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	b := make([]byte, 6)
+	if _, err = io.ReadFull(server, b); err != nil {
+		t.Fatal(err)
+	}
+	if uid, ok := loopbackPeerUID(server); ok {
+		t.Fatalf("closed sender accepted as uid %d", uid)
+	}
+	if loopbackPeerAllowed(server) {
+		t.Fatal("queued request from ownerless socket trusted")
+	}
+}

@@ -71,6 +71,7 @@ jobs:
           fi
           printf 'Self-hosted Hub from %s. CI: %s\nThe server verifies provenance and checks the candidate before activation.\n' \
             "$GITHUB_SHA" '${{ github.event.workflow_run.html_url }}' > "$RUNNER_TEMP/hub-notes.md"
-          gh release create "$tag" --target "$GITHUB_SHA" --latest=false \
+          gh release create "$tag" --target "$GITHUB_SHA" --latest=false --draft \
             --title "Self-hosted Hub $GITHUB_SHA" --notes-file "$RUNNER_TEMP/hub-notes.md" \
             "$RUNNER_TEMP/fleet-hub.tar.gz" "$RUNNER_TEMP/fleet-hub.sigstore.json"
+          gh release edit "$tag" --draft=false --latest=false

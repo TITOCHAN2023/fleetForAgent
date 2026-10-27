@@ -3,11 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/TITOCHAN2023/fleetForAgent/internal/pane"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -326,7 +326,7 @@ func printUpdateInfo(info updateInfo) {
 }
 
 func getUpdate(path string) (updateInfo, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := settingsClient(30 * time.Second)
 	res, err := client.Get(apiRoot() + path)
 	if err != nil {
 		return updateInfo{}, err
@@ -431,7 +431,7 @@ func cliInstall() error {
 }
 
 func liveState() (State, error) {
-	client := &http.Client{Timeout: time.Second}
+	client := settingsClient(time.Second)
 	res, err := client.Get(apiRoot() + "/api/state")
 	if err != nil {
 		return State{}, err
@@ -455,8 +455,12 @@ func agentRunning() bool {
 func waitReady(d time.Duration) error {
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
-		if agentRunning() {
+		_, err := liveState()
+		if err == nil {
 			return nil
+		}
+		if errors.Is(err, errForeignSettingsOwner) {
+			return fmt.Errorf("%s: %w", settingsAddr(), err)
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
@@ -483,7 +487,7 @@ func postJSON(path string, body any) error {
 		}
 		rdr = bytes.NewReader(b)
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := settingsClient(5 * time.Second)
 	res, err := client.Post(apiRoot()+path, "application/json", rdr)
 	if err != nil {
 		return err

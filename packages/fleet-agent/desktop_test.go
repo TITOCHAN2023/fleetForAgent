@@ -8,6 +8,7 @@ import (
 	"image/jpeg"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/TITOCHAN2023/fleetForAgent/internal/desktop"
 )
@@ -289,4 +290,27 @@ func solid(w, h int, c color.RGBA) *image.RGBA {
 		}
 	}
 	return img
+}
+
+func TestInputGrantExpires(t *testing.T) {
+	a := &Agent{enabled: true, permit: PermitAsk, desktopInputGranted: true, desktopInputExpires: time.Now().Add(-time.Second)}
+	if v, _ := a.desktopVerdict(desktopKindInput); v != permitAsk {
+		t.Fatalf("expired input grant verdict = %v, want ask", v)
+	}
+	if a.desktopInputGranted {
+		t.Fatal("expired grant not cleared")
+	}
+	a.desktopInputGranted = true
+	a.desktopInputExpires = time.Now().Add(time.Minute)
+	if v, _ := a.desktopVerdict(desktopKindInput); v != permitProceed {
+		t.Fatalf("live input grant verdict = %v, want proceed", v)
+	}
+}
+
+func TestApproveDesktopInputSetsExpiry(t *testing.T) {
+	a := &Agent{enabled: true, permit: PermitAsk, desktopPending: &Pending{Kind: pendingKindDesktopInput, Command: "desktop input"}}
+	a.approve()
+	if !a.desktopInputGranted || a.desktopInputExpires.IsZero() || time.Until(a.desktopInputExpires) > desktopInputGrantTTL {
+		t.Fatalf("granted=%v expires=%v", a.desktopInputGranted, a.desktopInputExpires)
+	}
 }

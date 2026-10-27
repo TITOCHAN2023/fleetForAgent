@@ -91,7 +91,7 @@ func TestPluginDeliveryRetryDoesNotInvokeAgain(t *testing.T) {
 		invocations++
 		return "completed", nil
 	}
-	a := &Agent{}
+	a := &Agent{enabled: true, permit: PermitAllow}
 	a.executePlugin(context.Background(), func(_ context.Context, env Envelope) error {
 		sends++
 		if sends == 1 {

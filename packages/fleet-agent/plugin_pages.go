@@ -190,7 +190,12 @@ func (a *Agent) invokePluginPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.pageMu.Lock()
-	p := a.pages[body.Token]
+	p, exists := a.pages[body.Token]
+	if !exists || time.Now().After(p.Expires) {
+		a.pageMu.Unlock()
+		http.Error(w, "plugin page expired", http.StatusForbidden)
+		return
+	}
 	if len(p.Results) >= 128 {
 		a.pageMu.Unlock()
 		http.Error(w, "page request limit; reopen", 429)

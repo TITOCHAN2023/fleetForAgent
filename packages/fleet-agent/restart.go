@@ -159,7 +159,7 @@ func waitPortFree(addr string, timeout time.Duration) error {
 func waitHTTP(addr string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	url := "http://" + addr + "/api/state"
-	client := &http.Client{Timeout: 400 * time.Millisecond}
+	client := settingsClient(400 * time.Millisecond)
 	var last error
 	for time.Now().Before(deadline) {
 		res, err := client.Get(url)
@@ -182,6 +182,7 @@ func waitHTTP(addr string, timeout time.Duration) error {
 
 func (s *settingsHTTP) serve(ln net.Listener, handler http.Handler) {
 	srv := &http.Server{Handler: handler}
+	ln = ownerOnlyListener{ln}
 	s.mu.Lock()
 	s.srv = srv
 	s.ln = ln

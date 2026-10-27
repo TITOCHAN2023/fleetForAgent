@@ -143,6 +143,9 @@ export function trustPage(identity, { origin = "https://fleet.ginfo.cc" } = {}) 
 git ls-remote ${repo.replace(/\/+$/, "")}.git ${commit || "HEAD"}
 ${verified ? `git clone --depth 1 ${repo}.git && git -C fleetForAgent fetch --depth 1 origin ${commit} && git -C fleetForAgent checkout ${commit}` : "# no commit baked; stop here"}</pre>
     <h2>Verify the build evidence</h2>
+    <p>Self-hosted releases use a <code>hub-&lt;commit&gt;</code> tag. Download <code>fleet-hub.tar.gz</code> and <code>fleet-hub.sigstore.json</code> from that release. The archive includes the Hub adapter and public assets; host secrets and durable data stay on the server.</p>
+    <pre>gh attestation verify fleet-hub.tar.gz --bundle fleet-hub.sigstore.json --repo TITOCHAN2023/fleetForAgent --signer-workflow TITOCHAN2023/fleetForAgent/.github/workflows/release-self-hosted-hub.yml --source-digest &lt;commit&gt;</pre>
+    <p>The following evidence workflow applies to the older Cloudflare-hosted releases:</p>
     <p>For releases using the evidence workflow, open the reported Actions run and download its hub-evidence artifact. Verify the archive before extracting it:</p>
     <pre>gh attestation verify hub-evidence.tar.gz --repo TITOCHAN2023/fleetForAgent --signer-workflow TITOCHAN2023/fleetForAgent/.github/workflows/deploy-hub.yml</pre>
     <p>Check the verified provenance commit, receipt, checksums and deploy step. Downloads require GitHub login; artifacts are retained for 90 days. The archive covers Worker JavaScript and repository configuration, not static assets, secrets or the live runtime.</p>

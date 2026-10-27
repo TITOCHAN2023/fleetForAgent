@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for a verified Fleet Hub release every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=20
+Unit=fleet-deploy.service
+
+[Install]
+WantedBy=timers.target

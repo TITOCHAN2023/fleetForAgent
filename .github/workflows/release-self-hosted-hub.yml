@@ -1,0 +1,77 @@
+name: Release self-hosted Hub
+
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-self-hosted-hub
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Only a successful CI run for the current main commit can publish.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_sha == github.sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.22.0"
+          cache: npm
+      - run: npm ci
+      - run: npm ci --prefix packages/fleet-worker
+      - name: Validate self-hosted adapter and deploy safety
+        run: |
+          node --test scripts/self-hosted/*.test.mjs
+          python3 -m unittest discover -s scripts/self-hosted -p 'test_*.py'
+      - run: npm run pack:room
+      - name: Bundle the tested Hub without deploying to Cloudflare
+        working-directory: packages/fleet-worker
+        env:
+          WRANGLER_SEND_METRICS: "false"
+        run: npm exec -- wrangler deploy --dry-run --outdir "$RUNNER_TEMP/hub-bundle"
+      - name: Package code and public assets
+        run: python3 scripts/self-hosted/package.py "$RUNNER_TEMP/hub-bundle/worker.js" "$GITHUB_SHA" "$RUNNER_TEMP/fleet-hub.tar.gz"
+      - name: Attest the exact archive
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/fleet-hub.tar.gz
+      - name: Publish an immutable Hub release for the server to pull
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_SHA" = "$(git rev-parse HEAD)"
+          test "$GITHUB_SHA" = "$(gh api repos/$GITHUB_REPOSITORY/commits/main --jq .sha)"
+          cp "$BUNDLE_PATH" "$RUNNER_TEMP/fleet-hub.sigstore.json"
+          tag="hub-$GITHUB_SHA"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo 'Immutable Hub release already exists; refusing to replace its assets.'
+            exit 1
+          fi
+          printf 'Self-hosted Hub from %s. CI: %s\nThe server verifies provenance and checks the candidate before activation.\n' \
+            "$GITHUB_SHA" '${{ github.event.workflow_run.html_url }}' > "$RUNNER_TEMP/hub-notes.md"
+          gh release create "$tag" --target "$GITHUB_SHA" --latest=false --draft \
+            --title "Self-hosted Hub $GITHUB_SHA" --notes-file "$RUNNER_TEMP/hub-notes.md" \
+            "$RUNNER_TEMP/fleet-hub.tar.gz" "$RUNNER_TEMP/fleet-hub.sigstore.json"
+          gh release edit "$tag" --draft=false --latest=false

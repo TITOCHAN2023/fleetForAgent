@@ -38,7 +38,8 @@ jobs:
 
   deploy:
     needs: verify
-    if: github.ref == 'refs/heads/main'
+    # Self-hosted production must explicitly opt in before deploying a Worker.
+    if: github.ref == 'refs/heads/main' && vars.FLEET_HUB_DEPLOY_TARGET == 'cloudflare'
     environment: production
     name: Bake commit and deploy Worker
     runs-on: ubuntu-24.04

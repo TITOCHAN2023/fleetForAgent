@@ -128,6 +128,9 @@ export interface Env {
   ASSETS?: Fetcher;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  GOOGLE_RELAY_URL?: string;
+  GOOGLE_RELAY_SECRET?: string;
+  OAUTH_STATE_PREFIX?: string;
   X_CLIENT_ID?: string;
   X_CLIENT_SECRET?: string;
   LATEST_AGENT_VER?: string;

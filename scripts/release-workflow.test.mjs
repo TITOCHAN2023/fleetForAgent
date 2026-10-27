@@ -10,6 +10,7 @@ const workflows = [
   ".github/workflows/release-agent.yml",
   ".github/workflows/windows-plugin-process-tree.yml",
   ".github/workflows/deploy-hub.yml",
+  ".github/workflows/release-self-hosted-hub.yml",
 ];
 
 test("GitHub Actions are pinned to immutable commits with an exact version comment", () => {
@@ -79,9 +80,21 @@ test("hosted deploy requires verification on main and uploads the attested scrip
   assert.match(source, /needs: verify/);
   assert.match(source, /if: github.ref == 'refs\/heads\/main'/);
   assert.match(source, /environment: production/);
+  assert.match(source, /vars\.FLEET_HUB_DEPLOY_TARGET == 'cloudflare'/);
   const verification = source.slice(source.indexOf("  verify:"), source.indexOf("  deploy:"));
   assert.match(verification, /npm test/);
   assert.match(verification, /npm run typecheck/);
   assert.doesNotMatch(verification, /secrets\./);
   assert.match(source, /wrangler deploy "\$SOURCE_BUNDLE_PATH" --no-bundle --config wrangler\.toml/);
+});
+
+test("self-hosted releases require successful current-main CI and do not replace Agent latest", () => {
+  const source = readFileSync(join(root, ".github/workflows/release-self-hosted-hub.yml"), "utf8");
+  assert.match(source, /workflow_run:/);
+  assert.match(source, /github\.event\.workflow_run\.conclusion == 'success'/);
+  assert.match(source, /github\.event\.workflow_run\.head_repository\.full_name == github\.repository/);
+  assert.match(source, /github\.event\.workflow_run\.head_sha == github\.sha/);
+  assert.match(source, /--latest=false/);
+  assert.match(source, /actions\/attest@/);
+  assert.doesNotMatch(source, /--clobber|secrets\./);
 });

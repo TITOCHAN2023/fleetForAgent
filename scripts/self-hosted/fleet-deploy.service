@@ -1,0 +1,13 @@
+[Unit]
+Description=Pull and activate attested Fleet Hub release
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/fleet/deploy.py
+TimeoutStartSec=20min
+MemoryMax=512M
+UMask=0022
+PrivateTmp=true
+NoNewPrivileges=true

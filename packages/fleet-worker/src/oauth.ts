@@ -1,11 +1,15 @@
 /** Google / X OAuth for the public site. Not the Grok sandbox broker. */
 
+import { googleLoginProfile } from "./google-oauth.mjs";
 import { oauthCallbackFail } from "./ban.mjs";
 import { googleProfileEmail, xAccountEmail } from "./oauth-account.mjs";
 
 export type OAuthEnv = {
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  GOOGLE_RELAY_URL?: string;
+  GOOGLE_RELAY_SECRET?: string;
+  OAUTH_STATE_PREFIX?: string;
   X_CLIENT_ID?: string;
   X_CLIENT_SECRET?: string;
   FLEET: DurableObjectNamespace;
@@ -93,7 +97,7 @@ async function startGoogle(request: Request, env: OAuthEnv): Promise<Response> {
   const id = env.GOOGLE_CLIENT_ID?.trim();
   if (!id)
     return fail("Google 登录未配置：需要 wrangler secret GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET");
-  const state = rand();
+  const state = (env.OAUTH_STATE_PREFIX ?? "") + rand();
   const binding = rand();
   if (
     !(await putPending(env, state, {
@@ -167,23 +171,12 @@ async function finishGoogle(request: Request, env: OAuthEnv): Promise<Response> 
   const secret = env.GOOGLE_CLIENT_SECRET?.trim();
   if (!id || !secret) return fail("Google 登录未配置");
   const redir = `${originOf(request)}/v1/auth/callback/google`;
-  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      code,
-      client_id: id,
-      client_secret: secret,
-      redirect_uri: redir,
-      grant_type: "authorization_code",
-    }),
-  });
-  const token = (await tokenRes.json()) as { access_token?: string; error?: string };
-  if (!token.access_token) return fail(token.error || "google token");
-  const meRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
-    headers: { authorization: `Bearer ${token.access_token}` },
-  });
-  const me = (await meRes.json()) as { email?: string; verified_email?: boolean };
+  let me: { email?: string; verified_email?: boolean };
+  try {
+    me = await googleLoginProfile(env, code, redir);
+  } catch {
+    return fail("Google 登录暂时不可用，请稍后重试", 502);
+  }
   const got = googleProfileEmail(me);
   if (!got.ok) return fail(got.error);
   return finishUser(env, got.email, "google");

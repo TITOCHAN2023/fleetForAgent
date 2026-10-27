@@ -78,7 +78,6 @@ test("hosted deploy requires verification on main and uploads the attested scrip
   const source = readFileSync(join(root, ".github/workflows/deploy-hub.yml"), "utf8");
   assert.match(source, /needs: verify/);
   assert.match(source, /if: github.ref == 'refs\/heads\/main'/);
-  assert.match(source, /if: github.ref == 'refs\/heads\/main' && vars\.FLEET_HUB_DEPLOY_TARGET == 'cloudflare'/);
   assert.match(source, /environment: production/);
   const verification = source.slice(source.indexOf("  verify:"), source.indexOf("  deploy:"));
   assert.match(verification, /npm test/);

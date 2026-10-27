@@ -105,8 +105,8 @@ func withForeignProcNet(t *testing.T, port uint16) {
 		}
 		// Rows for both directions: client socket (local=p, rem=port) and
 		// server socket (local=port, rem=p).
-		fmt.Fprintf(&b, " 0: 0100007F:%04X 0100007F:%04X 01 0:0 0:0 0 4242 0 0 1\n", p, port)
-		fmt.Fprintf(&b, " 0: 0100007F:%04X 0100007F:%04X 01 0:0 0:0 0 4242 0 0 1\n", port, p)
+		fmt.Fprintf(&b, " 0: 0100007F:%04X 0100007F:%04X 01 0:0 0:0 0 4242 0 1 1\n", p, port)
+		fmt.Fprintf(&b, " 0: 0100007F:%04X 0100007F:%04X 01 0:0 0:0 0 4242 0 1 1\n", port, p)
 	}
 	path := filepath.Join(t.TempDir(), "tcp")
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
@@ -118,29 +118,32 @@ func withForeignProcNet(t *testing.T, port uint16) {
 }
 
 func TestOwnerOnlyListenerDropsForeignUser(t *testing.T) {
-	raw, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := uint16(raw.Addr().(*net.TCPAddr).Port)
-	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, "ok")
-	})}
-	go func() { _ = srv.Serve(ownerOnlyListener{raw}) }()
-	defer srv.Close()
-	url := "http://" + raw.Addr().String() + "/"
-
-	plain := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}}
-	res, err := plain.Get(url)
-	if err != nil {
-		t.Fatalf("same user refused: %v", err)
-	}
-	res.Body.Close()
-
-	withForeignProcNet(t, port)
-	if res, err := plain.Get(url); err == nil {
-		res.Body.Close()
-		t.Fatalf("foreign user got %s", res.Status)
+	for _, foreign := range []bool{false, true} {
+		t.Run(fmt.Sprint("foreign=", foreign), func(t *testing.T) {
+			raw, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer raw.Close()
+			if foreign {
+				withForeignProcNet(t, uint16(raw.Addr().(*net.TCPAddr).Port))
+			}
+			srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "ok") })}
+			done := make(chan struct{})
+			go func() { defer close(done); _ = srv.Serve(ownerOnlyListener{raw}) }()
+			defer func() { _ = srv.Close(); <-done }()
+			plain := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}}
+			res, err := plain.Get("http://" + raw.Addr().String() + "/")
+			if err == nil {
+				res.Body.Close()
+			}
+			if foreign && err == nil {
+				t.Fatal("foreign user accepted")
+			}
+			if !foreign && err != nil {
+				t.Fatalf("same user refused: %v", err)
+			}
+		})
 	}
 }
 
